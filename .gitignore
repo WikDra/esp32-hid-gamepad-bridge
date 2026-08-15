@@ -1,0 +1,11 @@
+firmware/build*/
+firmware/sdkconfig
+firmware/sdkconfig.esp32*
+firmware/sdkconfig.old
+firmware/managed_components/
+firmware/dependencies.lock
+
+# lokalne nadpisania (gitignored, jesli kiedys beda potrzebne)
+firmware/sdkconfig.local
+firmware/sdkconfig.local.*
+!firmware/sdkconfig.local.example

@@ -1,0 +1,44 @@
+menu "Mostek HID (konfiguracja aplikacji)"
+
+    config APP_ENABLE_HID_HOST
+        bool "Rola central: odbieraj raporty z klawiatury i myszy BLE"
+        default y
+        help
+            Wlacza skaner BLE i esp_hidh (GATT client). Etap 1 planu z AGENTS.md.
+            Mozna wylaczyc, zeby testowac sama strone pada (Etap 2) bez wplywu
+            skanowania na czas anteny.
+
+    config APP_ENABLE_GAMEPAD
+        bool "Rola peripheral: wystawiaj pada HID do PC"
+        default y
+        help
+            Wlacza wlasny serwer GATT z usluga HID 0x1812 i rozglaszanie.
+            Etap 2 planu z AGENTS.md.
+
+    config APP_GAMEPAD_SELFTEST
+        bool "Pad: syntetyczny wzorzec testowy zamiast realnych wejsc"
+        depends on APP_ENABLE_GAMEPAD
+        default n
+        help
+            Zamiast mapowac klawiature i mysz, pad krazy lewym analogiem po okregu
+            i po kolei wciska przyciski. Pozwala sprawdzic w joy.cpl, ze deskryptor
+            raportu jest poprawny, bez podlaczania klawiatury i myszy.
+
+    config APP_GAMEPAD_DEVICE_NAME
+        string "Pad: nazwa rozglaszana w BLE"
+        depends on APP_ENABLE_GAMEPAD
+        default "C3 Gamepad"
+        help
+            Nazwa widoczna na liscie urzadzen Bluetooth w Windows. Zmiana nazwy
+            nie wymaga re-parowania, w przeciwienstwie do zmiany deskryptora raportu.
+
+    config APP_REPORT_RATE_HZ
+        int "Pad: czestotliwosc zadania raportujacego [Hz]"
+        depends on APP_ENABLE_GAMEPAD
+        range 10 250
+        default 100
+        help
+            Zadanie budzi sie z ta czestotliwoscia, ale raport idzie do PC tylko
+            wtedy, gdy stan pada sie zmienil.
+
+endmenu

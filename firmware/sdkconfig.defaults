@@ -1,0 +1,52 @@
+# Wspolne ustawienia projektu. Kazda pozycja ma uzasadnienie - patrz AGENTS.md.
+
+# --- Flash / partycje ---
+# 4 MB flash na C3 SuperMini. Bez OTA (PoC), wiec jedna duza partycja aplikacji.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# --- Bluetooth: tylko BLE, stack NimBLE ---
+# NimBLE, nie Bluedroid: C3 nie ma Bluetooth Classic, a NimBLE zjada wyraznie mniej
+# internal SRAM (C3 nie ma PSRAM, wiec nie ma gdzie uciec - AGENTS.md 4.5).
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+
+# Trzy jednoczesne linki: 2x central (klawiatura, mysz) + 1x peripheral (PC).
+# Na C3 limit to 9; kazde polaczenie kosztuje pamiec, wiec trzymamy sie 3.
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=3
+# Tyle samo bondow, bo kazde z tych trzech urzadzen sie paruje.
+CONFIG_BT_NIMBLE_MAX_BONDS=3
+# Domyslnie 6, czyli 3 polaczenia + skan + advertising sie mieszcza. Ustawione
+# wprost, zeby bylo widoczne, ze to swiadoma wartosc, a nie przypadek.
+CONFIG_BT_CTRL_BLE_MAX_ACT=6
+
+# Obie role naraz - to jest caly sens projektu. Domyslnie oba sa y, ale niech
+# bedzie wpisane, bo wylaczenie ktorejkolwiek cicho zabija pol aplikacji.
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+
+# Klucze parowania przezywaja restart. Domyslnie jest "n" - bez tego trzeba by
+# parowac klawiature, mysz i PC po kazdym resecie.
+CONFIG_BT_NIMBLE_NVS_PERSIST=y
+
+# Bez tego AULA F99 Pro nie odda raportow: czytanie charakterystyk konczy sie
+# bledem ATT "insufficient security" (status=14), a NimBLE samo nie parowalo.
+# UWAGA: opcja istnieje dopiero od IDF 5.4.3 (AGENTS.md 4.1).
+CONFIG_BT_NIMBLE_GATTC_AUTO_PAIR=y
+
+# Just Works w obie strony: klawiatura i mysz nie maja wyswietlacza ani klawiatury
+# numerycznej do potwierdzania kodu, PC tez tego nie wymaga dla pada.
+CONFIG_BT_NIMBLE_SECURITY_ENABLE=y
+CONFIG_BT_NIMBLE_SM_LEGACY=y
+CONFIG_BT_NIMBLE_SM_SC=y
+
+# Usluge HID 0x1812 dla pada piszemy sami (AGENTS.md 4.2), wiec wbudowana usluga
+# HID z NimBLE (i tym samym esp_hidd) nie jest potrzebna.
+CONFIG_BT_NIMBLE_HID_SERVICE=n
+
+# Klawiatury i myszy BLE agresywnie zasypiaja i rozpadaja polaczenie. Ponawianie
+# w stacku oszczedza nam wlasnej logiki reconnect.
+CONFIG_BT_NIMBLE_ENABLE_CONN_REATTEMPT=y
+CONFIG_BT_NIMBLE_MAX_CONN_REATTEMPT=3
