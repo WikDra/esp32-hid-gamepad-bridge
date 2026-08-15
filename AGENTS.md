@@ -32,6 +32,10 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | Brak PSRAM potwierdzony przez firmware | `flash 4096 kB, PSRAM brak` |
 | Punkt wyjścia pamięci (bez BLE) | `free 319976 B`, największy blok `180224 B` |
 | Skrypty build (WSL) / flash + monitor (Windows) | `build.sh`, `flash-win.bat`, `monitor-win.bat` — wszystkie użyte w praktyce |
+| NimBLE startuje na C3 (central) | `stack gotowy (own_addr_type=0)`, `GAP procedure initiated: discovery` |
+| Skaner widzi otoczenie i scala pakiety ADV | `skan: 2 urzadzen`, m.in. `e2:bb:9e:80:49:54 rssi=-55 'L3250 Series'` |
+| Koszt pamięciowy NimBLE | `heap przed BLE: free 277988 B` → po starcie stacku `heap 207188 B`, czyli ~70 kB |
+| Rozmiar firmware z BLE | `0x8fe90` B (589 kB), `62%` partycji wolne |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
 
@@ -113,15 +117,68 @@ Nie ma sprawdzenia `desc.role`. W naszej aplikacji central łączy się z klawia
 `esp_hidd` złapie handle **tych** połączeń i będzie próbował wysyłać raporty pada do
 klawiatury. To nie jest do obejścia z zewnątrz — `s_dev` jest `static` w `nimble_hidd.c`.
 
-**Decyzja: peryferial HID piszemy sami na NimBLE GATT.** Zakres: usługa 0x1812 z
-charakterystykami Report Map, Report (notify + deskryptor Report Reference), HID Information,
-HID Control Point, Protocol Mode; plus Battery Service 0x180F i własne advertising
-z `appearance` = gamepad. To ~250 linii i daje pełną kontrolę nad deskryptorem raportu,
-który przy padzie i tak piszemy od zera.
+**Decyzja (skorygowana 2026-08-15, patrz §4.8): peryferial HID budujemy na `ble_svc_hid`
+z NimBLE, nie na `esp_hidd` i nie od zera.** Pierwotnie planowaliśmy pisać całą usługę
+GATT ręcznie; okazało się, że NimBLE ma gotową usługę HID, która nie ma żadnej z wad
+`nimble_hidd.c`.
 
 Rozważona alternatywa: skopiować `nimble_hidd.c` do projektu jako lokalny komponent i dodać
 `if (desc.role != BLE_GAP_ROLE_SLAVE) return 0;`. Mniej pisania, ale utrzymujemy forka pliku
 z IDF (25 kB) i nadal zostaje Problem 1. Odrzucone.
+
+### 4.8 `CONFIG_BT_NIMBLE_HID_SERVICE` gatuje też **hosta**, nie tylko serwer
+
+Nazwa opcji („Human Interface Device service") sugeruje rzecz wyłącznie serwerową. W
+rzeczywistości w `components/esp_hid/src/nimble_hidh.c` **cały plik** jest w
+`#if CONFIG_BT_NIMBLE_HID_SERVICE ... #endif` (linie 35 i 966 w v5.5.1). Bez tej opcji
+projekt kompiluje się, ale linker wywala:
+
+```
+undefined reference to `esp_ble_hidh_init'
+undefined reference to `esp_ble_hidh_dev_open'
+```
+
+Czyli opcja musi być `y` nawet dla czystego centrala. Sprawdzone na własnym błędzie budowania.
+
+Włączenie jej **nie rejestruje** samo z siebie żadnej usługi w GATT — `ble_svc_hid_init()`
+jest wołane tylko z `nimble_hidd.c:175`, a `nimble_hidd` startuje wyłącznie przez
+`esp_hidd_dev_init()`, którego nie używamy. Sprawdzone grepem po `components/bt` i
+`components/esp_hid`: to jedyne wywołanie w całym IDF.
+
+### 4.9 `ble_svc_hid` z NimBLE jest gotową usługą HID i nie ma wad `esp_hidd`
+
+`components/bt/host/nimble/nimble/nimble/host/services/hid/` — usługa HID prosto z NimBLE.
+API jest małe:
+
+```c
+void ble_svc_hid_init(void);
+int  ble_svc_hid_add(struct ble_svc_hid_params params);
+void ble_svc_hid_reset(void);
+```
+
+`struct ble_svc_hid_params` przyjmuje Report Map, listę charakterystyk Report (z typem
+i report ID), HID Information, Control Point, Protocol Mode oraz opcjonalne boot reporty.
+Kluczowe: ten plik **nie rejestruje globalnego `ble_gap_event_listener`** i **nie dotyka
+`ble_hs_cfg`** — oba problemy z §4.2 siedzą w warstwie `esp_hidd`, nie w samej usłudze.
+Zostaje nam do napisania tylko advertising i wysyłka notyfikacji, gdzie sami trzymamy
+handle połączenia i sprawdzamy `desc.role`.
+
+Uwaga na rozmiar: `ble_svc_hid_add()` bierze strukturę **przez wartość**, a w środku jest
+`report_map[512]` i `rpts[MAX_REPORTS]` po 256 B każdy. Przy domyślnych
+`MAX_INSTANCES=2` / `MAX_RPTS=3` to ~1,3 kB kopiowane na stos wołającego. Dlatego
+`sdkconfig.defaults` ustawia oba na 1.
+
+### 4.10 Układ raportu myszy nie jest potwierdzony
+
+`rg_bluetooth.cpp` z OpenLary zakłada boot protocol: `data[1]`/`data[2]` jako 8-bitowe
+`dx`/`dy`. Dla AJAZZ AJ159 Pro **to jest niesprawdzone** — mysz gamingowa o wysokim DPI
+zwykle raportuje 12- lub 16-bitowo, a OpenLara nigdy nie potwierdziła myszy na sprzęcie
+(w jej `AGENTS.md` jest tylko „powinna działać").
+
+`ble_hid_host.c` rozpoznaje po długości raportu: `len >= 5` → 16-bit little-endian,
+inaczej 8-bit. Równolegle loguje surowe bajty (`MOU len=… [hex]`) przy pierwszych ośmiu
+raportach i potem raz na sekundę, żeby dało się odczytać prawdziwy układ z logu
+i poprawić przed Etapem 3.
 
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 

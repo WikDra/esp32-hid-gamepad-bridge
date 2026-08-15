@@ -42,9 +42,18 @@ CONFIG_BT_NIMBLE_SECURITY_ENABLE=y
 CONFIG_BT_NIMBLE_SM_LEGACY=y
 CONFIG_BT_NIMBLE_SM_SC=y
 
-# Usluge HID 0x1812 dla pada piszemy sami (AGENTS.md 4.2), wiec wbudowana usluga
-# HID z NimBLE (i tym samym esp_hidd) nie jest potrzebna.
-CONFIG_BT_NIMBLE_HID_SERVICE=n
+# UWAGA, pulapka: ta opcja nazywa sie "HID service" i brzmi jak rzecz wylacznie
+# serwerowa, ale w esp_hid gatuje ONA CALY plik nimble_hidh.c - czyli rowniez
+# strone HOSTA. Bez niej linker konczy sie bledem "undefined reference to
+# esp_ble_hidh_init". Musi byc "y" nawet dla czystego centrala.
+# Wlaczenie samo z siebie NIE rejestruje zadnej uslugi w GATT: ble_svc_hid_init()
+# jest wolane tylko z nimble_hidd.c, ktorego nie uzywamy (AGENTS.md 4.2).
+CONFIG_BT_NIMBLE_HID_SERVICE=y
+# Jedna instancja uslugi i jeden raport wejsciowy - tyle potrzebuje pad. Domyslne
+# 2 i 3 rezerwuja wieksza strukture, a ble_svc_hid_add() bierze ja przez wartosc
+# (czyli na stos wolajacego).
+CONFIG_BT_NIMBLE_SVC_HID_MAX_INSTANCES=1
+CONFIG_BT_NIMBLE_SVC_HID_MAX_RPTS=1
 
 # Klawiatury i myszy BLE agresywnie zasypiaja i rozpadaja polaczenie. Ponawianie
 # w stacku oszczedza nam wlasnej logiki reconnect.
