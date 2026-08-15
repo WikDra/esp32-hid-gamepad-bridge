@@ -11,6 +11,7 @@
 #include <inttypes.h>
 #include <string.h>
 
+#include "ble_stack.h"
 #include "esp_hid_common.h"
 #include "esp_hidh.h"
 #include "esp_log.h"
@@ -23,16 +24,6 @@
 #include "host/ble_gap.h"
 #include "host/ble_hs.h"
 #include "host/ble_hs_adv.h"
-#include "host/ble_store.h"
-#include "host/util/util.h"
-#include "nimble/nimble_port.h"
-#include "nimble/nimble_port_freertos.h"
-#include "services/gap/ble_svc_gap.h"
-#include "services/gatt/ble_svc_gatt.h"
-
-/* Dostarczane przez komponent bt (store/config), ale bez publicznego naglowka -
- * tak samo robia przyklady w IDF. */
-extern void ble_store_config_init(void);
 
 static const char *TAG = "hid_host";
 
@@ -42,15 +33,13 @@ static const char *TAG = "hid_host";
 #define RETRY_COOLDOWN_US    (15 * 1000 * 1000) /* nie dobijamy sie do tego samego adresu co runde */
 #define HID_SERVICE_UUID16   0x1812
 
-#define EV_SYNCED    BIT0
-#define EV_DISC_DONE BIT1
+#define EV_DISC_DONE BIT0
 
 /* Jeden spinlock na caly stan modulu. Sekcje krytyczne sa krotkie (kopiowanie
  * kilku bajtow, petle po 2-12 elementach), wiec nie ma po co mieszac muteksow. */
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static EventGroupHandle_t s_events;
-static uint8_t s_own_addr_type;
 
 static hid_input_state_t s_state;
 
@@ -579,7 +568,7 @@ static void scan_round(void)
     candidates_clear_stale();
     xEventGroupClearBits(s_events, EV_DISC_DONE);
 
-    int rc = ble_gap_disc(s_own_addr_type, SCAN_DURATION_MS, &dp, gap_event_cb, NULL);
+    int rc = ble_gap_disc(ble_stack_own_addr_type(), SCAN_DURATION_MS, &dp, gap_event_cb, NULL);
     if (rc != 0) {
         ESP_LOGE(TAG, "ble_gap_disc nie wystartowal: rc=%d", rc);
         vTaskDelay(pdMS_TO_TICKS(2000));
@@ -594,8 +583,8 @@ static void scan_round(void)
 
 static void scan_task(void *arg)
 {
-    xEventGroupWaitBits(s_events, EV_SYNCED, pdFALSE, pdTRUE, portMAX_DELAY);
-    ESP_LOGI(TAG, "stack gotowy (own_addr_type=%u), zaczynam skanowanie", s_own_addr_type);
+    ble_stack_wait_synced(portMAX_DELAY);
+    ESP_LOGI(TAG, "zaczynam skanowanie (do %d urzadzen HID)", HID_HOST_MAX_DEVICES);
 
     while (true) {
         if (ble_hid_host_device_count() >= HID_HOST_MAX_DEVICES) {
@@ -607,32 +596,7 @@ static void scan_task(void *arg)
     }
 }
 
-/* ------------------------------------------------------------ start / callbacki */
-
-static void on_stack_sync(void)
-{
-    int rc = ble_hs_util_ensure_addr(0);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "ble_hs_util_ensure_addr: rc=%d", rc);
-    }
-    rc = ble_hs_id_infer_auto(0, &s_own_addr_type);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "ble_hs_id_infer_auto: rc=%d, zostaje public", rc);
-        s_own_addr_type = 0;
-    }
-    xEventGroupSetBits(s_events, EV_SYNCED);
-}
-
-static void on_stack_reset(int reason)
-{
-    ESP_LOGE(TAG, "reset stacku NimBLE, reason=%d", reason);
-}
-
-static void nimble_host_task(void *param)
-{
-    nimble_port_run(); /* wraca dopiero przy nimble_port_stop() */
-    nimble_port_freertos_deinit();
-}
+/* ------------------------------------------------------------------------ start */
 
 esp_err_t ble_hid_host_start(void)
 {
@@ -641,48 +605,23 @@ esp_err_t ble_hid_host_start(void)
         return ESP_ERR_NO_MEM;
     }
 
-    esp_err_t err = nimble_port_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "nimble_port_init: %s", esp_err_to_name(err));
-        return err;
-    }
-
     esp_hidh_config_t cfg = {
         .callback = hidh_callback,
         .event_stack_size = 4096,
         .callback_arg = NULL,
     };
-    err = esp_hidh_init(&cfg);
+    /* Uwaga: to nadpisuje ble_hs_cfg.sync_cb i reset_cb pustymi wersjami z
+     * nimble_hidh.c. Naprawia to ble_stack_start(), wolane po wszystkich rolach. */
+    esp_err_t err = esp_hidh_init(&cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_hidh_init: %s", esp_err_to_name(err));
         return err;
     }
-
-    /*
-     * KOLEJNOSC MA ZNACZENIE: esp_hidh_init() ustawia wlasne ble_hs_cfg.sync_cb
-     * i reset_cb, ktore w wersji NimBLE sa puste (AGENTS.md 4.2). Nadpisujemy je
-     * PO nim, zeby dostac informacje o gotowosci stacku.
-     */
-    ble_hs_cfg.sync_cb = on_stack_sync;
-    ble_hs_cfg.reset_cb = on_stack_reset;
-    ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
-
-    /* Just Works: ani klawiatura, ani mysz nie maja jak wyswietlic ani wpisac kodu. */
-    ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
-    ble_hs_cfg.sm_bonding = 1;
-    ble_hs_cfg.sm_mitm = 0;
-    ble_hs_cfg.sm_sc = 1;
-    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
-    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
-
-    ble_store_config_init();
 
     if (xTaskCreate(scan_task, "hid_scan", 4096, NULL, 4, NULL) != pdPASS) {
         ESP_LOGE(TAG, "nie moge utworzyc zadania skanujacego");
         return ESP_ERR_NO_MEM;
     }
 
-    nimble_port_freertos_init(nimble_host_task);
-    ESP_LOGI(TAG, "start: szukam do %d urzadzen HID", HID_HOST_MAX_DEVICES);
     return ESP_OK;
 }

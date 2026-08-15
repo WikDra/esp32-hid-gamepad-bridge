@@ -20,8 +20,13 @@
 #include "nvs_flash.h"
 #include "sdkconfig.h"
 
+#include "ble_stack.h"
+
 #if CONFIG_APP_ENABLE_HID_HOST
 #include "ble_hid_host.h"
+#endif
+#if CONFIG_APP_ENABLE_GAMEPAD
+#include "ble_gamepad.h"
 #endif
 
 static const char *TAG = "bridge";
@@ -79,13 +84,20 @@ void app_main(void)
 
     log_boot_banner();
 
+    /*
+     * Kolejnosc jest wymuszona przez to, ze ble_hs_cfg jest globalne i esp_hidh_init()
+     * je nadpisuje. ble_stack_start() ustawia nasze callbacki na koniec (AGENTS.md 4.2).
+     */
+    ESP_ERROR_CHECK(ble_stack_init());
+
 #if CONFIG_APP_ENABLE_HID_HOST
     ESP_ERROR_CHECK(ble_hid_host_start());
 #endif
-
 #if CONFIG_APP_ENABLE_GAMEPAD
-    ESP_LOGW(TAG, "rola pada wlaczona w Kconfig, ale jeszcze nie zaimplementowana (Etap 2)");
+    ESP_ERROR_CHECK(ble_gamepad_start());
 #endif
+
+    ESP_ERROR_CHECK(ble_stack_start());
 
     /* Heartbeat: odroznia "firmware stoi i czeka" od "firmware sie wysypal".
      * Przy okazji pokazuje pamiec, co jest kluczowe na C3 bez PSRAM. */
@@ -94,12 +106,18 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(5000));
         tick += 5;
 
+#if CONFIG_APP_ENABLE_GAMEPAD
+        const char *pad = ble_gamepad_is_ready() ? "gotowy" : "brak PC";
+#else
+        const char *pad = "wyl.";
+#endif
+
 #if CONFIG_APP_ENABLE_HID_HOST
         hid_input_state_t st;
         ble_hid_host_take_state(&st);
-        ESP_LOGI(TAG, "alive %" PRIu32 " s | heap %" PRIu32 " B (min %" PRIu32 " B) | urzadzen %d (kbd=%d mouse=%d)",
+        ESP_LOGI(TAG, "alive %" PRIu32 " s | heap %" PRIu32 " B (min %" PRIu32 " B) | wejscia %d (kbd=%d mouse=%d) | pad %s",
                  tick, (uint32_t)esp_get_free_heap_size(), (uint32_t)esp_get_minimum_free_heap_size(),
-                 ble_hid_host_device_count(), st.keyboard_connected, st.mouse_connected);
+                 ble_hid_host_device_count(), st.keyboard_connected, st.mouse_connected, pad);
         if (st.mouse_dx || st.mouse_dy || st.mouse_wheel) {
             ESP_LOGI(TAG, "  ruch myszy od ostatniego odczytu: dx=%" PRId32 " dy=%" PRId32 " wheel=%" PRId32,
                      st.mouse_dx, st.mouse_dy, st.mouse_wheel);
@@ -112,7 +130,8 @@ void app_main(void)
             ble_hid_host_log_devices();
         }
 #else
-        ESP_LOGI(TAG, "alive %" PRIu32 " s | heap %" PRIu32 " B", tick, (uint32_t)esp_get_free_heap_size());
+        ESP_LOGI(TAG, "alive %" PRIu32 " s | heap %" PRIu32 " B | pad %s",
+                 tick, (uint32_t)esp_get_free_heap_size(), pad);
 #endif
     }
 }

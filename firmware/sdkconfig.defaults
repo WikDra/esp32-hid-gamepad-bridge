@@ -59,3 +59,12 @@ CONFIG_BT_NIMBLE_SVC_HID_MAX_RPTS=1
 # w stacku oszczedza nam wlasnej logiki reconnect.
 CONFIG_BT_NIMBLE_ENABLE_CONN_REATTEMPT=y
 CONFIG_BT_NIMBLE_MAX_CONN_REATTEMPT=3
+
+# --- Aplikacja ---
+# ble_svc_hid_add() dostaje strukture przez wartosc (~800 B przy MAX_RPTS=1),
+# a wolamy je z app_main. Domyslne 3584 B jest zbyt ciasne.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=5120
+
+# Etap 2: pad chodzi syntetycznym wzorcem, zeby dalo sie sprawdzic joy.cpl bez
+# klawiatury i myszy. WYLACZYC w Etapie 3, gdy wejdzie realne mapowanie.
+CONFIG_APP_GAMEPAD_SELFTEST=y
