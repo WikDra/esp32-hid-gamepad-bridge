@@ -595,6 +595,56 @@ static int gap_disconnect_listener(struct ble_gap_event *event, void *arg)
     if (event->type == BLE_GAP_EVENT_CONNECT && event->connect.status == 0) {
         ESP_LOGI(TAG, "polaczenie nawiazane, conn_handle=%u (limit tablic w NimBLE: %d)",
                  event->connect.conn_handle, CONFIG_BT_NIMBLE_MAX_CONNECTIONS);
+
+        /*
+         * Profil HOGP wymaga, zeby central zaszyfrowal link przed korzystaniem
+         * z uslugi HID. esp_hidh NIE ROBI TEGO NIGDY (grep po security_initiate
+         * w components/esp_hid: zero trafien) - liczy wylacznie na to, ze
+         * GATTC_AUTO_PAIR zareaguje na odmowe odczytu charakterystyki.
+         *
+         * Dla klawiatury to dziala przez przypadek: ona odmawia odczytu bez
+         * uwierzytelnienia, wiec AUTO_PAIR wchodzi. Mysz AJ159 Pro pozwala czytac
+         * bez szyfrowania, wiec nic tego nie wywoluje - link zostaje jawny,
+         * a mysz milczy, bo raportow HID przez jawny link nie wysyla. Objaw:
+         * "podlaczona, ale nie reaguje", z mrugajaca dioda parowania.
+         *
+         * Robimy wiec to, co powinien robic kazdy central HOGP. Przy istniejacym
+         * bondzie to samo szyfrowanie kluczem z NVS; bez bondu - parowanie.
+         */
+        struct ble_gap_conn_desc desc;
+        if (ble_gap_conn_find(event->connect.conn_handle, &desc) == 0 &&
+            desc.role == BLE_GAP_ROLE_MASTER && !desc.sec_state.encrypted) {
+            int rc = ble_gap_security_initiate(event->connect.conn_handle);
+            if (rc != 0 && rc != BLE_HS_EALREADY) {
+                ESP_LOGW(TAG, "nie moge zainicjowac szyfrowania: rc=%d", rc);
+            }
+        }
+        return 0;
+    }
+
+    /*
+     * Raporty HID przez BLE wymagaja zaszyfrowanego linku. Bez tego urzadzenie
+     * podlacza sie, oddaje odczyty GATT, a raportow nie wysyla - objaw wygladajacy
+     * jak "polaczone, ale nie reaguje". Logujemy wiec wynik szyfrowania i parowania
+     * dla KAZDEGO linku, zeby nie trzeba bylo tego zgadywac.
+     */
+    if (event->type == BLE_GAP_EVENT_ENC_CHANGE) {
+        struct ble_gap_conn_desc desc;
+        if (ble_gap_conn_find(event->enc_change.conn_handle, &desc) == 0) {
+            ESP_LOGI(TAG, "szyfrowanie: conn_handle=%u status=%d | enc=%d auth=%d bond=%d",
+                     event->enc_change.conn_handle, event->enc_change.status,
+                     desc.sec_state.encrypted, desc.sec_state.authenticated,
+                     desc.sec_state.bonded);
+        } else {
+            ESP_LOGW(TAG, "szyfrowanie: conn_handle=%u status=%d (brak deskryptora)",
+                     event->enc_change.conn_handle, event->enc_change.status);
+        }
+        return 0;
+    }
+
+    if (event->type == BLE_GAP_EVENT_PARING_COMPLETE) {
+        ESP_LOGI(TAG, "parowanie zakonczone: conn_handle=%u status=%d",
+                 event->pairing_complete.conn_handle, event->pairing_complete.status);
         return 0;
     }
 

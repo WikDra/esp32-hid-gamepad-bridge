@@ -11,6 +11,15 @@ CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
 
+# Gdy urzadzenie zapomni bondu (np. po sparowaniu z innym hostem), probuje sparowac
+# sie od nowa, mimo ze my wciaz mamy stary klucz. NimBLE zglasza wtedy
+# BLE_GAP_EVENT_REPEAT_PAIRING - ale pyta o decyzje FUNKCJE ZWROTNA POLACZENIA
+# (ble_gap_repeat_pairing_event() wola ble_gap_call_conn_event_cb), a dla linkow
+# centralnych trzyma ja esp_hidh, ktory tego zdarzenia nie obsluguje. Globalny
+# listener tu nie pomoze, bo jego wynik jest ignorowany. Ta opcja kaze wiec stackowi
+# samemu usunac nieaktualny bond i powtorzyc parowanie.
+CONFIG_BT_NIMBLE_HANDLE_REPEAT_PAIRING_DELETION=y
+
 # Trzy jednoczesne linki: 2x central (klawiatura, mysz) + 1x peripheral (PC).
 #
 # ALE wartosc jest USTAWIONA WYZEJ NIZ 3 CELOWO, i to jest wazne. W ble_gap.c:323

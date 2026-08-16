@@ -71,6 +71,8 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | **Łatka §4.27 potwierdzona na sprzęcie** | w jednym logu: otwarcie 1 (mysz), 2 (klawiatura, `razem 2/2`), rozłączenie myszy, `zasoby odlaczonego urzadzenia zwolnione`, **otwarcie 3 (mysz) bez crashu**, znowu `razem 2/2`, potem kolejny cykl rozłączenia. Wcześniej trzecie otwarcie padało niezawodnie |
 | Brak wycieku między cyklami | `heap 190480 B` z dwoma urządzeniami, `191448 B` po rozłączeniu, `min 180912 B` przez 115 s i kilka cykli |
 | Zabezpieczenie z §4.23 zadziałało w praktyce | gdy mysz zasnęła w trakcie odkrywania usług klawiatury, link padł (`reason=520`), `esp_hidh_dev_open()` zawisło i firmware zrobił kontrolowany restart zamiast zawisnąć na stałe |
+| **Naprawa §4.28 potwierdzona na sprzęcie** | `polaczenie nawiazane, conn_handle=4` → `mtu update event; conn_handle=4 mtu=247` → **bez paniki**, 180 s pracy, `razem 2/2 urzadzen`. To była niezawodna recepta na crash |
+| **Mysz milczała po ponownym połączeniu** | przyczyna: `esp_hidh` nigdy nie inicjuje szyfrowania, a HOGP tego wymaga (§4.29). Naprawione, potwierdzone logiem: `szyfrowanie: conn_handle=3 status=0 \| enc=1 bond=1`, `zapis CCCD: status=0` ×6, `MOU map=0 id=5 len=7 [00 35 00 7e 00 00 00]` |
 | Naprawa | lokalna kopia komponentu `esp_hid` z jednolinijkową łatką + kontrole granic. Potwierdzone, że build bierze naszą kopię (`check_local_esp_hid.py`) i że łatka jest w binarce. **Weryfikacja cyklu uśpienia na sprzęcie do zrobienia** |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
@@ -492,7 +494,7 @@ Trzy rzeczy, które wyglądają na awarię, a nią nie są:
 | Linia | Co to |
 |---|---|
 | `Read complete; status=14` | `BLE_HS_EDONE` — koniec odczytu, nie błąd |
-| `Subscribe complete; status=259` / `269` | `0x103` i `0x10D` to błędy ATT 0x03 (Write Not Permitted) i 0x0D (Invalid Attribute Value Length) — `esp_hidh` próbuje włączyć notyfikacje na charakterystykach, które ich nie mają (raporty OUTPUT/VENDOR). Subskrypcja raportu klawiatury kończy się `status=0` |
+| `Subscribe complete; status=259` / `269` | **Nie dotyczy subskrypcji.** To wynik `register_for_notify()`, które pisze `{1,0}` do uchwytu **wartości** charakterystyki, a nie do CCCD — ATT 0x03 (Write Not Permitted) jest tam normalny. Prawdziwa subskrypcja to `zapis CCCD` (§4.29) |
 | `ogf=0x08, ocf=0x0013, hci_err=0x212` | `HCI_LE_Connection_Update` odrzucony przez kontroler. **NIE jest nieszkodliwy** — koreluje z crashem z §4.21, który wystąpił dokładnie w timerze tej procedury. Połączenie działa dalej z dotychczasowymi parametrami, ale to jest podejrzany numer jeden przy każdej niestabilności |
 
 ### 4.19 Beacon Swift Pair z Windows w wynikach skanu
@@ -872,6 +874,70 @@ poza zakres nadal by nastąpił, gdyby uchwyt przekroczył 9. Prawidłowa popraw
 granicy w `ble_gap.c`, ale komponentu `bt` nie da się rozsądnie sforkować (zawiera też
 prekompilowane biblioteki kontrolera), inaczej niż `esp_hid` z §4.27.
 
+### 4.29 `esp_hidh` nigdy nie inicjuje szyfrowania — mysz podłączona, ale milczy
+
+Objaw: mysz łączy się, odkrywanie usług przechodzi w całości, przychodzą notyfikacje
+baterii — i **ani jednego raportu HID** przez 145 s. Na myszy mruga dioda parowania.
+Klawiatura na tym samym mostku działa bez zarzutu.
+
+Profil HOGP wymaga, żeby central **zaszyfrował link** przed korzystaniem z usługi HID.
+W `components/esp_hid` nie ma ani jednego wywołania `ble_gap_security_initiate()`
+(grep po `security_initiate`: zero trafień). Komponent liczy wyłącznie na to, że
+`CONFIG_BT_NIMBLE_GATTC_AUTO_PAIR` zareaguje na odmowę odczytu charakterystyki.
+
+Dla klawiatury to działa **przez przypadek**: AULA F99 Pro odmawia odczytu bez
+uwierzytelnienia, więc AUTO_PAIR wchodzi i link zostaje zaszyfrowany (to jest §4.1).
+AJ159 Pro pozwala czytać bez szyfrowania, więc nic tego nie wywołuje — link zostaje jawny.
+Mysz wtedy nie wysyła raportów HID, bo przez jawny link nie wolno, ale usługa baterii
+szyfrowania nie wymaga i notyfikuje normalnie. Stąd mylący obraz: „podłączona, dane
+płyną, a nie reaguje".
+
+Dlaczego wcześniej działało: przy pierwszym parowaniu użytkownik wciska przycisk na myszy,
+co wymusza SMP i link jest szyfrowany. Objaw wychodzi dopiero przy **ponownym** połączeniu
+z gotowym bondem, gdzie już nic szyfrowania nie inicjuje.
+
+**Naprawa:** w naszym listenerze GAP, na `BLE_GAP_EVENT_CONNECT` dla roli MASTER,
+wołamy `ble_gap_security_initiate()`. Przy istniejącym bondzie to samo szyfrowanie
+kluczem z NVS, bez bondu — parowanie. Rola jest sprawdzana, więc połączenia pada z PC
+to nie dotyczy (tam szyfrowanie inicjuje Windows).
+
+Potwierdzenie na sprzęcie, w jednym logu:
+
+```
+szyfrowanie: conn_handle=3 status=0 | enc=1 auth=0 bond=1     <- tej linii nie bylo NIGDY wczesniej
+zapis CCCD: status=0 conn_handle=3 attr_handle=52 (i 48, 44, 40, 36, 32)
+MOU map=0 id=5 len=7 [00 35 00 7e 00 00 00]                  <- raport ruchu
+```
+
+**Druga zmiana, na wypadek nieaktualnego bondu:**
+`CONFIG_BT_NIMBLE_HANDLE_REPEAT_PAIRING_DELETION=y`. Gdy urządzenie zapomni bondu,
+próbuje parować się od nowa, a NimBLE pyta wtedy o decyzję **funkcję zwrotną połączenia**
+(`ble_gap_repeat_pairing_event()` → `ble_gap_call_conn_event_cb()`). Dla linków centralnych
+trzyma ją `esp_hidh`, który tego zdarzenia nie obsługuje, a globalny listener nie pomoże,
+bo jego wynik jest ignorowany. Ta opcja każe stackowi samemu usunąć nieaktualny bond
+i powtórzyć parowanie.
+
+#### Pułapka diagnostyczna: `Subscribe complete; status=259` to NIE błąd subskrypcji
+
+Zmyliło mnie na starcie, więc warto to zapamiętać. `attach_report_listeners()` robi na
+każdy raport **dwie** operacje:
+
+```c
+register_for_notify(dev->ble.conn_id, report->handle);   /* zapis {1,0} w uchwyt WARTOSCI */
+if (report->ccc_handle)
+    write_char_descr(..., report->ccc_handle, ...);      /* PRAWDZIWA subskrypcja */
+```
+
+Pierwsza pisze do uchwytu **wartości** charakterystyki raportu, a nie do CCCD — więc
+ATT 0x03 (Write Not Permitted) jest tam całkowicie normalny i nic nie znaczy. To właśnie
+ten zapis drukuje `Subscribe complete`. Prawdziwa subskrypcja leci przez `on_write()`,
+które w oryginale loguje na **DEBUG**, czyli w praktyce niewidocznie.
+
+W naszej kopii komponentu ten log jest podniesiony do INFO i nazwany `zapis CCCD`,
+a dodatkowo logujemy `subskrypcja: id=… ccc_handle=…` oraz ostrzeżenie, gdy raport INPUT
+zostaje pominięty. Widać wtedy od razu, że AJ159 Pro ma dwa raporty INPUT
+w trybie BOOT (`protocol_mode=0`), które są pomijane **słusznie**, bo używamy trybu Report.
+
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 
 Źródło: `D:\wysypisko\openlara_esp32\retro-go\openlara\components\OpenLara\src\platform\retrogo\`
@@ -954,9 +1020,11 @@ Do zamknięcia PoC zostaje:
 
 - [x] **weryfikacja łatki z §4.27: cykl uśpienie → powrót myszy bez crashu.** Potwierdzone
       logiem: otwarcie 3 przechodzi, dwa cykle rozłączenia i powrotu w jednym przebiegu.
-- [ ] **weryfikacja naprawy z §4.28: klawiatura jako pierwsza, mysz jako druga.** To była
-      niezawodna recepta na crash; teraz powinno przejść. W logu szukać
-      `polaczenie nawiazane, conn_handle=4` bez paniki po `mtu update event … mtu=247`,
+- [x] **weryfikacja naprawy z §4.28: klawiatura jako pierwsza, mysz jako druga.** Przeszło:
+      `conn_handle=4`, `mtu update event … mtu=247`, bez paniki, 180 s i `razem 2/2`.
+- [x] **naprawa §4.29: mysz milczała po ponownym połączeniu** (brak szyfrowania linku).
+      Potwierdzone logiem: `enc=1 bond=1`, wszystkie `zapis CCCD: status=0`, raporty `MOU`.
+- [ ] potwierdzenie w `joy.cpl`, że ruch myszy znowu rusza prawym analogiem,
 - [ ] dobranie `CONFIG_APP_MOUSE_SCALE_DIV` do gustu,
 - [ ] pomiar opóźnienia wejście → pad.
 

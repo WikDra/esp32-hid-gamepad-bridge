@@ -10,7 +10,6 @@
 #   patch -p0 < PATCH.diff
 #   wsl python3 scripts/check_local_esp_hid.py
 #
-# Rozniacy sie plik jest dokladnie jeden: src/nimble_hidh.c
 --- src/nimble_hidh.c
 +++ src/nimble_hidh.c
 @@ -42,6 +42,14 @@
@@ -114,3 +113,41 @@
                      uint16_t dcount = 20;
                      uint16_t chr_end_handle;
                      if (c + 1 < ccount) {
+@@ -590,8 +632,14 @@
+ 
+     assert(conn_id == conn_handle);
+ 
+-    MODLOG_DFLT(DEBUG, "write complete; status=%d conn_handle=%d "
+-                "attr_handle=%d\n",
++    /*
++     * LOKALNA LATKA (diagnostyka): oryginal loguje to na DEBUG, czyli w praktyce
++     * niewidocznie. A to jest WLASCIWY wynik subskrypcji - zapis do CCCD. Widoczne
++     * w logu "Subscribe complete" pochodzi z register_for_notify(), ktore pisze do
++     * uchwytu WARTOSCI charakterystyki, wiec jego ATT 0x03 (Write Not Permitted)
++     * jest normalny i myli przy diagnozie.
++     */
++    MODLOG_DFLT(INFO, "zapis CCCD: status=%d conn_handle=%d attr_handle=%d\n",
+                 error->status, conn_handle, attr->handle);
+     SEND_CB();
+ 
+@@ -623,11 +671,20 @@
+     while (report) {
+         /* subscribe to notifications */
+         if ((report->permissions & BLE_GATT_CHR_PROP_NOTIFY) != 0 && report->protocol_mode == ESP_HID_PROTOCOL_MODE_REPORT) {
++            /* LOKALNA LATKA (diagnostyka): bez tego nie widac, ktory raport
++             * w ogole dostal uchwyt CCCD. Brak uchwytu = brak notyfikacji,
++             * czyli urzadzenie milczy, mimo ze jest podlaczone. */
++            ESP_LOGI(TAG, "subskrypcja: id=%u typ=%u handle=%u ccc_handle=%u",
++                     report->report_id, report->report_type, report->handle,
++                     report->ccc_handle);
+             register_for_notify(dev->ble.conn_id, report->handle);
+             if (report->ccc_handle) {
+                 /* Write CCC descr to enable notifications */
+                 write_char_descr(dev->ble.conn_id, report->ccc_handle, 2, (uint8_t *)&ccc_data);
+             }
++        } else if (report->report_type == ESP_HID_REPORT_TYPE_INPUT) {
++            ESP_LOGW(TAG, "raport INPUT id=%u POMINIETY w subskrypcji (permissions=0x%02x, protocol_mode=%u)",
++                     report->report_id, report->permissions, report->protocol_mode);
+         }
+         report = report->next;
+     }
