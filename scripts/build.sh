@@ -34,6 +34,13 @@ BUILD_DIR="build.$TARGET"
 SDKCONFIG="sdkconfig.$TARGET"
 DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.$TARGET"
 
+# Lokalne nadpisania - gitignored. Sluzy do wlaczania rzeczy, ktorych nie chcemy
+# w repo, np. diagnostycznego watchpointa (CONFIG_APP_DEBUG_WATCH_ADDR).
+if [ -f "sdkconfig.local" ]; then
+    DEFAULTS="$DEFAULTS;sdkconfig.local"
+    echo "== uzywam nadpisan z sdkconfig.local"
+fi
+
 echo "== target=$TARGET build_dir=$BUILD_DIR"
 idf.py -B "$BUILD_DIR" -D SDKCONFIG="$SDKCONFIG" -D SDKCONFIG_DEFAULTS="$DEFAULTS" set-target "$TARGET"
 

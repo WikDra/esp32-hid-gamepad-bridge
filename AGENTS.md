@@ -62,9 +62,10 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | Bateria obu urządzeń czytana | mysz `bateria 83%`, klawiatura `bateria 100%` |
 | **Mysz → prawy analog działa end-to-end** | właściciel potwierdził w `joy.cpl`: lewo/prawo to oś Z, góra/dół to obrót Z (zgodne z deskryptorem, §4.24) |
 | Kółko i przyciski myszy | `btn=0x001` / `0x002` w raporcie pada, kółko czytane jako `int8` |
-| Crash w timerze GAP przy łączeniu z myszą | wystąpił **raz**, `Load access fault` wewnątrz NimBLE — patrz §4.21. Złagodzenie wgrane, **skuteczność niepotwierdzona** |
+| Crash w timerze GAP przy łączeniu z myszą | wystąpił **dwa razy**, `Load access fault` wewnątrz NimBLE. Powiększenie puli wpisów **nie pomogło** (§4.21). Obejście: budzić mysz jako pierwszą |
 | **Blokada `esp_hidh_dev_open()` na zawsze** | znaleziona i obsłużona — realny błąd, ale **nie** przyczyna objawu z rekonekcją (§4.23) |
-| **Brak `ESP_HIDH_CLOSE_EVENT` na NimBLE** | to była przyczyna „mysz po zaśnięciu nie wraca": tablica trzymała odłączone urządzenie 145 s, licznik `2/2` blokował skanowanie (§4.25). Rozłączenie wykrywamy teraz z GAP. **Do potwierdzenia na sprzęcie** |
+| **Brak `ESP_HIDH_CLOSE_EVENT` na NimBLE** | to była przyczyna „mysz po zaśnięciu nie wraca": tablica trzymała odłączone urządzenie 145 s, licznik `2/2` blokował skanowanie (§4.25) |
+| Wykrywanie rozłączeń z GAP działa | w logu po 710 s pracy tablica jest pusta (`wejscia 0`), a zaraz potem klawiatura łączy się od nowa. Przed poprawką wpisy zostawały na zawsze |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
 
@@ -261,32 +262,60 @@ Linia 1460 to `ticks = entry->exp_os_ticks - now;` w pętli po liście
 kodzie: nigdzie nie dotykamy `ble_gap_update_entries` ani nie wołamy
 `ble_gap_update_params()`.
 
-Prawdopodobna przyczyna: pula wpisów tej procedury ma w ESP-IDF **rozmiar 1**:
+**Pierwsza hipoteza (pula wpisów) była BŁĘDNA.** Pula ma w ESP-IDF rozmiar 1:
 
 ```
 esp_nimble_cfg.h:698   #define MYNEWT_VAL_BLE_GAP_MAX_PENDING_CONN_PARAM_UPDATE (1)
 ```
 
-Rozsądne dla urządzenia z jednym linkiem, ale my mamy trzy jednoczesne połączenia i każdy
-peer może zażądać zmiany parametrów. W logu towarzyszą temu **powtarzające się** odrzucenia
-`HCI_LE_Connection_Update` (`ogf=0x08 ocf=0x0013 hci_err=0x212 INV_HCI_CMD_PARMS`) — ta sama
-ścieżka kodu, kilkanaście razy w minucie.
+Powiększyliśmy ją do 4 definicją globalną w `firmware/CMakeLists.txt` (opcji nie ma
+w Kconfig, ale nagłówek używa `#ifndef`; sprawdzone, że definicja trafia do kompilacji
+`ble_gap.c`). **Crash wrócił z identycznym backtrace'em co do linii.** Wpis pozostaje
+w `CMakeLists.txt`, bo pula 1 przy trzech linkach i tak jest za mała, ale to nie była
+przyczyna.
 
-Opcji nie ma w Kconfig, ale nagłówek używa `#ifndef`, więc wystarczy definicja globalna
-w `firmware/CMakeLists.txt`:
+Co wiadomo po drugim wystąpieniu:
 
-```cmake
-idf_build_set_property(COMPILE_DEFINITIONS
-    "MYNEWT_VAL_BLE_GAP_MAX_PENDING_CONN_PARAM_UPDATE=4" APPEND)
-```
+- Backtrace jest **identyczny** w obu przypadkach, do numeru linii.
+- Adres feralnego wskaźnika to `entry = 0x848` (`MTVAL=0x858` to `entry->exp_os_ticks`).
+  `0x848` **nie jest adresem RAM** (DRAM zaczyna się od `0x3FC80000`) — to mały int.
+  Czyli ktoś **nadpisał** pamięć listy, a nie pomylił się w logice listy.
+- Każde `ble_gap_update_entry_free()` w `ble_gap.c` jest poprzedzone
+  `ble_gap_update_entry_remove()`, poza ścieżką błędu w `ble_gap_update_params()`, gdzie
+  wpis nie był jeszcze wstawiony. Czyli nie ma oczywistego „free bez remove".
+- Głowa listy (`ble_gap_update_entries` @ `0x3fc97a24`) **nie leży obok** pamięci puli
+  (`ble_gap_update_entry_mem` @ `0x3fc987a4`) — 3,5 kB odstępu, więc przepełnienie puli
+  nie trafiłoby wprost w głowę.
 
-Sprawdzone, że definicja trafia do kompilacji `ble_gap.c` (grep po `compile_commands.json`).
+Korelacja z logów, cztery obserwacje drugiego połączenia centralnego:
 
-**To jest złagodzenie, nie udowodniona naprawa.** Crash wystąpił raz na kilkanaście
-połączeń, więc brak powtórzenia w jednym teście nie będzie dowodem. Jeśli wróci, następny
-podejrzany to podwójne zwolnienie wpisu na ścieżce błędu `0x212` — wtedy trzeba ustalić, kto
-inicjuje te aktualizacje (najpewniej peer przez L2CAP Connection Parameter Update Request)
-i czy da się je odrzucać.
+| Pierwsze urządzenie | Drugie urządzenie | MTU drugiego | Wynik |
+|---|---|---|---|
+| mysz | klawiatura | 23 | OK |
+| mysz | klawiatura | 23 | OK |
+| klawiatura | **mysz** | **247** | **crash** |
+| klawiatura | **mysz** | **247** | **crash** |
+
+W obu crashach ostatnią linią przed paniką było `mtu update event; conn_handle=4 mtu=247`.
+To jest korelacja, nie dowód — ale wystarczająco mocna, żeby dać **praktyczne obejście:
+budzić mysz jako pierwszą**, żeby dostała pierwsze połączenie centralne.
+
+**Następny krok diagnostyczny (przygotowany, jeszcze nieuruchomiony).** Crash pokazuje
+ofiarę, nie sprawcę. Odwrócenie tego: sprzętowy watchpoint na zapis do głowy listy —
+panika poleci wtedy w momencie psucia struktury, z backtrace'em winowajcy. Włącza się to
+przez `CONFIG_APP_DEBUG_WATCH_ADDR` (patrz `firmware/sdkconfig.local.example`).
+
+Dwie rzeczy, które to umożliwiają:
+
+- symbol jest widoczny w ELF-ie, mimo że jest `static`:
+  `riscv32-esp-elf-nm … | grep ble_gap_update_entries`,
+- legalne zapisy do głowy są **rzadkie albo żadne**: wpis trafia na listę tylko przy
+  `rc == 0` z `ble_gap_update_tx()`, a w naszych logach **każda** aktualizacja kończy się
+  `hci_err=0x212`. Watchpoint powinien więc łapać niemal wyłącznie zapis psujący.
+
+Sprawdzone, że adres `0x3fc97a24` nie przesuwa się po włączeniu samego watchpointa
+(binarka rośnie z `0x92780` do `0x92900`, ale BSS komponentu `bt` zostaje na miejscu),
+więc nie ma problemu „jajko i kura" z odczytem adresu.
 
 Konsekwencja dla §4.18: `hci_err=0x212` na `ocf=0x0013` **nie jest** nieszkodliwe, jak tam
 początkowo zapisano. Wpis poprawiony.

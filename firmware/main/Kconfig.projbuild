@@ -52,4 +52,22 @@ menu "Mostek HID (konfiguracja aplikacji)"
             Przy domyslnych 8 to 32 zliczenia na tik; pomiar na AJ159 Pro pokazal, ze
             spokojny ruch daje ~11 zliczen na tik, czyli okolo 1/3 zakresu.
 
+    config APP_DEBUG_WATCH_ADDR
+        hex "Diagnostyka: adres pilnowany sprzetowym watchpointem (0 = wylaczone)"
+        default 0
+        help
+            Jesli rozne od zera, firmware ustawia na starcie sprzetowy watchpoint na
+            zapis pod ten adres (4 bajty). Przy zapisie leci panika z backtrace'em
+            WINOWAJCY, a nie ofiary - to jedyny sposob, zeby ustalic, kto psuje
+            statyczna strukture w cudzym komponencie.
+
+            Uzyte do sciagania crashu z AGENTS.md 4.21. Adres glowy listy wpisow
+            aktualizacji parametrow polaczenia odczytuje sie z ELF-a:
+
+              riscv32-esp-elf-nm build.esp32c3/hid_gamepad_bridge.elf \\
+                  | grep ble_gap_update_entries
+
+            UWAGA: adres zmienia sie miedzy buildami, wiec po kazdej zmianie kodu
+            trzeba go odczytac ponownie i sprawdzic, czy sie nie przesunal.
+
 endmenu

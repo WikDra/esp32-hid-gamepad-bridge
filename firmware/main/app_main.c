@@ -11,6 +11,7 @@
 #include <stdio.h>
 
 #include "esp_chip_info.h"
+#include "esp_cpu.h"
 #include "esp_flash.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -86,6 +87,20 @@ void app_main(void)
     ESP_ERROR_CHECK(err);
 
     log_boot_banner();
+
+#if CONFIG_APP_DEBUG_WATCH_ADDR
+    /*
+     * Diagnostyka crashu z AGENTS.md 4.21. Crash objawia sie jako odczyt spod
+     * adresu-smiecia w ble_gap_update_next_exp(), czyli OFIARA jest widoczna,
+     * a sprawca nie. Watchpoint na zapis odwraca sytuacje: panika leci w momencie
+     * psucia struktury, z backtrace'em winowajcy.
+     */
+    {
+        void *addr = (void *)(uintptr_t)CONFIG_APP_DEBUG_WATCH_ADDR;
+        esp_err_t werr = esp_cpu_set_watchpoint(0, addr, 4, ESP_CPU_WATCHPOINT_STORE);
+        ESP_LOGW(TAG, "watchpoint na zapis pod %p: %s", addr, esp_err_to_name(werr));
+    }
+#endif
 
     /*
      * Kolejnosc jest wymuszona przez to, ze ble_hs_cfg jest globalne i esp_hidh_init()
