@@ -12,8 +12,35 @@ CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
 
 # Trzy jednoczesne linki: 2x central (klawiatura, mysz) + 1x peripheral (PC).
-# Na C3 limit to 9; kazde polaczenie kosztuje pamiec, wiec trzymamy sie 3.
-CONFIG_BT_NIMBLE_MAX_CONNECTIONS=3
+#
+# ALE wartosc jest USTAWIONA WYZEJ NIZ 3 CELOWO, i to jest wazne. W ble_gap.c:323
+# NimBLE deklaruje cztery tablice wymiarowane liczba polaczen:
+#
+#   uint16_t g_max_tx_time[MYNEWT_VAL(BLE_MAX_CONNECTIONS) + 1];
+#
+# i indeksuje je... uchwytem polaczenia:
+#
+#   g_max_tx_time[conn_handle] = event.data_len_chg.max_tx_time;   /* ble_gap.c:2963 */
+#
+# conn_handle nadaje kontroler i NIE jest to maly indeks ograniczony liczba polaczen.
+# U nas uchwyty to 1, 3 i 4, a przy limicie 3 tablica ma 4 elementy (indeksy 0-3),
+# wiec zapis dla uchwytu 4 wychodzi dokladnie jeden element za koniec:
+#
+#   g_max_tx_time      @ 0x3fc97a24, 4 * 2 B = 8 B  ->  0x3fc97a24..0x3fc97a2b
+#   g_max_tx_time[4]     0x3fc97a24 + 8 = 0x3fc97a2c
+#   ble_gap_update_entries @ 0x3fc97a2c        <- glowa listy GAP, nadpisana
+#
+# Wpisywana wartosc to wynegocjowany maksymalny czas TX, czyli 0x848 = 2120 us
+# (maksimum ze specyfikacji) - i dokladnie taki wskaznik-smiec widzielismy
+# w crashu z AGENTS.md 4.21 (MTVAL 0x858 = 0x848 + offset pola exp_os_ticks).
+#
+# Dlatego padalo tylko wtedy, gdy uchwyt 4 dostawala MYSZ: ona negocjuje LE Data
+# Length Extension, a klawiatura go nie wspiera (hci_err=0x21A), wiec dla niej
+# zdarzenie data_len_chg nie przychodzi i zapisu nie ma.
+#
+# 9 to maksimum dla C3 (range 1 9), czyli tablice maja 10 elementow i pokrywaja
+# kazdy uchwyt, jaki kontroler z BT_CTRL_BLE_MAX_ACT=6 moze wydac.
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=9
 # Tyle samo bondow, ile polaczen, plus zapas. Na sprzecie widac "bondow w NVS: 3"
 # przy trzech urzadzeniach, czyli limit 3 byl wypelniony co do sztuki - a wtedy
 # kazde nowe parowanie (np. klawiatura wracajaca z nowym adresem tozsamosci)

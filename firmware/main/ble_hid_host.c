@@ -586,6 +586,18 @@ static struct ble_gap_event_listener s_gap_listener;
 
 static int gap_disconnect_listener(struct ble_gap_event *event, void *arg)
 {
+    /*
+     * Uchwyt polaczenia trafia w NimBLE do tablic wymiarowanych liczba polaczen
+     * (ble_gap.c:323, indeksowanie przez conn_handle - patrz AGENTS.md 4.28).
+     * Logujemy go, zeby bylo widac, w jakim zakresie kontroler je wydaje; gdyby
+     * przekroczyl CONFIG_BT_NIMBLE_MAX_CONNECTIONS, wrocilby crash z 4.21.
+     */
+    if (event->type == BLE_GAP_EVENT_CONNECT && event->connect.status == 0) {
+        ESP_LOGI(TAG, "polaczenie nawiazane, conn_handle=%u (limit tablic w NimBLE: %d)",
+                 event->connect.conn_handle, CONFIG_BT_NIMBLE_MAX_CONNECTIONS);
+        return 0;
+    }
+
     if (event->type != BLE_GAP_EVENT_DISCONNECT) {
         return 0;
     }

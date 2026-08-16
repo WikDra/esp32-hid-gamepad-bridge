@@ -88,20 +88,6 @@ void app_main(void)
 
     log_boot_banner();
 
-#if CONFIG_APP_DEBUG_WATCH_ADDR
-    /*
-     * Diagnostyka crashu z AGENTS.md 4.21. Crash objawia sie jako odczyt spod
-     * adresu-smiecia w ble_gap_update_next_exp(), czyli OFIARA jest widoczna,
-     * a sprawca nie. Watchpoint na zapis odwraca sytuacje: panika leci w momencie
-     * psucia struktury, z backtrace'em winowajcy.
-     */
-    {
-        void *addr = (void *)(uintptr_t)CONFIG_APP_DEBUG_WATCH_ADDR;
-        esp_err_t werr = esp_cpu_set_watchpoint(0, addr, 4, ESP_CPU_WATCHPOINT_STORE);
-        ESP_LOGW(TAG, "watchpoint na zapis pod %p: %s", addr, esp_err_to_name(werr));
-    }
-#endif
-
     /*
      * Kolejnosc jest wymuszona przez to, ze ble_hs_cfg jest globalne i esp_hidh_init()
      * je nadpisuje. ble_stack_start() ustawia nasze callbacki na koniec (AGENTS.md 4.2).
@@ -124,6 +110,25 @@ void app_main(void)
 #endif
 
     ESP_ERROR_CHECK(ble_stack_start());
+
+#if CONFIG_APP_DEBUG_WATCH_ADDR
+    /*
+     * Diagnostyka crashu z AGENTS.md 4.21. Crash objawia sie jako odczyt spod
+     * adresu-smiecia w ble_gap_update_next_exp(), czyli OFIARA jest widoczna,
+     * a sprawca nie. Watchpoint na zapis odwraca sytuacje: panika leci w momencie
+     * psucia struktury, z backtrace'em winowajcy.
+     *
+     * UZBRAJAMY PO SYNCHRONIZACJI STACKU. Wczesniej lapalo to legalny zapis
+     * z ble_gap_init() (ble_gap.c:9113, SLIST_INIT), co dawalo petle restartow
+     * juz przy starcie.
+     */
+    ble_stack_wait_synced(5000);
+    {
+        void *addr = (void *)(uintptr_t)CONFIG_APP_DEBUG_WATCH_ADDR;
+        esp_err_t werr = esp_cpu_set_watchpoint(0, addr, 4, ESP_CPU_WATCHPOINT_STORE);
+        ESP_LOGW(TAG, "watchpoint na zapis pod %p: %s", addr, esp_err_to_name(werr));
+    }
+#endif
 
     /* Heartbeat: odroznia "firmware stoi i czeka" od "firmware sie wysypal".
      * Przy okazji pokazuje pamiec, co jest kluczowe na C3 bez PSRAM. */

@@ -62,7 +62,7 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | Bateria obu urządzeń czytana | mysz `bateria 83%`, klawiatura `bateria 100%` |
 | **Mysz → prawy analog działa end-to-end** | właściciel potwierdził w `joy.cpl`: lewo/prawo to oś Z, góra/dół to obrót Z (zgodne z deskryptorem, §4.24) |
 | Kółko i przyciski myszy | `btn=0x001` / `0x002` w raporcie pada, kółko czytane jako `int8` |
-| Crash w timerze GAP przy łączeniu z myszą | wystąpił **dwa razy**, `Load access fault` wewnątrz NimBLE. Powiększenie puli wpisów **nie pomogło** (§4.21). Obejście: budzić mysz jako pierwszą |
+| Crash w timerze GAP przy łączeniu z myszą | wystąpił **cztery razy**, `Load access fault`. **PRZYCZYNA ZNALEZIONA I NAPRAWIONA (§4.28):** NimBLE indeksuje `g_max_tx_time[]` uchwytem połączenia, a wymiaruje liczbą połączeń — zapis dla uchwytu 4 trafiał w głowę listy GAP. Limit podniesiony 3 → 9 |
 | **Blokada `esp_hidh_dev_open()` na zawsze** | znaleziona i obsłużona — realny błąd, ale **nie** przyczyna objawu z rekonekcją (§4.23) |
 | **Brak `ESP_HIDH_CLOSE_EVENT` na NimBLE** | to była przyczyna „mysz po zaśnięciu nie wraca": tablica trzymała odłączone urządzenie 145 s, licznik `2/2` blokował skanowanie (§4.25) |
 | **Cykl uśpienie → powrót myszy przechodzi** | w logu: `wejscie odlaczone f4:ee:… reason=531` → `zasoby odlaczonego urzadzenia zwolnione` → `wejscia 1` → `skan` → `kandydat f4:ee:…` → ponowne połączenie. Wykrywanie rozłączeń z GAP działa |
@@ -309,23 +309,21 @@ Korelacja z logów, cztery obserwacje drugiego połączenia centralnego:
 | klawiatura | **mysz** | **247** | **crash** |
 
 W obu crashach ostatnią linią przed paniką było `mtu update event; conn_handle=4 mtu=247`.
-To jest korelacja, nie dowód — ale wystarczająco mocna, żeby dać **praktyczne obejście:
-budzić mysz jako pierwszą**, żeby dostała pierwsze połączenie centralne.
+Ta korelacja okazała się kluczem: **§4.28 wyjaśnia ją do końca i jest naprawą.** Wynikające
+z niej doraźne obejście („budzić mysz jako pierwszą") nie jest już potrzebne.
 
-**Następny krok diagnostyczny (przygotowany, jeszcze nieuruchomiony).** Crash pokazuje
-ofiarę, nie sprawcę. Odwrócenie tego: sprzętowy watchpoint na zapis do głowy listy —
-panika poleci wtedy w momencie psucia struktury, z backtrace'em winowajcy. Włącza się to
-przez `CONFIG_APP_DEBUG_WATCH_ADDR` (patrz `firmware/sdkconfig.local.example`).
+**Narzędzie, które przy okazji powstało.** Crash pokazuje ofiarę, nie sprawcę. Odwrócenie
+tego: sprzętowy watchpoint na zapis do głowy listy — panika leci wtedy w momencie psucia
+struktury, z backtrace'em winowajcy. Włącza się przez `CONFIG_APP_DEBUG_WATCH_ADDR`
+(patrz `firmware/sdkconfig.local.example`). Ostatecznie przyczynę udało się ustalić bez
+niego, z samej analizy adresów w `nm`, ale narzędzie zostaje — przy następnej takiej
+zagadce oszczędzi wiele godzin.
 
-Dwie rzeczy, które to umożliwiają:
+Uwaga praktyczna z uruchamiania watchpointa: musi być uzbrajany **po** synchronizacji
+stacku. Wcześniej łapał legalny zapis z `ble_gap_init()` (`ble_gap.c:9113`, `SLIST_INIT`),
+co dawało pętlę restartów już przy starcie.
 
-- symbol jest widoczny w ELF-ie, mimo że jest `static`:
-  `riscv32-esp-elf-nm … | grep ble_gap_update_entries`,
-- legalne zapisy do głowy są **rzadkie albo żadne**: wpis trafia na listę tylko przy
-  `rc == 0` z `ble_gap_update_tx()`, a w naszych logach **każda** aktualizacja kończy się
-  `hci_err=0x212`. Watchpoint powinien więc łapać niemal wyłącznie zapis psujący.
-
-Sprawdzone, że adres `0x3fc97a24` nie przesuwa się po włączeniu samego watchpointa
+Sprawdzone, że adres nie przesuwa się po włączeniu samego watchpointa
 (binarka rośnie z `0x92780` do `0x92900`, ale BSS komponentu `bt` zostaje na miejscu),
 więc nie ma problemu „jajko i kura" z odczytem adresu.
 
@@ -810,6 +808,70 @@ i dają zapas przy trzech linkach, ale trzeba wiedzieć, że nie one naprawiły 
 `MYNEWT_VAL_BLE_GAP_MAX_PENDING_CONN_PARAM_UPDATE=4` (§4.21) oraz
 `CONFIG_BT_NIMBLE_GATT_MAX_PROCS=12` (§4.26).
 
+### 4.28 PRZYCZYNA crashu z §4.21: NimBLE indeksuje tablice `conn_handle`, a wymiaruje je liczbą połączeń
+
+Druga **udowodniona** przyczyna, tym razem arytmetycznie co do bajtu. Rozstrzyga zagadkę
+z §4.21, nad którą trzy próby konfiguracyjne przeszły bez efektu.
+
+W `components/bt/host/nimble/nimble/nimble/host/src/ble_gap.c`:
+
+```c
+323: uint16_t g_max_tx_time[MYNEWT_VAL(BLE_MAX_CONNECTIONS) + 1];
+324: uint16_t g_max_rx_time[MYNEWT_VAL(BLE_MAX_CONNECTIONS) + 1];
+325: uint16_t g_max_tx_octets[MYNEWT_VAL(BLE_MAX_CONNECTIONS) + 1];
+326: uint16_t g_max_rx_octets[MYNEWT_VAL(BLE_MAX_CONNECTIONS) + 1];
+...
+2963: g_max_tx_time[conn_handle] = event.data_len_chg.max_tx_time;
+1619: g_max_tx_time[conn_handle] = 0;                 /* to samo przy rozlaczeniu */
+```
+
+Tablice są **indeksowane uchwytem połączenia**, a wymiarowane **liczbą** połączeń. To dwie
+różne rzeczy: `conn_handle` nadaje kontroler i nie jest to mały indeks od zera. W naszym
+systemie uchwyty to `1` (PC), `3` (pierwsze wejście) i `4` (drugie wejście).
+
+Przy `CONFIG_BT_NIMBLE_MAX_CONNECTIONS=3` tablica miała 4 elementy, czyli poprawne indeksy
+0–3. Zapis dla uchwytu `4` wychodził **dokładnie jeden element za koniec**:
+
+```
+g_max_tx_time         @ 0x3fc97a24,  4 * 2 B = 8 B  ->  0x3fc97a24..0x3fc97a2b
+g_max_tx_time[4]        0x3fc97a24 + 8 = 0x3fc97a2c
+ble_gap_update_entries@ 0x3fc97a2c                  <- glowa listy GAP
+```
+
+Adresy odczytane z `nm` na ELF-ie z feralnego builda. Wpisywana wartość to wynegocjowany
+maksymalny czas transmisji: `0x848` = 2120 µs, czyli **maksimum ze specyfikacji Bluetooth**.
+I dokładnie taką wartość widzieliśmy jako wskaźnik-śmieć: w crashu `A4 = 0x00000848`,
+a `MTVAL = 0x858` = `0x848 + 0x10`, gdzie `0x10` to offset pola `exp_os_ticks`
+w `struct ble_gap_update_entry`.
+
+To wyjaśnia **wszystkie** wcześniejsze obserwacje, w szczególności tę, której nie umiałem
+wytłumaczyć — dlaczego kolejność podłączania miała znaczenie:
+
+| Drugie urządzenie (uchwyt 4) | LE Data Length Extension | `data_len_chg` | Wynik |
+|---|---|---|---|
+| klawiatura AULA F99 Pro | **nie wspiera** (`hci_err=0x21A`) | nie przychodzi | brak zapisu, OK |
+| mysz AJAZZ AJ159 Pro | wspiera (MTU 247) | przychodzi | zapis poza tablicę, **crash** |
+
+Klawiatura nie wspiera rozszerzenia długości pakietu, więc kontroler nigdy nie zgłasza dla
+niej zmiany długości danych i felerny zapis się nie wykonuje. Mysz wspiera — i wtedy padało.
+
+**Naprawa: `CONFIG_BT_NIMBLE_MAX_CONNECTIONS` z 3 na 9** (9 to maksimum dla C3). Tablice mają
+teraz po 10 elementów, więc pokrywają każdy uchwyt, jaki kontroler z `BT_CTRL_BLE_MAX_ACT=6`
+może wydać. Potwierdzone w `nm`: odstęp między tablicami wzrósł z 8 B do 20 B, a
+`ble_gap_update_entries` przeniosło się o ponad 4 kB dalej, więc nie jest już sąsiadem.
+
+Koszt: `heap przed BLE` spadł z 272 kB do 269,5 kB, a po starcie stacku heap wynosi
+190824 B wobec 192440 B — czyli ~1,6 kB za sześć dodatkowych slotów. Tanio.
+
+Dodatkowo logujemy uchwyt każdego nawiązanego połączenia
+(`polaczenie nawiazane, conn_handle=1 (limit tablic w NimBLE: 9)`), żeby było widać, w jakim
+zakresie kontroler je wydaje. Gdyby kiedyś przekroczył limit, objaw z §4.21 wróciłby.
+
+Uwaga metodologiczna: to jest **złagodzenie przez wymiarowanie**, nie usunięcie błędu. Zapis
+poza zakres nadal by nastąpił, gdyby uchwyt przekroczył 9. Prawidłowa poprawka to kontrola
+granicy w `ble_gap.c`, ale komponentu `bt` nie da się rozsądnie sforkować (zawiera też
+prekompilowane biblioteki kontrolera), inaczej niż `esp_hid` z §4.27.
+
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 
 Źródło: `D:\wysypisko\openlara_esp32\retro-go\openlara\components\OpenLara\src\platform\retrogo\`
@@ -892,8 +954,9 @@ Do zamknięcia PoC zostaje:
 
 - [x] **weryfikacja łatki z §4.27: cykl uśpienie → powrót myszy bez crashu.** Potwierdzone
       logiem: otwarcie 3 przechodzi, dwa cykle rozłączenia i powrotu w jednym przebiegu.
-- [ ] sprawdzenie, czy crash z §4.21 (inna sygnatura, wątek hosta NimBLE) jeszcze wraca —
-      od czasu łatki nie wystąpił ani raz,
+- [ ] **weryfikacja naprawy z §4.28: klawiatura jako pierwsza, mysz jako druga.** To była
+      niezawodna recepta na crash; teraz powinno przejść. W logu szukać
+      `polaczenie nawiazane, conn_handle=4` bez paniki po `mtu update event … mtu=247`,
 - [ ] dobranie `CONFIG_APP_MOUSE_SCALE_DIV` do gustu,
 - [ ] pomiar opóźnienia wejście → pad.
 
