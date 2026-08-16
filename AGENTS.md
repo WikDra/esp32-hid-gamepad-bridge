@@ -54,7 +54,13 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | **Etap 3 end-to-end: klawiatura → pad → PC** | zweryfikowane w `joy.cpl`; w logu zgadza się każde mapowanie: `04`→`L(-127,0)`, `07`→`L(127,0)`, `1a`→`L(0,-127)`, `16`→`L(0,127)`, `2c`→`btn=0x008`, `02`(LShift)→`0x010`, `01`(LCtrl)→`0x020`, `08`→`0x040`, `14`→`0x080`, `15`→`0x100`, `2b`→`0x400`, `29`→`0x800` |
 | Klawisze niezmapowane są ignorowane | `04` (LAlt) i `35` (`` ` ``) nie zmieniają raportu pada |
 | Pamięć z padem + klawiaturą + mapperem | `heap 188692 B (min 187720 B)` |
-| Mysz AJAZZ AJ159 Pro | **jeszcze nie testowana** — dekodowanie osi nadal zgadywane (§4.10) |
+| **Mysz AJAZZ AJ159 Pro podłączona** | `OPEN f4:ee:25:36:c8:75 'AJ159 PRO' vid=0x3151 pid=0x402c`, `appearance=0x03c2`, 11 raportów |
+| **Układ raportu myszy rozstrzygnięty danymi** | `map=0 id=5 len=7`, osie int16 little-endian — patrz §4.10 |
+| Kółko myszy | `[00 00 00 00 00 ff 00]` → −1, `[… 01 00]` → +1, czyli `d[5]` jako `int8` |
+| **TRZY jednoczesne połączenia BLE na jednym C3** | `podlaczone …, razem 2/2 urzadzen` + `pad gotowy`; `wejscia 2 (kbd=1 mouse=1)`. To było główne ryzyko PoC — **rozstrzygnięte** |
+| Pamięć z trzema połączeniami | `heap 186960 B (min 185096 B)` — zapas ~180 kB |
+| Bateria obu urządzeń czytana | mysz `bateria 83%`, klawiatura `bateria 100%` |
+| Crash w timerze GAP przy łączeniu z myszą | wystąpił **raz**, `Load access fault` wewnątrz NimBLE — patrz §4.21. Złagodzenie wgrane, **skuteczność niepotwierdzona** |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
 
@@ -189,29 +195,114 @@ Uwaga na rozmiar: `ble_svc_hid_add()` bierze strukturę **przez wartość**, a w
 
 ### 4.10 Układ raportu myszy nie jest potwierdzony
 
-`rg_bluetooth.cpp` z OpenLary zakłada boot protocol: `data[1]`/`data[2]` jako 8-bitowe
-`dx`/`dy`. Dla AJAZZ AJ159 Pro **to jest niesprawdzone** — mysz gamingowa o wysokim DPI
-zwykle raportuje 12- lub 16-bitowo, a OpenLara nigdy nie potwierdziła myszy na sprzęcie
-(w jej `AGENTS.md` jest tylko „powinna działać").
+### 4.10 Układ raportu myszy AJ159 Pro — potwierdzony danymi
 
-`ble_hid_host.c` rozpoznaje po długości raportu: `len >= 5` → 16-bit little-endian,
-inaczej 8-bit. **To jest hipoteza, nie wiedza.** Żeby ją rozstrzygnąć danymi, a nie
-zgadywaniem, `handle_mouse_report()` przy pierwszych 40 raportach loguje surowe bajty
-i obok nich **wszystkie trzy** możliwe interpretacje:
+Hipoteza z OpenLary (boot protocol, 8-bitowe `data[1]`/`data[2]`) jest **błędna** dla tej
+myszy. Rzeczywisty raport to `map=0 id=5`, **7 bajtów**:
+
+| Bajt | Znaczenie |
+|---|---|
+| `d[0]` | przyciski: bit 0 lewy, bit 1 prawy, bit 2 środkowy |
+| `d[1..2]` | X, `int16` little-endian |
+| `d[3..4]` | Y, `int16` little-endian |
+| `d[5]` | kółko, `int8` |
+| `d[6]` | zawsze `0` w naszych próbach (prawdopodobnie kółko poziome) |
+
+Rozstrzygający był ten pakiet przy powolnym ruchu w lewo:
 
 ```
-MOU map=0 id=5 len=6 [00 12 00 f4 ff 00]
-  btn=0x00 | 8-bit(  18,   0) 12-bit(   18,   -1) 16-bit(    18,   -12) | uzywam(18,-12)
+MOU map=0 id=5 len=7 [00 ff ff 01 00 00 00]
+  btn=0x00 | 8-bit(  -1,  -1) 12-bit(   -1,   31) 16-bit(    -1,     1)
 ```
 
-- **8-bit**: `d[1]`, `d[2]` — klasyczny boot protocol,
-- **12-bit**: `X = d1 | (d2 & 0x0F) << 8`, `Y = (d2 >> 4) | d3 << 4` — typowe pakowanie
-  w myszach o wyższym DPI,
-- **16-bit**: `d[1..2]`, `d[3..4]` little-endian.
+Odczyt 16-bitowy daje `(-1, +1)`. Odczyt 8-bitowy daje `(-1, -1)`, bo bierze za Y **górny
+bajt X-a** — a dla ujemnego X ten bajt to `ff`, więc 8-bitowa interpretacja zawsze zgłasza
+wtedy fałszywy ruch w górę. Wariant 12-bitowy dawał absurdy (`31` przy ruchu o jedno
+zliczenie).
 
-Przy powolnym ruchu **w jedną oś** poprawny wariant jest widoczny natychmiast: pozostałe
-dwa dają albo śmieci, albo niezerową drugą oś. Po ustaleniu układu heurystykę trzeba
-zastąpić twardym dekodowaniem i opisać tu wynik.
+Drugie potwierdzenie: przy ruchu **wyłącznie w pionie** bajty X były zerowe
+(`[00 00 00 14 00 00 00]`), a odczyt 8-bitowy pokazywał wtedy `Y=0` mimo realnego ruchu.
+
+Kółko: `[00 00 00 00 00 ff 00]` → −1 (w dół), `[… 01 00]` → +1 (w górę).
+
+AJ159 deklaruje też krótszy wariant `id=5 len=3`, czyli klasyczny boot protocol
+z 8-bitowymi osiami — dlatego gałąź 8-bitowa w kodzie zostaje, a wybór idzie po długości
+raportu (`len >= 5` → 16-bit). Raport myszy AULI to `id=5 len=6`, czyli też 16-bit, tylko
+bez ostatniego bajtu.
+
+### 4.21 Crash w `ble_gap_update_next_exp` — pula wpisów aktualizacji ma domyślnie 1 element
+
+Przy **pierwszej** próbie połączenia z myszą (klawiatura już podłączona, PC też):
+
+```
+NimBLE: Connection established
+NimBLE: mtu update event; conn_handle=4 cid=4 mtu=247
+Guru Meditation Error: Core 0 panic'ed (Load access fault). Exception was unhandled.
+MEPC : 0x42013eae   MCAUSE : 0x00000005   MTVAL : 0x00000858
+```
+
+`addr2line` na ELF-ie z tego builda:
+
+```
+0x42013eae  ble_gap_update_next_exp   ble_gap.c:1460   <- SLIST_FOREACH po wpisach
+0x42014b54  ble_gap_update_timer      ble_gap.c:3074
+0x42014922  ble_gap_master_timer      ble_gap.c:2980
+0x4201507e  ble_gap_timer             ble_gap.c:3132
+0x4200e698  ble_hs_timer_exp          ble_hs.c:450
+```
+
+Linia 1460 to `ticks = entry->exp_os_ticks - now;` w pętli po liście
+`ble_gap_update_entries`. `MTVAL=0x858` to adres odczytu, czyli `entry` był wskaźnikiem
+śmieciem — lista zawierała zwisający wpis. To jest **błąd wewnątrz NimBLE**, nie w naszym
+kodzie: nigdzie nie dotykamy `ble_gap_update_entries` ani nie wołamy
+`ble_gap_update_params()`.
+
+Prawdopodobna przyczyna: pula wpisów tej procedury ma w ESP-IDF **rozmiar 1**:
+
+```
+esp_nimble_cfg.h:698   #define MYNEWT_VAL_BLE_GAP_MAX_PENDING_CONN_PARAM_UPDATE (1)
+```
+
+Rozsądne dla urządzenia z jednym linkiem, ale my mamy trzy jednoczesne połączenia i każdy
+peer może zażądać zmiany parametrów. W logu towarzyszą temu **powtarzające się** odrzucenia
+`HCI_LE_Connection_Update` (`ogf=0x08 ocf=0x0013 hci_err=0x212 INV_HCI_CMD_PARMS`) — ta sama
+ścieżka kodu, kilkanaście razy w minucie.
+
+Opcji nie ma w Kconfig, ale nagłówek używa `#ifndef`, więc wystarczy definicja globalna
+w `firmware/CMakeLists.txt`:
+
+```cmake
+idf_build_set_property(COMPILE_DEFINITIONS
+    "MYNEWT_VAL_BLE_GAP_MAX_PENDING_CONN_PARAM_UPDATE=4" APPEND)
+```
+
+Sprawdzone, że definicja trafia do kompilacji `ble_gap.c` (grep po `compile_commands.json`).
+
+**To jest złagodzenie, nie udowodniona naprawa.** Crash wystąpił raz na kilkanaście
+połączeń, więc brak powtórzenia w jednym teście nie będzie dowodem. Jeśli wróci, następny
+podejrzany to podwójne zwolnienie wpisu na ścieżce błędu `0x212` — wtedy trzeba ustalić, kto
+inicjuje te aktualizacje (najpewniej peer przez L2CAP Connection Parameter Update Request)
+i czy da się je odrzucać.
+
+Konsekwencja dla §4.18: `hci_err=0x212` na `ocf=0x0013` **nie jest** nieszkodliwe, jak tam
+początkowo zapisano. Wpis poprawiony.
+
+### 4.22 Mysz raportuje rzadziej, niż chodzi zadanie pada
+
+Z logu: raporty AJ159 Pro przychodzą co ~40–50 ms (~20–25 Hz), a zadanie mapujące chodzi
+100 Hz. Przy prostym przeliczeniu „przyrost z tiku → oś" trzy na cztery tiki widzą zero,
+więc gałka skacze między wychyleniem a środkiem ~20 razy na sekundę. Ponieważ raport pada
+idzie tylko na zmianie stanu, PC dostawał serię naprzemiennych `R(0,x)` i `R(0,0)`.
+
+Dlatego `input_mapper.c` liczy **średnią kroczącą** przyrostu ze stałą czasową 8 tików
+(80 ms), w arytmetyce stałoprzecinkowej ×256. Przy równym ruchu gałka trzyma stabilne
+wychylenie proporcjonalne do prędkości myszy, a po zatrzymaniu wraca do środka w ~80 ms.
+Dzielenie całkowitoliczbowe nie dochodzi do zera, więc przy zerowym przyroście i resztce
+poniżej 1 zliczenia na tik wartość jest zerowana wprost.
+
+Kalibracja z pomiaru: spokojny ruch dawał ~40–60 zliczeń na raport, czyli ~11 zliczeń na
+tik. `CONFIG_APP_MOUSE_SCALE_DIV=8` oznacza pełne wychylenie przy 32 zliczeniach na tik,
+czyli spokojny ruch to ~1/3 zakresu. **Odczucie na sprzęcie jeszcze niesprawdzone.**
 
 ### 4.11 `esp_hidh_dev_open()` potrzebuje grubego stosu w **swoim** zadaniu
 
@@ -359,7 +450,7 @@ Trzy rzeczy, które wyglądają na awarię, a nią nie są:
 |---|---|
 | `Read complete; status=14` | `BLE_HS_EDONE` — koniec odczytu, nie błąd |
 | `Subscribe complete; status=259` / `269` | `0x103` i `0x10D` to błędy ATT 0x03 (Write Not Permitted) i 0x0D (Invalid Attribute Value Length) — `esp_hidh` próbuje włączyć notyfikacje na charakterystykach, które ich nie mają (raporty OUTPUT/VENDOR). Subskrypcja raportu klawiatury kończy się `status=0` |
-| `ogf=0x08, ocf=0x0013, hci_err=0x212` | `HCI_LE_Connection_Update` z parametrami, których kontroler nie przyjął. Połączenie działa dalej z dotychczasowymi parametrami. **Do sprawdzenia przy pomiarach opóźnienia** — jeśli interwał połączenia zostanie duży, to jest pierwszy podejrzany |
+| `ogf=0x08, ocf=0x0013, hci_err=0x212` | `HCI_LE_Connection_Update` odrzucony przez kontroler. **NIE jest nieszkodliwy** — koreluje z crashem z §4.21, który wystąpił dokładnie w timerze tej procedury. Połączenie działa dalej z dotychczasowymi parametrami, ale to jest podejrzany numer jeden przy każdej niestabilności |
 
 ### 4.19 Beacon Swift Pair z Windows w wynikach skanu
 
@@ -465,14 +556,21 @@ bo w razie problemu wiadomo, która rola zawiodła.
 
 - [x] **Etap 0** — szkielet ESP-IDF (target esp32c3, konsola USB Serial/JTAG), skrypty
       build/flash/monitor, boot potwierdzony na COM6.
-- [~] **Etap 1** — tylko host. **Klawiatura zweryfikowana na sprzęcie** (połączenie,
-      raporty, rekonekcja po wybudzeniu, `heap 192100 B`). Mysz AJ159 Pro nadal nietestowana,
-      więc dwa jednoczesne połączenia centralne **nie są jeszcze potwierdzone**.
+- [x] **Etap 1** — tylko host. Klawiatura **i mysz** podłączone jednocześnie, raporty obu
+      w logu, rekonekcja po wybudzeniu. **Trzy jednoczesne połączenia BLE potwierdzone**
+      (`razem 2/2 urzadzen` + `pad gotowy`), `heap 186960 B`.
 - [x] **Etap 2** — pad. Własna usługa HID, syntetyczny wzorzec testowy. Windows paruje,
       `joy.cpl` pokazuje ruch. **Zweryfikowane na sprzęcie 2026-08-16.**
-- [~] **Etap 3** — scalenie. `input_mapper.c` napisany i wystartowany na płytce
-      (`mapowanie wejsc na pada wlaczone (100 Hz, dzielnik myszy 8)`), selftest wyłączony.
-      **Weryfikacja end-to-end w `joy.cpl` jeszcze nie zrobiona.**
+- [~] **Etap 3** — scalenie. Klawiatura → pad **zweryfikowana end-to-end** w `joy.cpl`.
+      Mysz → prawy analog: dekodowanie potwierdzone danymi, wygładzanie dopisane po
+      pomiarze częstotliwości raportów, ale **odczucie na sprzęcie jeszcze niesprawdzone**.
+
+Do zamknięcia PoC zostaje:
+
+- [ ] test odczucia prawego analoga i dobranie `CONFIG_APP_MOUSE_SCALE_DIV`,
+- [ ] sprawdzenie, czy crash z §4.21 wraca po powiększeniu puli wpisów,
+- [ ] pomiar opóźnienia wejście → pad (i przy okazji: czy interwał połączenia nie jest
+      zbyt duży z powodu odrzucanych aktualizacji parametrów).
 
 ## 6. Zasady dla agenta
 

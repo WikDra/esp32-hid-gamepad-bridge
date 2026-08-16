@@ -100,19 +100,52 @@ static int8_t clamp_axis(int32_t v)
 }
 
 /*
- * Mysz podaje przyrosty, a galka analogowa ma polozenie bezwzgledne. Bierzemy
- * przyrost zakumulowany od poprzedniego tiku i skalujemy go dzielnikiem z Kconfig.
- * Efekt uboczny jest pozadany: gdy mysz stanie, przyrost jest zerowy i galka sama
- * wraca do srodka - nie trzeba osobnego wygaszania.
+ * Mysz podaje przyrosty, a galka analogowa ma polozenie bezwzgledne.
+ *
+ * Pulapka widoczna w logu z plytki: AJ159 Pro raportuje ~20-25 razy na sekunde,
+ * a to zadanie chodzi 100 Hz. Przy prostym przeliczeniu "przyrost z tiku -> os"
+ * trzy na cztery tiki widza zero, czyli galka skacze miedzy wychyleniem a srodkiem
+ * ~20 razy na sekunde. Poniewaz raport pada idzie tylko na zmianie stanu, PC
+ * dostaje wtedy serie naprzemiennych R(0,x) i R(0,0) - w grze to wyglada jak
+ * drganie, nie jak ruch.
+ *
+ * Dlatego liczymy srednia kroczaca (EMA) przyrostu ze stala czasowa ~8 tikow
+ * (80 ms). Przy rownym ruchu galka trzyma stabilne wychylenie proporcjonalne do
+ * predkosci myszy, a po zatrzymaniu wraca do srodka w ~80 ms.
  */
+#define EMA_SHIFT 3   /* stala czasowa w tikach: 1 << 3 = 8 */
+#define EMA_FRAC  256 /* arytmetyka staloprzecinkowa, zeby nie gubic wolnych ruchow */
+
+static int32_t s_ema_x;
+static int32_t s_ema_y;
+
+static int32_t ema_step(int32_t *ema, int32_t sample)
+{
+    *ema += ((sample * EMA_FRAC) - *ema) / (1 << EMA_SHIFT);
+    /* Dzielenie calkowitoliczbowe nigdy nie dojdzie do zera przy malej resztce,
+     * a to zostawiloby galke na trwale poza srodkiem. Ponizej 1 zliczenia na tik
+     * i tak nie ma co przenosic. */
+    if (sample == 0 && *ema > -EMA_FRAC && *ema < EMA_FRAC) {
+        *ema = 0;
+    }
+    return *ema / EMA_FRAC;
+}
+
 static void stick_from_mouse(const hid_input_state_t *st, int8_t *out_x, int8_t *out_y)
 {
     int32_t div = CONFIG_APP_MOUSE_SCALE_DIV;
     if (div < 1) {
         div = 1;
     }
-    *out_x = clamp_axis(st->mouse_dx * AXIS_MAX / (div * 16));
-    *out_y = clamp_axis(st->mouse_dy * AXIS_MAX / (div * 16));
+    /* Ile sredniego przyrostu na tik ma dawac pelne wychylenie. Przy div=8 to 32,
+     * co wedlug pomiaru z plytki odpowiada spokojnemu ruchowi na ~1/3 zakresu. */
+    int32_t full_scale = div * 4;
+
+    int32_t avg_x = ema_step(&s_ema_x, st->mouse_dx);
+    int32_t avg_y = ema_step(&s_ema_y, st->mouse_dy);
+
+    *out_x = clamp_axis(avg_x * AXIS_MAX / full_scale);
+    *out_y = clamp_axis(avg_y * AXIS_MAX / full_scale);
 }
 
 static uint16_t buttons_from_state(const hid_input_state_t *st)

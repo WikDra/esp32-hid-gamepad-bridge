@@ -373,14 +373,6 @@ static void handle_keyboard_report(const esp_hidh_event_data_t *p)
     log_hex(prefix, d, len);
 }
 
-/* Rozszerzenie znaku dla pol o niestandardowej szerokosci (mysz czesto pakuje
- * osie w 12 bitow). */
-static int32_t sign_extend(uint32_t v, int bits)
-{
-    uint32_t sign = 1u << (bits - 1);
-    return (int32_t)((v ^ sign) - sign);
-}
-
 static void handle_mouse_report(const esp_hidh_event_data_t *p)
 {
     const uint8_t *d = p->input.data;
@@ -388,21 +380,30 @@ static void handle_mouse_report(const esp_hidh_event_data_t *p)
     int32_t dx, dy, wheel = 0;
 
     /*
-     * UWAGA: uklad raportu myszy nie jest jeszcze potwierdzony na sprzecie.
-     * Klasyczny boot protocol ma 8-bitowe X/Y, ale myszy gamingowe (a AJ159 Pro
-     * to gamingowa, wysokie DPI) czesto raportuja 12- albo 16-bitowo. Rozpoznajemy
-     * po dlugosci raportu, a rownolegle logujemy surowe bajty ORAZ wszystkie trzy
-     * mozliwe interpretacje - dopiero to pozwoli wybrac wlasciwa bez zgadywania.
+     * Uklad POTWIERDZONY na sprzecie (AGENTS.md 4.10), AJAZZ AJ159 Pro, raport
+     * map=0 id=5 len=7:
+     *
+     *   d[0]      przyciski (bit0 lewy, bit1 prawy, bit2 srodkowy)
+     *   d[1..2]   X, int16 little-endian
+     *   d[3..4]   Y, int16 little-endian
+     *   d[5]      kolko, int8
+     *   d[6]      zawsze 0 w naszych probach (prawdopodobnie kolko poziome)
+     *
+     * Rozstrzygajaca byla probka [00 ff ff 01 00 00 00] przy powolnym ruchu w lewo:
+     * odczyt 16-bitowy daje (-1, +1), a 8-bitowy (-1, -1) - ten drugi bierze za Y
+     * gorny bajt X-a. Do tego przy ruchu wylacznie w pion bajty X byly zerowe,
+     * a 8-bitowy odczyt Y pokazywalby wtedy 0 mimo realnego ruchu.
+     *
+     * Krotszy raport (3 B) to klasyczny boot protocol z 8-bitowymi osiami - AJ159
+     * deklaruje taki wariant w tabeli raportow, wiec obsluga zostaje.
      */
     if (len >= 5) {
-        /* buttons, X lo, X hi, Y lo, Y hi, [wheel] - little endian, ze znakiem */
         dx = (int16_t)((uint16_t)d[1] | ((uint16_t)d[2] << 8));
         dy = (int16_t)((uint16_t)d[3] | ((uint16_t)d[4] << 8));
         if (len >= 6) {
             wheel = (int8_t)d[5];
         }
     } else {
-        /* buttons, dx, dy, [wheel] */
         dx = (int8_t)d[1];
         dy = (int8_t)d[2];
         if (len >= 4) {
@@ -417,35 +418,21 @@ static void handle_mouse_report(const esp_hidh_event_data_t *p)
     s_state.mouse_wheel += wheel;
     taskEXIT_CRITICAL(&s_mux);
 
-    /*
-     * Mysz sypie setkami raportow na sekunde, ale pierwsze kilkadziesiat jest
-     * bezcenne: przy powolnym ruchu w jedna os widac od razu, ktora interpretacja
-     * daje sensowne liczby, a ktora smieci. Potem schodzimy na raz na sekunde.
-     */
-    static uint32_t seen;
+    /* Uklad jest ustalony, wiec surowe bajty sa potrzebne juz tylko przy diagnozie
+     * nowego urzadzenia. Zostaje jedna linia na sekunde, zeby dalo sie zobaczyc,
+     * ze raporty w ogole plyna, i wychwycic raport o nieznanej dlugosci. */
     static int64_t last_log_us;
+    static uint16_t last_len;
     int64_t now = esp_timer_get_time();
-    if (seen < 40 || (now - last_log_us) > 1000000) {
+    if ((now - last_log_us) > 1000000 || len != last_len) {
         last_log_us = now;
+        last_len = len;
         char prefix[32];
         snprintf(prefix, sizeof(prefix), "MOU map=%u id=%u", p->input.map_index, p->input.report_id);
         log_hex(prefix, d, len);
-
-        /* Trzy warianty obok siebie. Wybrany jest ten uzyty wyzej. */
-        int32_t x8 = (int8_t)d[1];
-        int32_t y8 = (len >= 3) ? (int8_t)d[2] : 0;
-        int32_t x16 = (len >= 3) ? (int16_t)((uint16_t)d[1] | ((uint16_t)d[2] << 8)) : 0;
-        int32_t y16 = (len >= 5) ? (int16_t)((uint16_t)d[3] | ((uint16_t)d[4] << 8)) : 0;
-        /* Klasyczne pakowanie 12-bitowe: X = d1 | (d2 & 0x0F) << 8, Y = (d2 >> 4) | d3 << 4 */
-        int32_t x12 = (len >= 3) ? sign_extend((uint32_t)d[1] | (((uint32_t)d[2] & 0x0F) << 8), 12) : 0;
-        int32_t y12 = (len >= 4) ? sign_extend((((uint32_t)d[2] >> 4) | ((uint32_t)d[3] << 4)), 12) : 0;
-
-        ESP_LOGI(TAG, "  btn=0x%02x | 8-bit(%4" PRId32 ",%4" PRId32 ")"
-                      " 12-bit(%5" PRId32 ",%5" PRId32 ")"
-                      " 16-bit(%6" PRId32 ",%6" PRId32 ") | uzywam(%" PRId32 ",%" PRId32 ")",
-                 d[0], x8, y8, x12, y12, x16, y16, dx, dy);
+        ESP_LOGI(TAG, "  btn=0x%02x dx=%" PRId32 " dy=%" PRId32 " wheel=%" PRId32,
+                 d[0], dx, dy, wheel);
     }
-    seen++;
 }
 
 static void hidh_callback(void *args, esp_event_base_t base, int32_t id, void *event_data)
