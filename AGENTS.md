@@ -44,7 +44,11 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | Bond pada przeżywa restart C3 | po `reset` PC łączy się sam po 2,1 s, bez akcji użytkownika — czyli `NVS_PERSIST=y` działa |
 | Skaner znajduje klawiaturę | `HID ed:c7:b1:bb:83:01 type=1 rssi=-32 appearance=0x03c1 'AULA-F99Pro'` — adres **Random**, appearance keyboard |
 | Połączenie z klawiaturą się ustanawia | `GAP procedure initiated: connect` → `Connection established` |
-| Odczyt usług klawiatury | **jeszcze nie** — pierwsza próba wywaliła stos zadania, patrz §4.11 |
+| **Klawiatura podłączona i wysyła raporty** | `KBD len=8 [00 00 07 …]` przy pisaniu — keycody `07`/`04`/`16`/`0b`/`0d` to `d`/`a`/`s`/`h`/`j` |
+| Bond klawiatury zapisany w NVS | `bondow w NVS: 2` (PC + klawiatura) po restarcie C3 |
+| Pamięć z padem + klawiaturą | `heap 192140 B (min 191192 B)` |
+| Klasyfikacja urządzenia (kbd/mouse) | naprawiona: liczona z listy raportów, nie z `esp_hidh_dev_usage_get()` (§4.15). **Do potwierdzenia w logu.** |
+| Mysz AJAZZ AJ159 Pro | **jeszcze nie testowana** |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
 
@@ -255,6 +259,62 @@ Gdy AULA F99 Pro rozgłasza się w trybie parowania, Windows też ją widzi i wy
 propozycją sparowania. **Nie klikać tego** — jeśli klawiatura sparuje się z Windows, połączy
 się tam, a nie z mostkiem, i C3 przestanie ją widzieć w skanie. Propozycję trzeba odrzucić
 i zostawić klawiaturę w trybie parowania dla C3.
+
+### 4.15 `esp_hidh_dev_usage_get()` zwraca zawsze `GENERIC` na ścieżce NimBLE
+
+Objaw: klawiatura podłączona i wysyłająca raporty, ale w logu `wejscia 1 (kbd=0 mouse=0)`
+i `usage=GENERIC`. Powód siedzi w `nimble_hidh.c`:
+
+- `esp_ble_hidh_dev_open()` (linia 929 w v5.5.1) ustawia na sztywno
+  `dev->ble.appearance = ESP_HID_APPEARANCE_GENERIC`, a późniejsze
+  `if (dev->ble.appearance == 0) dev->ble.appearance = map->appearance;` już nie zadziała,
+  bo pole nie jest zerem,
+- **`dev->usage` nie jest ustawiane nigdzie w całym pliku** (grep po `dev->usage`: zero
+  trafień w `nimble_hidh.c`), a `esp_hidh_dev_usage_get()` zwraca właśnie to pole.
+
+Poprawnie ustawiane jest `report->usage` — per raport, na podstawie Report Map. Dlatego:
+
+- klasyfikację urządzenia bierzemy z `esp_hidh_dev_reports_get()`, sumując bitowo `usage`
+  wszystkich raportów typu INPUT (wartości `ESP_HID_USAGE_*` są flagami bitowymi, więc OR
+  daje gotową maskę),
+- `usage` w `ESP_HIDH_INPUT_EVENT` jest wiarygodne i po nim rozdzielamy raporty.
+
+### 4.16 AULA F99 Pro wysyła serie `ErrorRollOver` po każdym naciśnięciu
+
+Log z płytki przy pisaniu na klawiaturze (`07` = `d`, `04` = `a`, `16` = `s`):
+
+```
+KBD len=8 [00 00 07 00 00 00 00 00]
+KBD len=8 [00 00 00 00 00 00 00 00]
+KBD len=8 [00 00 01 00 00 00 00 00]     <- trzy razy, ~130 ms odstępu
+KBD len=8 [00 00 00 00 00 00 00 00]
+```
+
+`0x01` w pozycji keycodu to **`ErrorRollOver`** z tabeli USB HID Keyboard/Keypad
+(0x01 ErrorRollOver, 0x02 POSTFail, 0x03 ErrorUndefined) — nie klawisz. Bez filtra pad
+dostawałby fantomowy przycisk po każdym naciśnięciu.
+
+`handle_keyboard_report()` zeruje keycody 0x01–0x03, a raport złożony wyłącznie z nich
+(bez modyfikatorów) ignoruje w całości — nadpisanie stanu zerami zgubiłoby klawisz
+naprawdę trzymany. Skąd te raporty się biorą, powie `map=`/`id=` w logu; filtr jest
+poprawny niezależnie od źródła, bo wynika ze specyfikacji.
+
+### 4.17 Beacon Swift Pair z Windows w wynikach skanu
+
+W każdym skanie widać urządzenie z rotującym adresem Random, silnym sygnałem i bez nazwy:
+
+```
+32:29:75:e0:50:b0 type=1 rssi=-39 NONCONN appearance=0x0000 '?'
+   adv len=16 [1e ff 06 00 01 09 20 22 65 78 c0 16 c1 11 bd 14]
+```
+
+`ff` to Manufacturer Specific Data, `06 00` to company ID **0x0006 = Microsoft** — to beacon
+Swift Pair / CDP samego PC. Typ `NONCONN_IND` oznacza rozgłoszenie **nierozłączalne**, więc
+próba połączenia skończyłaby się 30-sekundowym timeoutem w blokującym `esp_hidh_dev_open()`.
+`try_connect_candidates()` przepuszcza teraz tylko `ADV_IND` i `DIR_IND`.
+
+To był początkowo podejrzany o bycie klawiaturą (rotujący adres, mocny sygnał). Nie jest —
+klawiatura po prostu zasypia i przestaje rozgłaszać.
 
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 

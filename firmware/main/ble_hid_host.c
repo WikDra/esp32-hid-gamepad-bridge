@@ -9,6 +9,8 @@
 #include "ble_hid_host.h"
 
 #include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "ble_stack.h"
@@ -24,6 +26,8 @@
 #include "host/ble_gap.h"
 #include "host/ble_hs.h"
 #include "host/ble_hs_adv.h"
+#include "host/ble_store.h"
+#include "nimble/hci_common.h"
 
 static const char *TAG = "hid_host";
 
@@ -46,7 +50,11 @@ static hid_input_state_t s_state;
 typedef struct {
     bool in_use;
     ble_addr_t addr;
-    esp_hid_usage_t usage;
+    /* Suma bitowa ESP_HID_USAGE_* ze wszystkich raportow wejsciowych urzadzenia.
+     * NIE uzywamy esp_hidh_dev_usage_get(): na sciezce NimBLE zwraca on zawsze
+     * GENERIC, bo nimble_hidh.c nigdy nie ustawia dev->usage (potwierdzone w logu
+     * z plytki i grepem po IDF 5.5.1) - patrz AGENTS.md 4.15. */
+    uint8_t usage_mask;
     esp_hidh_dev_t *dev;
 } open_dev_t;
 static open_dev_t s_devs[HID_HOST_MAX_DEVICES];
@@ -58,6 +66,13 @@ typedef struct {
     uint16_t appearance;
     int8_t rssi;
     bool looks_like_hid;
+    bool bonded;               /* adres jest na liscie sparowanych w NVS */
+    uint8_t event_type;        /* BLE_HCI_ADV_RPT_EVTYPE_* - DIR_IND znaczy "wracam do konkretnego hosta" */
+    /* Pierwsze bajty ADV. Sluzy do rozpoznawania urzadzen, ktore nie podaja ani
+     * nazwy, ani appearance - bez tego w logu widac tylko adres i nie da sie
+     * powiedziec, co to jest. */
+    uint8_t adv[16];
+    uint8_t adv_len;
     int64_t cooldown_until_us; /* 0 = mozna probowac */
 } candidate_t;
 static candidate_t s_cands[CANDIDATES_MAX];
@@ -121,32 +136,44 @@ static bool device_is_open(const ble_addr_t *addr)
     return found;
 }
 
-static void device_register(const ble_addr_t *addr, esp_hid_usage_t usage, esp_hidh_dev_t *dev)
+/* Przelicza flagi "co mamy podlaczone" z tablicy urzadzen. Wolac TYLKO z sekcji
+ * krytycznej. Flagi siedza w stanie wejsc, zeby Etap 3 dostawal je w jednym
+ * snapshocie razem z danymi. */
+static void refresh_connected_flags_locked(void)
+{
+    uint8_t mask = 0;
+    for (int i = 0; i < HID_HOST_MAX_DEVICES; i++) {
+        if (s_devs[i].in_use) {
+            mask |= s_devs[i].usage_mask;
+        }
+    }
+    s_state.keyboard_connected = (mask & ESP_HID_USAGE_KEYBOARD) != 0;
+    s_state.mouse_connected = (mask & ESP_HID_USAGE_MOUSE) != 0;
+
+    /* Urzadzenie odpadlo -> wyczyscic jego wejscia, inaczej pad zostanie
+     * z wcisnietym klawiszem albo przyciskiem myszy na zawsze. */
+    if (!s_state.keyboard_connected) {
+        s_state.modifiers = 0;
+        memset(s_state.keys, 0, sizeof(s_state.keys));
+    }
+    if (!s_state.mouse_connected) {
+        s_state.mouse_buttons = 0;
+    }
+}
+
+static void device_register(const ble_addr_t *addr, uint8_t usage_mask, esp_hidh_dev_t *dev)
 {
     taskENTER_CRITICAL(&s_mux);
     for (int i = 0; i < HID_HOST_MAX_DEVICES; i++) {
         if (!s_devs[i].in_use) {
             s_devs[i].in_use = true;
             s_devs[i].addr = *addr;
-            s_devs[i].usage = usage;
+            s_devs[i].usage_mask = usage_mask;
             s_devs[i].dev = dev;
             break;
         }
     }
-    /* Flagi "co mamy podlaczone" trzymamy w stanie wejsc, zeby Etap 3 mial je
-     * w jednym snapshocie razem z danymi. */
-    s_state.keyboard_connected = false;
-    s_state.mouse_connected = false;
-    for (int i = 0; i < HID_HOST_MAX_DEVICES; i++) {
-        if (!s_devs[i].in_use) {
-            continue;
-        }
-        if (s_devs[i].usage == ESP_HID_USAGE_KEYBOARD) {
-            s_state.keyboard_connected = true;
-        } else if (s_devs[i].usage == ESP_HID_USAGE_MOUSE) {
-            s_state.mouse_connected = true;
-        }
-    }
+    refresh_connected_flags_locked();
     taskEXIT_CRITICAL(&s_mux);
 }
 
@@ -156,29 +183,11 @@ static void device_unregister(esp_hidh_dev_t *dev)
     for (int i = 0; i < HID_HOST_MAX_DEVICES; i++) {
         if (s_devs[i].in_use && s_devs[i].dev == dev) {
             s_devs[i].in_use = false;
+            s_devs[i].usage_mask = 0;
             s_devs[i].dev = NULL;
         }
     }
-    s_state.keyboard_connected = false;
-    s_state.mouse_connected = false;
-    for (int i = 0; i < HID_HOST_MAX_DEVICES; i++) {
-        if (!s_devs[i].in_use) {
-            continue;
-        }
-        if (s_devs[i].usage == ESP_HID_USAGE_KEYBOARD) {
-            s_state.keyboard_connected = true;
-        } else if (s_devs[i].usage == ESP_HID_USAGE_MOUSE) {
-            s_state.mouse_connected = true;
-        }
-    }
-    /* Klawiatura odpadla -> zwolnic klawisze, inaczej pad zostanie z wcisnietym W. */
-    if (!s_state.keyboard_connected) {
-        s_state.modifiers = 0;
-        memset(s_state.keys, 0, sizeof(s_state.keys));
-    }
-    if (!s_state.mouse_connected) {
-        s_state.mouse_buttons = 0;
-    }
+    refresh_connected_flags_locked();
     taskEXIT_CRITICAL(&s_mux);
 }
 
@@ -204,10 +213,86 @@ void ble_hid_host_log_devices(void)
 
     for (int i = 0; i < HID_HOST_MAX_DEVICES; i++) {
         if (snapshot[i].in_use) {
-            ESP_LOGI(TAG, "  [%d] " ADDR_FMT " usage=%s", i, ADDR_ARG(snapshot[i].addr.val),
-                     esp_hid_usage_str(snapshot[i].usage));
+            ESP_LOGI(TAG, "  [%d] " ADDR_FMT " raporty:%s%s%s (maska 0x%02x)",
+                     i, ADDR_ARG(snapshot[i].addr.val),
+                     (snapshot[i].usage_mask & ESP_HID_USAGE_KEYBOARD) ? " keyboard" : "",
+                     (snapshot[i].usage_mask & ESP_HID_USAGE_MOUSE) ? " mouse" : "",
+                     (snapshot[i].usage_mask & ~(ESP_HID_USAGE_KEYBOARD | ESP_HID_USAGE_MOUSE)) ? " inne" : "",
+                     snapshot[i].usage_mask);
         }
     }
+}
+
+/* ---------------------------------------------------------- sparowani peerzy */
+
+/*
+ * Lista adresow, z ktorymi mamy juz bond w NVS. Po co: urzadzenie, ktore raz sie
+ * sparowalo, przy powrocie (np. po wybudzeniu ze snu) nie musi juz rozglaszac
+ * pelnego payloadu z UUID 0x1812 ani appearance - wystarcza mu, ze host go zna.
+ * Bez tej listy taki powrot przelecialby przez filtr kandydatow.
+ */
+#define BONDS_MAX 3
+static ble_addr_t s_bonds[BONDS_MAX];
+static int s_bonds_len;
+
+static void refresh_bonded_peers(void)
+{
+    int num = 0;
+    if (ble_store_util_bonded_peers(s_bonds, &num, BONDS_MAX) != 0) {
+        num = 0;
+    }
+    s_bonds_len = num;
+}
+
+static bool is_bonded_peer(const ble_addr_t *addr)
+{
+    for (int i = 0; i < s_bonds_len; i++) {
+        /* Porownujemy same bajty adresu, bez typu: bond trzyma adres tozsamosci,
+         * a w skanie moze przyjsc ten sam adres z innym oznaczeniem typu. */
+        if (memcmp(s_bonds[i].val, addr->val, 6) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* ------------------------------------------------------ raporty urzadzenia */
+
+/*
+ * Klasyfikacja urzadzenia i diagnostyka. Lista raportow jest jedynym rzetelnym
+ * zrodlem informacji "czym to urzadzenie jest": esp_hidh_dev_usage_get() na
+ * sciezce NimBLE zwraca zawsze GENERIC (AGENTS.md 4.15).
+ *
+ * Dump tabeli raportow jest tez kluczowy przy diagnozie dziwnych raportow -
+ * AULA F99 Pro wystawia wiecej niz jeden raport wejsciowy o dlugosci 8 B.
+ */
+static uint8_t device_usage_mask(esp_hidh_dev_t *dev, bool log_table)
+{
+    size_t num = 0;
+    esp_hid_report_item_t *reports = NULL;
+    uint8_t mask = 0;
+
+    if (esp_hidh_dev_reports_get(dev, &num, &reports) != ESP_OK || reports == NULL) {
+        ESP_LOGW(TAG, "nie moge odczytac listy raportow");
+        return 0;
+    }
+
+    if (log_table) {
+        ESP_LOGI(TAG, "  raportow: %u", (unsigned)num);
+    }
+    for (size_t i = 0; i < num; i++) {
+        if (reports[i].report_type == ESP_HID_REPORT_TYPE_INPUT) {
+            mask |= (uint8_t)reports[i].usage;
+        }
+        if (log_table) {
+            ESP_LOGI(TAG, "    map=%u id=%u typ=%s usage=%s len=%u",
+                     reports[i].map_index, reports[i].report_id,
+                     esp_hid_report_type_str(reports[i].report_type),
+                     esp_hid_usage_str(reports[i].usage), reports[i].value_len);
+        }
+    }
+    free(reports); /* API alokuje tablice mallociem i oddaje ja nam */
+    return mask;
 }
 
 /* ----------------------------------------------------------------- stan wejsc */
@@ -235,27 +320,57 @@ static void log_hex(const char *prefix, const uint8_t *data, uint16_t len)
     ESP_LOGI(TAG, "%s len=%u [%s]%s", prefix, len, buf, len > n ? " ..." : "");
 }
 
-static void handle_keyboard_report(const uint8_t *d, uint16_t len)
+static void handle_keyboard_report(const esp_hidh_event_data_t *p)
 {
-    /* Boot protocol: d[0] modyfikatory, d[1] rezerwa, d[2..7] keycody. */
-    taskENTER_CRITICAL(&s_mux);
-    s_state.modifiers = d[0];
-    memcpy(s_state.keys, &d[2], HID_KEYS_MAX);
-    taskEXIT_CRITICAL(&s_mux);
+    const uint8_t *d = p->input.data;
+    uint16_t len = p->input.length;
 
-    /* Raportow klawiatury jest malo (tylko na zmianie stanu), wiec logujemy kazdy. */
-    log_hex("KBD", d, len);
+    /* Boot protocol: d[0] modyfikatory, d[1] rezerwa, d[2..7] keycody. */
+    uint8_t keys[HID_KEYS_MAX];
+    bool rollover = false;
+    for (int i = 0; i < HID_KEYS_MAX; i++) {
+        uint8_t k = d[2 + i];
+        /*
+         * 0x01 ErrorRollOver, 0x02 POSTFail, 0x03 ErrorUndefined - to nie sa klawisze,
+         * tylko kody bledu z tabeli USB HID Keyboard/Keypad. AULA F99 Pro wysyla
+         * serie raportow z 0x01 po kazdym nacisnieciu (widoczne w logu z plytki),
+         * wiec bez tego filtra pad dostawalby fantomowy przycisk.
+         */
+        if (k >= 0x01 && k <= 0x03) {
+            rollover = true;
+            k = 0;
+        }
+        keys[i] = k;
+    }
+
+    /* Raport skladajacy sie wylacznie z kodow bledu ignorujemy calkowicie -
+     * nadpisanie stanu zerami zgubiloby klawisz naprawde trzymany. */
+    if (!(rollover && keys[0] == 0 && d[0] == 0)) {
+        taskENTER_CRITICAL(&s_mux);
+        s_state.modifiers = d[0];
+        memcpy(s_state.keys, keys, HID_KEYS_MAX);
+        taskEXIT_CRITICAL(&s_mux);
+    }
+
+    /* Raportow klawiatury jest malo (tylko na zmianie stanu), wiec logujemy kazdy.
+     * report_id i map sa w logu, bo klawiatura ma wiecej niz jeden raport 8-bajtowy. */
+    char prefix[40];
+    snprintf(prefix, sizeof(prefix), "KBD map=%u id=%u%s", p->input.map_index,
+             p->input.report_id, rollover ? " (rollover)" : "");
+    log_hex(prefix, d, len);
 }
 
-static void handle_mouse_report(const uint8_t *d, uint16_t len)
+static void handle_mouse_report(const esp_hidh_event_data_t *p)
 {
+    const uint8_t *d = p->input.data;
+    uint16_t len = p->input.length;
     int32_t dx, dy, wheel = 0;
 
     /*
      * UWAGA: uklad raportu myszy nie jest jeszcze potwierdzony na sprzecie.
      * Klasyczny boot protocol ma 8-bitowe X/Y, ale myszy gamingowe (a AJ159 Pro
      * to gamingowa, wysokie DPI) czesto raportuja 12/16-bitowo. Rozpoznajemy po
-     * dlugosci raportu, a rowolegle logujemy surowe bajty, zeby dalo sie to
+     * dlugosci raportu, a rownolegle logujemy surowe bajty, zeby dalo sie to
      * zweryfikowac z logu i poprawic w Etapie 3.
      */
     if (len >= 5) {
@@ -286,10 +401,12 @@ static void handle_mouse_report(const uint8_t *d, uint16_t len)
     static uint32_t seen;
     static int64_t last_log_us;
     int64_t now = esp_timer_get_time();
-    if (seen < 8 || (now - last_log_us) > 1000000) {
+    if (seen < 12 || (now - last_log_us) > 1000000) {
         last_log_us = now;
-        log_hex("MOU", d, len);
-        ESP_LOGI(TAG, "MOU dekodowanie: buttons=0x%02x dx=%" PRId32 " dy=%" PRId32 " wheel=%" PRId32,
+        char prefix[32];
+        snprintf(prefix, sizeof(prefix), "MOU map=%u id=%u", p->input.map_index, p->input.report_id);
+        log_hex(prefix, d, len);
+        ESP_LOGI(TAG, "  dekodowanie: buttons=0x%02x dx=%" PRId32 " dy=%" PRId32 " wheel=%" PRId32,
                  d[0], dx, dy, wheel);
     }
     seen++;
@@ -305,12 +422,14 @@ static void hidh_callback(void *args, esp_event_base_t base, int32_t id, void *e
         const uint8_t *bda = esp_hidh_dev_bda_get(p->open.dev);
         const char *name = esp_hidh_dev_name_get(p->open.dev);
         /* Uwaga: esp_hidh_dev_appearance_get() istnieje tylko w wariancie Bluedroid -
-         * przy NimBLE linker go nie znajdzie. Appearance mamy z pakietu ADV. */
-        ESP_LOGI(TAG, "OPEN " ADDR_FMT " '%s' usage=%s vid=0x%04x pid=0x%04x",
+         * przy NimBLE linker go nie znajdzie. Appearance mamy z pakietu ADV.
+         * esp_hidh_dev_usage_get() tez nie ma sensu (zawsze GENERIC), dlatego
+         * klasyfikacje bierzemy z listy raportow. */
+        ESP_LOGI(TAG, "OPEN " ADDR_FMT " '%s' vid=0x%04x pid=0x%04x",
                  ADDR_ARG(bda), name ? name : "?",
-                 esp_hid_usage_str(esp_hidh_dev_usage_get(p->open.dev)),
                  esp_hidh_dev_vendor_id_get(p->open.dev),
                  esp_hidh_dev_product_id_get(p->open.dev));
+        device_usage_mask(p->open.dev, true); /* tylko log tabeli raportow */
         break;
     }
     case ESP_HIDH_BATTERY_EVENT:
@@ -318,12 +437,11 @@ static void hidh_callback(void *args, esp_event_base_t base, int32_t id, void *e
         break;
 
     case ESP_HIDH_INPUT_EVENT: {
-        const uint8_t *d = p->input.data;
         uint16_t len = p->input.length;
         if (p->input.usage == ESP_HID_USAGE_KEYBOARD && len >= 8) {
-            handle_keyboard_report(d, len);
+            handle_keyboard_report(p);
         } else if (p->input.usage == ESP_HID_USAGE_MOUSE && len >= 3) {
-            handle_mouse_report(d, len);
+            handle_mouse_report(p);
         } else {
             /* Np. consumer control (klawisze multimedialne) albo raport, ktorego
              * jeszcze nie rozumiemy - warto zobaczyc, co przychodzi. */
@@ -331,9 +449,9 @@ static void hidh_callback(void *args, esp_event_base_t base, int32_t id, void *e
             int64_t now = esp_timer_get_time();
             if ((now - last_other_us) > 1000000) {
                 last_other_us = now;
-                ESP_LOGW(TAG, "raport nieobslugiwany: usage=%s report_id=%u map=%u",
-                         esp_hid_usage_str(p->input.usage), p->input.report_id, p->input.map_index);
-                log_hex("  RAW", d, len);
+                ESP_LOGW(TAG, "raport nieobslugiwany: usage=%s map=%u id=%u",
+                         esp_hid_usage_str(p->input.usage), p->input.map_index, p->input.report_id);
+                log_hex("  RAW", p->input.data, len);
             }
         }
         break;
@@ -372,12 +490,9 @@ static void candidate_seen(const struct ble_gap_disc_desc *disc, const struct bl
         for (int i = 0; i < CANDIDATES_MAX; i++) {
             if (!s_cands[i].in_use) {
                 slot = &s_cands[i];
+                memset(slot, 0, sizeof(*slot));
                 slot->in_use = true;
                 slot->addr = disc->addr;
-                slot->name[0] = '\0';
-                slot->appearance = 0;
-                slot->looks_like_hid = false;
-                slot->cooldown_until_us = 0;
                 break;
             }
         }
@@ -388,10 +503,9 @@ static void candidate_seen(const struct ble_gap_disc_desc *disc, const struct bl
         for (int i = 0; i < CANDIDATES_MAX; i++) {
             if (!s_cands[i].looks_like_hid && s_cands[i].cooldown_until_us == 0) {
                 slot = &s_cands[i];
+                memset(slot, 0, sizeof(*slot));
+                slot->in_use = true;
                 slot->addr = disc->addr;
-                slot->name[0] = '\0';
-                slot->appearance = 0;
-                slot->looks_like_hid = false;
                 break;
             }
         }
@@ -401,6 +515,17 @@ static void candidate_seen(const struct ble_gap_disc_desc *disc, const struct bl
          * dlatego scalamy, a nie nadpisujemy (AGENTS.md 4.4: filter_duplicates=0). */
         slot->rssi = disc->rssi;
         slot->looks_like_hid = slot->looks_like_hid || looks_like_hid;
+        slot->bonded = is_bonded_peer(&disc->addr);
+        /* SCAN_RSP nadpisalby typ pakietu glownego, a chcemy wiedziec, czy
+         * urzadzenie rozglasza sie kierunkowo (DIR_IND = wraca do znanego hosta). */
+        if (disc->event_type != BLE_HCI_ADV_RPT_EVTYPE_SCAN_RSP) {
+            slot->event_type = disc->event_type;
+        }
+        if (disc->length_data > 0 && slot->adv_len == 0) {
+            slot->adv_len = disc->length_data < sizeof(slot->adv) ? disc->length_data
+                                                                 : sizeof(slot->adv);
+            memcpy(slot->adv, disc->data, slot->adv_len);
+        }
         if (f->appearance_is_present) {
             slot->appearance = f->appearance;
         }
@@ -436,7 +561,17 @@ static void handle_adv_report(const struct ble_gap_disc_desc *disc)
     /* Kategoria "Human Interface Device" to appearance 0x03Cx. */
     bool hid_appearance = f.appearance_is_present && ((f.appearance & 0xFFC0) == ESP_HID_APPEARANCE_GENERIC);
 
-    bool looks_like_hid = has_hid_uuid || hid_appearance || name_is_known_device(name);
+    /*
+     * Trzy niezalezne przeslanki, bo zadna nie wystarcza sama:
+     *  - UUID 0x1812 / appearance 0x03Cx / znana nazwa: normalny przypadek, urzadzenie
+     *    w trybie parowania rozglasza pelny payload,
+     *  - bond w NVS: urzadzenie, ktore juz raz sie z nami sparowalo, przy powrocie
+     *    (np. po wybudzeniu ze snu) moze rozglaszac minimalny payload bez UUID,
+     *  - DIR_IND: rozgloszenie kierunkowe, czyli urzadzenie celuje w konkretny host.
+     */
+    bool looks_like_hid = has_hid_uuid || hid_appearance || name_is_known_device(name) ||
+                          is_bonded_peer(&disc->addr) ||
+                          disc->event_type == BLE_HCI_ADV_RPT_EVTYPE_DIR_IND;
     candidate_seen(disc, &f, looks_like_hid, name);
 }
 
@@ -511,16 +646,25 @@ static void log_scan_results(void)
             }
         }
     }
-    ESP_LOGI(TAG, "skan: %d urzadzen, z tego %d wyglada na HID", total, hid);
+    ESP_LOGI(TAG, "skan: %d urzadzen, z tego %d wyglada na HID (bondow w NVS: %d)",
+             total, hid, s_bonds_len);
     /* Logujemy wszystko, nie tylko HID - jak klawiatura nie chce sie polaczyc,
      * pierwsze pytanie jest "czy w ogole ja slyszymy". */
+    static const char *evt[] = {"ADV_IND", "DIR_IND", "SCAN_IND", "NONCONN", "SCAN_RSP"};
     for (int i = 0; i < CANDIDATES_MAX; i++) {
         if (!candidate_get(i, &c)) {
             continue;
         }
-        ESP_LOGI(TAG, "  %s " ADDR_FMT " type=%u rssi=%4d appearance=0x%04x '%s'",
+        ESP_LOGI(TAG, "  %s " ADDR_FMT " type=%u rssi=%4d %s%s appearance=0x%04x '%s'",
                  c.looks_like_hid ? "HID" : "   ", ADDR_ARG(c.addr.val),
-                 c.addr.type, c.rssi, c.appearance, c.name[0] ? c.name : "?");
+                 c.addr.type, c.rssi,
+                 c.event_type < 5 ? evt[c.event_type] : "?",
+                 c.bonded ? " BOND" : "", c.appearance, c.name[0] ? c.name : "?");
+        /* Bez nazwy i bez appearance zostaje tylko surowy ADV - bez tego nie da sie
+         * powiedziec, co siedzi pod danym adresem. */
+        if (c.name[0] == '\0' && c.appearance == 0 && c.adv_len > 0) {
+            log_hex("      adv", c.adv, c.adv_len);
+        }
     }
 }
 
@@ -533,6 +677,17 @@ static void try_connect_candidates(void)
             return;
         }
         if (!candidate_get(i, &c) || !c.looks_like_hid) {
+            continue;
+        }
+        /*
+         * Tylko ADV_IND i DIR_IND sa rozgloszeniami, na ktore mozna odpowiedziec
+         * polaczeniem. SCAN_IND i NONCONN_IND to z definicji broadcast - proba
+         * polaczenia skonczylaby sie timeoutem 30 s w blokujacym dev_open.
+         * Praktyczny przypadek: Windows rozglasza beacon Swift Pair
+         * (Manufacturer Specific Data, company ID 0x0006) wlasnie jako NONCONN.
+         */
+        if (c.event_type != BLE_HCI_ADV_RPT_EVTYPE_ADV_IND &&
+            c.event_type != BLE_HCI_ADV_RPT_EVTYPE_DIR_IND) {
             continue;
         }
         if (c.cooldown_until_us > esp_timer_get_time() || device_is_open(&c.addr)) {
@@ -565,10 +720,13 @@ static void try_connect_candidates(void)
             continue;
         }
 
-        esp_hid_usage_t usage = esp_hidh_dev_usage_get(dev);
-        device_register(&c.addr, usage, dev);
-        ESP_LOGI(TAG, "  podlaczone: usage=%s, razem %d/%d urzadzen",
-                 esp_hid_usage_str(usage), ble_hid_host_device_count(), HID_HOST_MAX_DEVICES);
+        uint8_t mask = device_usage_mask(dev, false);
+        device_register(&c.addr, mask, dev);
+        ESP_LOGI(TAG, "  podlaczone (maska usage 0x%02x), razem %d/%d urzadzen",
+                 mask, ble_hid_host_device_count(), HID_HOST_MAX_DEVICES);
+        if (mask == 0) {
+            ESP_LOGW(TAG, "  brak raportow wejsciowych - urzadzenie nic nam nie da");
+        }
     }
 }
 
@@ -586,6 +744,7 @@ static void scan_round(void)
     };
 
     candidates_clear_stale();
+    refresh_bonded_peers();
     xEventGroupClearBits(s_events, EV_DISC_DONE);
 
     int rc = ble_gap_disc(ble_stack_own_addr_type(), SCAN_DURATION_MS, &dp, gap_event_cb, NULL);
