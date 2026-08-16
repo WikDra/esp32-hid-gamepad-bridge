@@ -40,7 +40,9 @@ static const char *TAG = "hid_host";
 #define RETRY_COOLDOWN_US    (15 * 1000 * 1000) /* nie dobijamy sie do tego samego adresu co runde */
 #define HID_SERVICE_UUID16   0x1812
 
-#define EV_DISC_DONE BIT0
+#define EV_DISC_DONE   BIT0
+#define EV_OPEN_DONE   BIT1
+#define EV_OPEN_DOOMED BIT2
 
 /* Jeden spinlock na caly stan modulu. Sekcje krytyczne sa krotkie (kopiowanie
  * kilku bajtow, petle po 2-12 elementach), wiec nie ma po co mieszac muteksow. */
@@ -49,6 +51,16 @@ static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static EventGroupHandle_t s_events;
 
 static hid_input_state_t s_state;
+
+/* Stan trwajacego otwierania urzadzenia. Zadeklarowane tutaj, bo uzywa ich takze
+ * listener rozlaczen, ktory w pliku wystepuje wczesniej niz open_device_guarded(). */
+static volatile bool s_opening;
+static ble_addr_t s_opening_addr;
+
+bool ble_hid_host_is_opening(void)
+{
+    return s_opening;
+}
 
 typedef struct {
     bool in_use;
@@ -579,6 +591,18 @@ static int gap_disconnect_listener(struct ble_gap_event *event, void *arg)
     }
 
     const struct ble_gap_conn_desc *conn = &event->disconnect.conn;
+
+    /*
+     * Jesli padl link do urzadzenia, ktore wlasnie otwieramy, to esp_hidh_dev_open()
+     * zawisnie w WAIT_CB() (AGENTS.md 4.23). Sygnalizujemy to od razu, zeby nie czekac
+     * pelnego limitu 45 s.
+     */
+    if (s_opening &&
+        (memcmp(s_opening_addr.val, conn->peer_id_addr.val, 6) == 0 ||
+         memcmp(s_opening_addr.val, conn->peer_ota_addr.val, 6) == 0)) {
+        xEventGroupSetBits(s_events, EV_OPEN_DOOMED);
+    }
+
     esp_hidh_dev_t *dev = device_take_by_addr(conn->peer_id_addr.val);
     if (dev == NULL) {
         /* Adres tozsamosci i adres uzyty w eterze moga sie roznic. */
@@ -627,12 +651,6 @@ typedef struct {
 static SemaphoreHandle_t s_open_done;
 static esp_hidh_dev_t *volatile s_open_result;
 static volatile uint32_t s_open_generation;
-static volatile bool s_opening;
-
-bool ble_hid_host_is_opening(void)
-{
-    return s_opening;
-}
 
 static void open_task(void *arg)
 {
@@ -647,6 +665,7 @@ static void open_task(void *arg)
 
     if (ctx->generation == s_open_generation) {
         s_open_result = dev;
+        xEventGroupSetBits(s_events, EV_OPEN_DONE);
         xSemaphoreGive(s_open_done);
     } else {
         /* Nas juz nikt nie slucha - hid_scan uznal te probe za zawieszona. */
@@ -672,6 +691,8 @@ static esp_hidh_dev_t *open_device_guarded(const ble_addr_t *addr)
 
     s_open_result = NULL;
     xSemaphoreTake(s_open_done, 0); /* wyczyscic ewentualny stary sygnal */
+    xEventGroupClearBits(s_events, EV_OPEN_DONE | EV_OPEN_DOOMED);
+    s_opening_addr = *addr;
     s_opening = true;
 
     if (xTaskCreate(open_task, "hid_open", 8192, ctx, 4, NULL) != pdPASS) {
@@ -681,12 +702,35 @@ static esp_hidh_dev_t *open_device_guarded(const ble_addr_t *addr)
         return NULL;
     }
 
-    if (xSemaphoreTake(s_open_done, pdMS_TO_TICKS(OPEN_TIMEOUT_MS)) != pdTRUE) {
+    /*
+     * Czekamy na jedno z dwojga: wynik otwarcia albo informacje, ze link do tego
+     * wlasnie urzadzenia padl. To drugie znaczy, ze otwarcie nie ma jak sie udac -
+     * kolejne operacje GATT zwroca ENOTCONN synchronicznie i WAIT_CB() w IDF zawisnie
+     * na zawsze (AGENTS.md 4.23). Bez tej sciezki czekalibysmy pelne 45 s; na sprzecie
+     * zaobserwowane 36 s bezczynnosci, zanim zadzialal limit.
+     */
+    EventBits_t bits = xEventGroupWaitBits(s_events, EV_OPEN_DONE | EV_OPEN_DOOMED,
+                                          pdFALSE, pdFALSE, pdMS_TO_TICKS(OPEN_TIMEOUT_MS));
+
+    if (!(bits & EV_OPEN_DONE) && (bits & EV_OPEN_DOOMED)) {
+        /* Link padl. Dajemy jeszcze chwile - otwarcie moglo byc na ostatniej prostej. */
+        bits = xEventGroupWaitBits(s_events, EV_OPEN_DONE, pdFALSE, pdTRUE,
+                                   pdMS_TO_TICKS(2000));
+        if (!(bits & EV_OPEN_DONE)) {
+            ESP_LOGE(TAG, "link do otwieranego urzadzenia padl - esp_hidh_dev_open() zawisnie");
+            ESP_LOGE(TAG, "to blad w IDF: WAIT_CB() w nimble_hidh.c czeka bez timeoutu");
+            ESP_LOGE(TAG, "restartuje uklad - bondy sa w NVS, wszystko wroci samo");
+            vTaskDelay(pdMS_TO_TICKS(500)); /* zeby log zdazyl wyjsc na konsole */
+            esp_restart();
+        }
+    }
+
+    if (!(bits & EV_OPEN_DONE)) {
         ESP_LOGE(TAG, "esp_hidh_dev_open() nie wrocilo w %d s - zadanie utknelo w IDF",
                  OPEN_TIMEOUT_MS / 1000);
         ESP_LOGE(TAG, "to znany blad: WAIT_CB() w nimble_hidh.c czeka bez timeoutu");
         ESP_LOGE(TAG, "restartuje uklad - bondy sa w NVS, wszystko wroci samo");
-        vTaskDelay(pdMS_TO_TICKS(500)); /* zeby log zdazyl wyjsc na konsole */
+        vTaskDelay(pdMS_TO_TICKS(500));
         esp_restart();
     }
     s_opening = false;

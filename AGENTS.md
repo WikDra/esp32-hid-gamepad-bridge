@@ -68,6 +68,9 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | **Cykl uśpienie → powrót myszy przechodzi** | w logu: `wejscie odlaczone f4:ee:… reason=531` → `zasoby odlaczonego urzadzenia zwolnione` → `wejscia 1` → `skan` → `kandydat f4:ee:…` → ponowne połączenie. Wykrywanie rozłączeń z GAP działa |
 | Drugi crash: skok w pulę procedur GATT | `Instruction access fault`, `MEPC=0x3fc98678` leży w `ble_gattc_proc_mem` (§4.26). `GATT_MAX_PROCS` 4 → 12 **nie pomogło** |
 | **PRZYCZYNA znaleziona: `services_discovered` w IDF nigdy nie jest zerowane** | licznik rośnie przez cały czas życia firmware'u, a `svc_disced()` pisze po tablicy 10 elementów na stosie wołającego. Trzecie otwarcie urządzenia (czyli powrót po uśpieniu) niszczy ramkę stosu — §4.27 |
+| **Łatka §4.27 potwierdzona na sprzęcie** | w jednym logu: otwarcie 1 (mysz), 2 (klawiatura, `razem 2/2`), rozłączenie myszy, `zasoby odlaczonego urzadzenia zwolnione`, **otwarcie 3 (mysz) bez crashu**, znowu `razem 2/2`, potem kolejny cykl rozłączenia. Wcześniej trzecie otwarcie padało niezawodnie |
+| Brak wycieku między cyklami | `heap 190480 B` z dwoma urządzeniami, `191448 B` po rozłączeniu, `min 180912 B` przez 115 s i kilka cykli |
+| Zabezpieczenie z §4.23 zadziałało w praktyce | gdy mysz zasnęła w trakcie odkrywania usług klawiatury, link padł (`reason=520`), `esp_hidh_dev_open()` zawisło i firmware zrobił kontrolowany restart zamiast zawisnąć na stałe |
 | Naprawa | lokalna kopia komponentu `esp_hid` z jednolinijkową łatką + kontrole granic. Potwierdzone, że build bierze naszą kopię (`check_local_esp_hid.py`) i że łatka jest w binarce. **Weryfikacja cyklu uśpienia na sprzęcie do zrobienia** |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
@@ -568,6 +571,13 @@ urządzeń — więc nic już się nie podłączy, mimo że reszta firmware'u dz
 `hid_open` (8 kB), a `hid_scan` czeka na wynik z limitem 45 s (samo `ble_gap_connect`
 w środku ma 30 s timeoutu, więc limit nie łapie zwykłych niepowodzeń).
 
+Dodatkowo **wykrywamy zawieszenie wcześniej**: listener rozłączeń sprawdza, czy padł link
+do urządzenia, które właśnie otwieramy. Jeśli tak, otwarcie nie ma jak się udać — kolejne
+operacje GATT zwrócą `ENOTCONN` synchronicznie. Dajemy wtedy jeszcze 2 s (otwarcie mogło być
+na ostatniej prostej) i restartujemy. Na sprzęcie widzieliśmy przypadek, w którym mysz zasnęła
+w trakcie odkrywania usług klawiatury: link padł z `reason=520`, a bez tej ścieżki mostek
+czekał **36 s** bezczynnie, zanim zadziałał ogólny limit.
+
 Po przekroczeniu limitu robimy **kontrolowany restart**. Dlaczego nie coś delikatniejszego:
 
 - zawieszonego zadania nie da się bezpiecznie usunąć — siedzi na prywatnym semaforze
@@ -880,10 +890,10 @@ bo w razie problemu wiadomo, która rola zawiodła.
 
 Do zamknięcia PoC zostaje:
 
-- [ ] **weryfikacja łatki z §4.27: kilka cykli uśpienie → powrót myszy bez crashu.**
-      W logu: `wejscie odlaczone … reason=…`, `zasoby odlaczonego urzadzenia zwolnione`,
-      potem `kandydat …` i `razem 2/2` — i tak co najmniej trzy razy pod rząd,
-- [ ] sprawdzenie, czy crash z §4.21 (inna sygnatura, wątek hosta NimBLE) jeszcze wraca,
+- [x] **weryfikacja łatki z §4.27: cykl uśpienie → powrót myszy bez crashu.** Potwierdzone
+      logiem: otwarcie 3 przechodzi, dwa cykle rozłączenia i powrotu w jednym przebiegu.
+- [ ] sprawdzenie, czy crash z §4.21 (inna sygnatura, wątek hosta NimBLE) jeszcze wraca —
+      od czasu łatki nie wystąpił ani raz,
 - [ ] dobranie `CONFIG_APP_MOUSE_SCALE_DIV` do gustu,
 - [ ] pomiar opóźnienia wejście → pad.
 
