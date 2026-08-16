@@ -14,8 +14,12 @@ CONFIG_BT_NIMBLE_ENABLED=y
 # Trzy jednoczesne linki: 2x central (klawiatura, mysz) + 1x peripheral (PC).
 # Na C3 limit to 9; kazde polaczenie kosztuje pamiec, wiec trzymamy sie 3.
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=3
-# Tyle samo bondow, bo kazde z tych trzech urzadzen sie paruje.
-CONFIG_BT_NIMBLE_MAX_BONDS=3
+# Tyle samo bondow, ile polaczen, plus zapas. Na sprzecie widac "bondow w NVS: 3"
+# przy trzech urzadzeniach, czyli limit 3 byl wypelniony co do sztuki - a wtedy
+# kazde nowe parowanie (np. klawiatura wracajaca z nowym adresem tozsamosci)
+# wyrzuca jakis istniejacy bond, potencjalnie bond PC. Wtedy pad trzeba parowac
+# od nowa bez zadnej widocznej przyczyny.
+CONFIG_BT_NIMBLE_MAX_BONDS=5
 # Domyslnie 6, czyli 3 polaczenia + skan + advertising sie mieszcza. Ustawione
 # wprost, zeby bylo widoczne, ze to swiadoma wartosc, a nie przypadek.
 CONFIG_BT_CTRL_BLE_MAX_ACT=6

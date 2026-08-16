@@ -17,9 +17,11 @@
 #include "esp_hid_common.h"
 #include "esp_hidh.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
@@ -496,7 +498,97 @@ static void hidh_callback(void *args, esp_event_base_t base, int32_t id, void *e
     }
 }
 
-/* ------------------------------------------------------------------- skaner */
+/* ------------------------------------------------- otwieranie z ograniczeniem czasu */
+
+/*
+ * esp_hidh_dev_open() potrafi zablokowac sie NA ZAWSZE. To blad w IDF, nie u nas:
+ *
+ *   nimble_hidh.c:49   WAIT_CB() = xSemaphoreTake(sem, portMAX_DELAY)
+ *   nimble_hidh.c:353  rc = ble_gattc_disc_all_chrs(...); WAIT_CB();
+ *
+ * czyli kod czeka bez timeoutu i NIE sprawdza rc. Gdy link padnie w trakcie
+ * odkrywania uslug, kolejne operacje GATT zwracaja BLE_HS_ENOTCONN synchronicznie,
+ * zaden callback juz nie przyjdzie i WAIT_CB() nie ma kto obudzic.
+ *
+ * Zaobserwowane na sprzecie: polaczenie z klawiatura zerwalo sie w trakcie odczytu
+ * uslug (disconnect reason=520, czyli HCI 0x08 Connection Timeout), zadanie hid_scan
+ * zawislo i mostek przestal skanowac - a wiec mysz po zasnieciu nie miala jak wrocic.
+ * W logu bylo to widoczne po braku linii "skan:" i braku "po esp_hidh_dev_open ...",
+ * ktora normalnie leci bezwarunkowo po wywolaniu.
+ *
+ * Dlatego wywolanie idzie do osobnego zadania, a hid_scan czeka z limitem czasu.
+ * Po przekroczeniu limitu wiemy, ze zadanie utknelo w IDF. Nie da sie go bezpiecznie
+ * ubic: siedzi na prywatnym semaforze esp_hidh, a kolejne proby otwarcia
+ * konkurowalyby z nim o ten sam semafor (czyli obudzilyby jego, nie nas). Dlatego
+ * jedynym uczciwym wyjsciem jest kontrolowany restart - bondy sa w NVS, wiec PC
+ * wraca po ~2 s, a klawiatura i mysz same sie podlaczaja.
+ */
+#define OPEN_TIMEOUT_MS 45000 /* dev_open ma w sobie 30 s timeoutu na samo polaczenie */
+
+typedef struct {
+    ble_addr_t addr;
+    uint32_t generation;
+} open_ctx_t;
+
+static SemaphoreHandle_t s_open_done;
+static esp_hidh_dev_t *volatile s_open_result;
+static volatile uint32_t s_open_generation;
+
+static void open_task(void *arg)
+{
+    open_ctx_t *ctx = (open_ctx_t *)arg;
+    uint8_t bda[6];
+
+    memcpy(bda, ctx->addr.val, sizeof(bda));
+    esp_hidh_dev_t *dev = esp_hidh_dev_open(bda, ESP_HID_TRANSPORT_BLE, ctx->addr.type);
+
+    ESP_LOGI(TAG, "  po esp_hidh_dev_open zostalo %u B stosu",
+             (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
+
+    if (ctx->generation == s_open_generation) {
+        s_open_result = dev;
+        xSemaphoreGive(s_open_done);
+    } else {
+        /* Nas juz nikt nie slucha - hid_scan uznal te probe za zawieszona. */
+        ESP_LOGW(TAG, "  spozniony wynik otwarcia (generacja %" PRIu32 "), pomijam", ctx->generation);
+        if (dev != NULL) {
+            esp_hidh_dev_close(dev);
+        }
+    }
+    free(ctx);
+    vTaskDelete(NULL);
+}
+
+/* Zwraca urzadzenie, NULL przy zwyklym niepowodzeniu. Przy zawieszeniu nie wraca -
+ * restartuje uklad. */
+static esp_hidh_dev_t *open_device_guarded(const ble_addr_t *addr)
+{
+    open_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    if (ctx == NULL) {
+        return NULL;
+    }
+    ctx->addr = *addr;
+    ctx->generation = ++s_open_generation;
+
+    s_open_result = NULL;
+    xSemaphoreTake(s_open_done, 0); /* wyczyscic ewentualny stary sygnal */
+
+    if (xTaskCreate(open_task, "hid_open", 8192, ctx, 4, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "nie moge utworzyc zadania otwierajacego");
+        free(ctx);
+        return NULL;
+    }
+
+    if (xSemaphoreTake(s_open_done, pdMS_TO_TICKS(OPEN_TIMEOUT_MS)) != pdTRUE) {
+        ESP_LOGE(TAG, "esp_hidh_dev_open() nie wrocilo w %d s - zadanie utknelo w IDF",
+                 OPEN_TIMEOUT_MS / 1000);
+        ESP_LOGE(TAG, "to znany blad: WAIT_CB() w nimble_hidh.c czeka bez timeoutu");
+        ESP_LOGE(TAG, "restartuje uklad - bondy sa w NVS, wszystko wroci samo");
+        vTaskDelay(pdMS_TO_TICKS(500)); /* zeby log zdazyl wyjsc na konsole */
+        esp_restart();
+    }
+    return s_open_result;
+}
 
 static void candidate_seen(const struct ble_gap_disc_desc *disc, const struct ble_hs_adv_fields *f,
                            bool looks_like_hid, const char *name)
@@ -725,18 +817,7 @@ static void try_connect_candidates(void)
         ble_gap_disc_cancel();
         vTaskDelay(pdMS_TO_TICKS(200));
 
-        uint8_t bda[6];
-        memcpy(bda, c.addr.val, sizeof(bda));
-        /*
-         * Blokujace i bardzo grube na stosie: w srodku jest ble_gap_connect, pelne
-         * odkrywanie uslug GATT i parsowanie Report Map. read_device_services()
-         * w nimble_hidh.c trzyma na stosie WOLAJACEGO trzy tablice naraz
-         * (service_result[10], char_result[20], descr_result[20]) - patrz rozmiar
-         * stosu przy xTaskCreate na koncu pliku.
-         */
-        esp_hidh_dev_t *dev = esp_hidh_dev_open(bda, ESP_HID_TRANSPORT_BLE, c.addr.type);
-        ESP_LOGI(TAG, "  po esp_hidh_dev_open zostalo %u B stosu",
-                 (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
+        esp_hidh_dev_t *dev = open_device_guarded(&c.addr);
         if (dev == NULL) {
             ESP_LOGW(TAG, "  nie udalo sie otworzyc, cooldown %d s", RETRY_COOLDOWN_US / 1000000);
             candidate_set_cooldown(&c.addr);
@@ -750,6 +831,16 @@ static void try_connect_candidates(void)
         if (mask == 0) {
             ESP_LOGW(TAG, "  brak raportow wejsciowych - urzadzenie nic nam nie da");
         }
+
+        /*
+         * Odstep przed kolejna proba. Swiezo podlaczone urzadzenie wlasnie zapisalo
+         * sie na kilka charakterystyk i zaczyna nadawac raporty; odkrywanie uslug
+         * drugiego urzadzenia w tym samym momencie to trzy aktywne linki walczace
+         * o antene. Na sprzecie skonczylo sie to zerwaniem linku z klawiatura
+         * (disconnect reason=520, czyli HCI 0x08 Connection Timeout) 1,5 s po
+         * podlaczeniu myszy - a to wlasnie zerwanie wywolalo blokade z IDF.
+         */
+        vTaskDelay(pdMS_TO_TICKS(3000));
     }
 }
 
@@ -803,7 +894,8 @@ static void scan_task(void *arg)
 esp_err_t ble_hid_host_start(void)
 {
     s_events = xEventGroupCreate();
-    if (s_events == NULL) {
+    s_open_done = xSemaphoreCreateBinary();
+    if (s_events == NULL || s_open_done == NULL) {
         return ESP_ERR_NO_MEM;
     }
 
@@ -821,14 +913,10 @@ esp_err_t ble_hid_host_start(void)
     }
 
     /*
-     * 8 kB, nie 4 kB. Powod: esp_hidh_dev_open() wykonuje sie w TYM zadaniu i przez
-     * read_device_services() klada na naszym stosie service_result[10] +
-     * char_result[20] + descr_result[20] naraz, plus parser Report Map. Przy 4 kB
-     * konczylo sie to "Stack protection fault" dokladnie w momencie polaczenia
-     * z klawiatura (potwierdzone na sprzecie). Przyklad esp_hid_host z IDF daje
-     * swojemu zadaniu 6 kB; bierzemy 8 kB i logujemy high water mark.
+     * 4 kB wystarcza: samo esp_hidh_dev_open(), ktore potrzebuje ~2,6 kB, wykonuje
+     * sie teraz w osobnym zadaniu "hid_open" z 8 kB (patrz open_device_guarded).
      */
-    if (xTaskCreate(scan_task, "hid_scan", 8192, NULL, 4, NULL) != pdPASS) {
+    if (xTaskCreate(scan_task, "hid_scan", 4096, NULL, 4, NULL) != pdPASS) {
         ESP_LOGE(TAG, "nie moge utworzyc zadania skanujacego");
         return ESP_ERR_NO_MEM;
     }

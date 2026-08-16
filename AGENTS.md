@@ -60,7 +60,10 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | **TRZY jednoczesne połączenia BLE na jednym C3** | `podlaczone …, razem 2/2 urzadzen` + `pad gotowy`; `wejscia 2 (kbd=1 mouse=1)`. To było główne ryzyko PoC — **rozstrzygnięte** |
 | Pamięć z trzema połączeniami | `heap 186960 B (min 185096 B)` — zapas ~180 kB |
 | Bateria obu urządzeń czytana | mysz `bateria 83%`, klawiatura `bateria 100%` |
+| **Mysz → prawy analog działa end-to-end** | właściciel potwierdził w `joy.cpl`: lewo/prawo to oś Z, góra/dół to obrót Z (zgodne z deskryptorem, §4.24) |
+| Kółko i przyciski myszy | `btn=0x001` / `0x002` w raporcie pada, kółko czytane jako `int8` |
 | Crash w timerze GAP przy łączeniu z myszą | wystąpił **raz**, `Load access fault` wewnątrz NimBLE — patrz §4.21. Złagodzenie wgrane, **skuteczność niepotwierdzona** |
+| **Blokada `esp_hidh_dev_open()` na zawsze** | znaleziona i obsłużona — to była przyczyna „mysz po zaśnięciu nie wraca bez restartu" (§4.23) |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
 
@@ -486,6 +489,76 @@ pakietu ADV (§4.4) **przepuściłaby ten przypadek**. Dlatego kandydatem jest t
 Adres w bondzie to adres tożsamości, a w skanie może przyjść z innym oznaczeniem typu,
 dlatego porównujemy same bajty adresu, bez `type`.
 
+### 4.23 `esp_hidh_dev_open()` może zablokować się na zawsze (błąd w IDF)
+
+**To był powód, dla którego mysz po zaśnięciu nie wracała bez restartu C3.** Objaw w logu
+nie jest oczywisty: po nieudanej próbie połączenia **przestają pojawiać się linie `skan:`**,
+a firmware dalej działa i obsługuje już podłączone urządzenie.
+
+Przebieg z płytki:
+
+```
+Connection established                      <- klawiatura, conn_handle=4
+Read complete; status=7 conn_handle=4       <- 7 = BLE_HS_ENOTCONN
+disconnect; reason=520                      <- 0x208 = HCI 0x08, Connection Timeout
+...i nic wiecej: zero linii "skan:" do konca logu...
+```
+
+Rozstrzygające jest to, czego **nie ma**: linia `po esp_hidh_dev_open zostalo N B stosu`
+leci bezwarunkowo po wywołaniu, a dla tej próby jej nie było. Czyli wywołanie nie wróciło.
+
+Przyczyna w `components/esp_hid/src/nimble_hidh.c`:
+
+```c
+nimble_hidh.c:49    static inline void WAIT_CB(void)
+                    { xSemaphoreTake(s_ble_hidh_cb_semaphore, portMAX_DELAY); }
+
+nimble_hidh.c:353   rc = ble_gattc_disc_all_chrs(...);
+                    WAIT_CB();          /* rc NIE jest sprawdzane */
+```
+
+Czekanie jest bez timeoutu, a kod nie sprawdza, czy operacja GATT w ogóle wystartowała.
+Gdy link padnie w trakcie odkrywania usług, kolejne wywołania `ble_gattc_*` zwracają
+`BLE_HS_ENOTCONN` **synchronicznie**, żaden callback nie przyjdzie i nie ma kto oddać
+semafora. To samo dotyczy `WAIT_CB()` w liniach 314 i 467.
+
+Skutek: zadanie wołające umiera na stałe. Ponieważ to ono skanuje, mostek przestaje szukać
+urządzeń — więc nic już się nie podłączy, mimo że reszta firmware'u działa.
+
+**Rozwiązanie:** `esp_hidh_dev_open()` jest teraz wołane w osobnym, jednorazowym zadaniu
+`hid_open` (8 kB), a `hid_scan` czeka na wynik z limitem 45 s (samo `ble_gap_connect`
+w środku ma 30 s timeoutu, więc limit nie łapie zwykłych niepowodzeń).
+
+Po przekroczeniu limitu robimy **kontrolowany restart**. Dlaczego nie coś delikatniejszego:
+
+- zawieszonego zadania nie da się bezpiecznie usunąć — siedzi na prywatnym semaforze
+  `esp_hidh`, którego z zewnątrz nie widać,
+- kolejna próba otwarcia konkurowałaby z nim o **ten sam** semafor, więc callback obudziłby
+  zawieszone zadanie, a nie nowe — i zawiesiłoby się też,
+- bondy są w NVS, więc restart jest tani: PC wraca po ~0,5–2 s, klawiatura i mysz same się
+  podłączają.
+
+Dodatkowo zmniejszamy szansę na samo zerwanie linku: po udanym otwarciu urządzenia jest
+**3 s przerwy** przed próbą podłączenia następnego. Zerwanie z logu nastąpiło 1,5 s po
+podłączeniu myszy, gdy odkrywanie usług klawiatury konkurowało o antenę ze świeżo
+zasubskrybowanymi notyfikacjami myszy i raportami pada.
+
+Docelowo (poza zakresem PoC): zrezygnować z `esp_hidh` i napisać klienta HOGP wprost na
+NimBLE GATT, tak jak stronę peryferialną zrobiliśmy na `ble_svc_hid`. Ten komponent ma już
+w naszych notatkach cztery osobne wady: §4.2, §4.11, §4.15 i tę.
+
+### 4.24 Dlaczego prawy analog widać w `joy.cpl` jako „oś Z" i „obrót Z"
+
+To nie jest błąd, tylko konsekwencja deskryptora. `s_report_map` deklaruje cztery osie:
+`X` (0x30), `Y` (0x31), `Z` (0x32) i `Rz` (0x35). X/Y to lewy analog, Z/Rz prawy — taki
+układ mają typowe pady DirectInput, więc gry go rozpoznają. `joy.cpl` rysuje krzyżykiem
+tylko pierwszą parę (X/Y), a Z i Rz pokazuje jako dwa osobne suwaki. Dlatego ruch myszy
+w poziomie widać na suwaku „oś Z", a w pionie na „obrót Z".
+
+Gdyby to kiedyś zmieniać (np. na `Rx`/`Ry`), trzeba pamiętać, że **każda zmiana
+`s_report_map` wymaga usunięcia pada z listy urządzeń Bluetooth w Windows i sparowania
+od nowa** (§4.7).
+
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 
 Źródło: `D:\wysypisko\openlara_esp32\retro-go\openlara\components\OpenLara\src\platform\retrogo\`
@@ -561,16 +634,16 @@ bo w razie problemu wiadomo, która rola zawiodła.
       (`razem 2/2 urzadzen` + `pad gotowy`), `heap 186960 B`.
 - [x] **Etap 2** — pad. Własna usługa HID, syntetyczny wzorzec testowy. Windows paruje,
       `joy.cpl` pokazuje ruch. **Zweryfikowane na sprzęcie 2026-08-16.**
-- [~] **Etap 3** — scalenie. Klawiatura → pad **zweryfikowana end-to-end** w `joy.cpl`.
-      Mysz → prawy analog: dekodowanie potwierdzone danymi, wygładzanie dopisane po
-      pomiarze częstotliwości raportów, ale **odczucie na sprzęcie jeszcze niesprawdzone**.
+- [x] **Etap 3** — scalenie. Klawiatura **i mysz** → pad, potwierdzone w `joy.cpl`: WASD na
+      lewym analogu, ruch myszy na osi Z / obrocie Z, przyciski i kółko działają.
 
 Do zamknięcia PoC zostaje:
 
-- [ ] test odczucia prawego analoga i dobranie `CONFIG_APP_MOUSE_SCALE_DIV`,
+- [ ] sprawdzenie, czy blokada z §4.23 faktycznie zniknęła (mysz zasypia i wraca sama,
+      bez restartu C3 — a jeśli restart się zdarzy, ma być automatyczny i widoczny w logu),
 - [ ] sprawdzenie, czy crash z §4.21 wraca po powiększeniu puli wpisów,
-- [ ] pomiar opóźnienia wejście → pad (i przy okazji: czy interwał połączenia nie jest
-      zbyt duży z powodu odrzucanych aktualizacji parametrów).
+- [ ] dobranie `CONFIG_APP_MOUSE_SCALE_DIV` do gustu,
+- [ ] pomiar opóźnienia wejście → pad.
 
 ## 6. Zasady dla agenta
 

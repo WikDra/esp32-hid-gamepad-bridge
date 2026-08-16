@@ -82,6 +82,11 @@ Kolejność ma znaczenie — najpierw wejścia, potem PC:
 
 Klucze parowania są zapisywane w NVS, więc po restarcie urządzenia łączą się same.
 
+Jeśli w logu pojawi się `esp_hidh_dev_open() nie wrocilo w 45 s`, mostek **restartuje się
+sam**. To obejście błędu w ESP-IDF, który przy zerwaniu połączenia w trakcie odczytu usług
+zawiesza wątek na stałe (szczegóły w `AGENTS.md` §4.23). Po restarcie PC wraca po ~2 s,
+a klawiatura i mysz podłączają się same — nie trzeba nic robić.
+
 **Po zmianie deskryptora raportu HID trzeba usunąć pad z listy urządzeń Bluetooth w Windows
 i sparować go ponownie** — Windows cache'uje deskryptor per sparowane urządzenie i inaczej
 pokaże stary układ osi i przycisków.
