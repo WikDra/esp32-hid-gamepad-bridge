@@ -36,6 +36,13 @@ firmware i konsoli. Żadnego dodatkowego okablowania nie trzeba.
   najprościej użyć tego z ESP-IDF:
   `C:\Users\<user>\.espressif\python_env\idf5.5_py3.12_env\Scripts\python.exe`.
 
+> **Projekt zawiera załataną kopię komponentu ESP-IDF.** W `firmware/components/esp_hid/`
+> leży kopia komponentu `esp_hid` z poprawką błędu, który uniemożliwiał ponowne połączenie
+> urządzenia po jego uśpieniu (`services_discovered` nie było zerowane, co przy trzecim
+> otwarciu urządzenia psuło stos — `AGENTS.md` §4.27). Kopia jest **przypięta do IDF 5.5.1**;
+> po zmianie wersji IDF trzeba ją odtworzyć. Że build używa naszej kopii, a nie wersji z IDF,
+> sprawdza `wsl python3 scripts/check_local_esp_hid.py`.
+
 ## Budowanie i wgrywanie
 
 ```bat

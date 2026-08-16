@@ -66,7 +66,9 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | **Blokada `esp_hidh_dev_open()` na zawsze** | znaleziona i obsłużona — realny błąd, ale **nie** przyczyna objawu z rekonekcją (§4.23) |
 | **Brak `ESP_HIDH_CLOSE_EVENT` na NimBLE** | to była przyczyna „mysz po zaśnięciu nie wraca": tablica trzymała odłączone urządzenie 145 s, licznik `2/2` blokował skanowanie (§4.25) |
 | **Cykl uśpienie → powrót myszy przechodzi** | w logu: `wejscie odlaczone f4:ee:… reason=531` → `zasoby odlaczonego urzadzenia zwolnione` → `wejscia 1` → `skan` → `kandydat f4:ee:…` → ponowne połączenie. Wykrywanie rozłączeń z GAP działa |
-| Drugi crash: skok w pulę procedur GATT | `Instruction access fault`, `MEPC=0x3fc98678` leży w `ble_gattc_proc_mem` (§4.26). `GATT_MAX_PROCS` podniesione 4 → 12, pad milczy na czas otwierania. **Skuteczność niepotwierdzona** |
+| Drugi crash: skok w pulę procedur GATT | `Instruction access fault`, `MEPC=0x3fc98678` leży w `ble_gattc_proc_mem` (§4.26). `GATT_MAX_PROCS` 4 → 12 **nie pomogło** |
+| **PRZYCZYNA znaleziona: `services_discovered` w IDF nigdy nie jest zerowane** | licznik rośnie przez cały czas życia firmware'u, a `svc_disced()` pisze po tablicy 10 elementów na stosie wołającego. Trzecie otwarcie urządzenia (czyli powrót po uśpieniu) niszczy ramkę stosu — §4.27 |
+| Naprawa | lokalna kopia komponentu `esp_hid` z jednolinijkową łatką + kontrole granic. Potwierdzone, że build bierze naszą kopię (`check_local_esp_hid.py`) i że łatka jest w binarce. **Weryfikacja cyklu uśpienia na sprzęcie do zrobienia** |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
 
@@ -156,6 +158,12 @@ GATT ręcznie; okazało się, że NimBLE ma gotową usługę HID, która nie ma 
 Rozważona alternatywa: skopiować `nimble_hidd.c` do projektu jako lokalny komponent i dodać
 `if (desc.role != BLE_GAP_ROLE_SLAVE) return 0;`. Mniej pisania, ale utrzymujemy forka pliku
 z IDF (25 kB) i nadal zostaje Problem 1. Odrzucone.
+
+**Sprostowanie (2026-08-16):** argument „nie forkujemy komponentu" przestał obowiązywać.
+Po znalezieniu §4.27 — udowodnionego, jednolinijkowego błędu w `nimble_hidh.c`, który
+uniemożliwiał powrót urządzenia po uśpieniu — komponent `esp_hid` **jest** skopiowany do
+`firmware/components/esp_hid/` i załatany. Decyzja o samodzielnym peryferialu na
+`ble_svc_hid` zostaje mimo to słuszna: tamta strona nie sprawiła ani jednego problemu.
 
 ### 4.8 `CONFIG_BT_NIMBLE_HID_SERVICE` gatuje też **hosta**, nie tylko serwer
 
@@ -717,6 +725,81 @@ proszą o zmianę parametrów połączenia — czyli mechanizmu, który w logu b
 `esp_nimble_cfg.h` nie ma osłony `#ifndef`; trzeba by podnieść
 `CONFIG_BT_NIMBLE_L2CAP_COC_MAX_NUM`, co przy okazji włącza nieużywane kanały L2CAP CoC.
 
+### 4.27 PRZYCZYNA crashy przy powrocie urządzenia: `services_discovered` nigdy nie jest zerowane
+
+To jest **udowodniona przyczyna**, nie hipoteza. Wszystkie poprzednie próby (§4.21, §4.26)
+celowały w objawy.
+
+W `components/esp_hid/src/nimble_hidh.c`:
+
+```c
+44:  static int services_discovered;                      /* globalne */
+176: memcpy(service_result + services_discovered, service, sizeof(struct ble_gatt_svc));
+177: services_discovered++;                               /* bez kontroli granicy */
+311: struct ble_gatt_svc service_result[10];               /* NA STOSIE WOLAJACEGO */
+319: dcount = services_discovered;  /* fatal if services are more than 10 */
+502: dscs_discovered = 0;                                 /* resetowane */
+508: chrs_discovered = 0;                                 /* resetowane */
+```
+
+`chrs_discovered` i `dscs_discovered` są zerowane. **`services_discovered` nie jest zerowane
+nigdzie w całym pliku** (grep: cztery trafienia, żadne nie jest przypisaniem zera). Licznik
+rośnie więc monotonicznie przez cały czas życia firmware'u, a callback `svc_disced()` pisze
+pod `service_result + services_discovered`, gdzie `service_result` to tablica **10 elementów
+na stosie zadania wołającego** `esp_hidh_dev_open()`.
+
+Arytmetyka zgadza się z obserwacjami. Każde z naszych urządzeń wystawia 5–6 usług
+(GAP 0x1800, GATT 0x1801, DIS 0x180A, BAS 0x180F, HID 0x1812, czasem vendor):
+
+| Otwarcie | Zapisywane indeksy | Wynik |
+|---|---|---|
+| 1. (mysz) | 0–5 | OK |
+| 2. (klawiatura) | 6–11 | częściowo za tablicą, ale trafia w nieużywane wyrównanie |
+| 3. (powrót myszy po uśpieniu) | 12–17 | **niszczy ramkę stosu** |
+
+Dlatego dwa pierwsze urządzenia łączyły się **zawsze**, a padało dopiero przy trzecim
+otwarciu — czyli dokładnie w momencie, w którym urządzenie wraca po uśpieniu. I dlatego
+żadna zmiana konfiguracji nie mogła pomóc.
+
+Jak to zostało ustalone: crash wystąpił trzy razy z **prawie identycznym zestawem
+rejestrów** (`T1=0x01020600`, `S3=0x180a0610`, `S9=0x180f0610`, `T5=0x01010600`), co wyklucza
+przypadkową korupcję. Rozczytanie tych wartości jako par 16-bitowych daje
+`0x180A`/`0x180F`/`0x1812` oraz zakresy uchwytów GATT — czyli zawartość `struct ble_gatt_svc`.
+To wskazało wprost na tablicę `service_result[]`.
+
+**Naprawa: lokalna kopia komponentu w `firmware/components/esp_hid/`.** ESP-IDF pozwala
+nadpisać własny komponent, wstawiając komponent o tej samej nazwie do projektu. Łatka to
+w istocie jedna linia:
+
+```c
+services_discovered = 0;                 /* przed ble_gattc_disc_all_svcs() */
+```
+
+Dodatkowo dołożone są kontrole granic we wszystkich trzech callbackach odkrywania
+(`BLE_HIDH_MAX_SERVICES/CHRS/DSCS`), bo samo zerowanie nie chroni przed urządzeniem, które
+wystawia więcej usług niż rozmiar tablicy — oryginał ma tam tylko komentarz „fatal if
+services are more than 10" i żadnego testu.
+
+Wszystkie zmiany są opatrzone komentarzem `LOKALNA LATKA`, więc `diff` względem IDF jest
+czytelny. Kopia jest przypięta do **IDF 5.5.1** — po zmianie wersji IDF trzeba ją odtworzyć.
+
+Weryfikacja, że build bierze naszą kopię, a nie wersję z IDF (bez tego objaw wróciłby cicho):
+
+```
+wsl python3 scripts/check_local_esp_hid.py
+strings -a firmware/build.esp32c3/hid_gamepad_bridge.bin | grep 'za duzo uslug'
+```
+
+Czego to **nie** wyjaśnia: crash z §4.21 miał inną sygnaturę i wypadł w wątku hosta NimBLE,
+przy czytaniu listy w BSS komponentu `bt`. Zapis poza `service_result` idzie w górę stosu
+zadania otwierającego i teoretycznie może zajść dalej, ale nie ma na to dowodu. Jeśli §4.21
+wróci po tej naprawie, będzie to osobny problem.
+
+Zmiany wprowadzone wcześniej na podstawie **błędnych** hipotez zostają, bo są nieszkodliwe
+i dają zapas przy trzech linkach, ale trzeba wiedzieć, że nie one naprawiły objaw:
+`MYNEWT_VAL_BLE_GAP_MAX_PENDING_CONN_PARAM_UPDATE=4` (§4.21) oraz
+`CONFIG_BT_NIMBLE_GATT_MAX_PROCS=12` (§4.26).
+
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 
 Źródło: `D:\wysypisko\openlara_esp32\retro-go\openlara\components\OpenLara\src\platform\retrogo\`
@@ -797,10 +880,10 @@ bo w razie problemu wiadomo, która rola zawiodła.
 
 Do zamknięcia PoC zostaje:
 
-- [ ] potwierdzenie, że po uśpieniu urządzenia licznik `wejscia` spada i mostek je odzyskuje
-      bez restartu (w logu: `wejscie odlaczone … reason=…` i `zasoby odlaczonego urzadzenia
-      zwolnione`, potem `kandydat …` i `razem 2/2`),
-- [ ] sprawdzenie, czy crash z §4.21 wraca po powiększeniu puli wpisów,
+- [ ] **weryfikacja łatki z §4.27: kilka cykli uśpienie → powrót myszy bez crashu.**
+      W logu: `wejscie odlaczone … reason=…`, `zasoby odlaczonego urzadzenia zwolnione`,
+      potem `kandydat …` i `razem 2/2` — i tak co najmniej trzy razy pod rząd,
+- [ ] sprawdzenie, czy crash z §4.21 (inna sygnatura, wątek hosta NimBLE) jeszcze wraca,
 - [ ] dobranie `CONFIG_APP_MOUSE_SCALE_DIV` do gustu,
 - [ ] pomiar opóźnienia wejście → pad.
 
