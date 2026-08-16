@@ -41,4 +41,15 @@ menu "Mostek HID (konfiguracja aplikacji)"
             Zadanie budzi sie z ta czestotliwoscia, ale raport idzie do PC tylko
             wtedy, gdy stan pada sie zmienil.
 
+    config APP_MOUSE_SCALE_DIV
+        int "Mapowanie: dzielnik czulosci myszy"
+        depends on APP_ENABLE_GAMEPAD && APP_ENABLE_HID_HOST
+        range 1 128
+        default 8
+        help
+            Im wieksza wartosc, tym mniej czula mysz. Przyrost ruchu z jednego okresu
+            zadania jest dzielony przez (ta wartosc * 16) i skalowany do zakresu osi.
+            Do dobrania na sprzecie - zalezy od DPI myszy i od tego, czy raportuje
+            8- czy 16-bitowo.
+
 endmenu

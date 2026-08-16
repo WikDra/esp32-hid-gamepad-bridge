@@ -28,6 +28,9 @@
 #if CONFIG_APP_ENABLE_GAMEPAD
 #include "ble_gamepad.h"
 #endif
+#if CONFIG_APP_ENABLE_HID_HOST && CONFIG_APP_ENABLE_GAMEPAD && !CONFIG_APP_GAMEPAD_SELFTEST
+#include "input_mapper.h"
+#endif
 
 static const char *TAG = "bridge";
 
@@ -95,6 +98,14 @@ void app_main(void)
 #endif
 #if CONFIG_APP_ENABLE_GAMEPAD
     ESP_ERROR_CHECK(ble_gamepad_start());
+#endif
+
+#if CONFIG_APP_ENABLE_HID_HOST && CONFIG_APP_ENABLE_GAMEPAD && !CONFIG_APP_GAMEPAD_SELFTEST
+    /* Etap 3: klej miedzy rolami. Przy wlaczonym selfteScie pad chodzi wzorcem
+     * testowym, wiec mapowanie by z nim walczylo o ten sam raport. */
+    ESP_ERROR_CHECK(input_mapper_start());
+#elif CONFIG_APP_GAMEPAD_SELFTEST
+    ESP_LOGW(TAG, "selftest pada wlaczony - mapowanie wejsc NIEaktywne");
 #endif
 
     ESP_ERROR_CHECK(ble_stack_start());

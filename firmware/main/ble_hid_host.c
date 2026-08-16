@@ -345,18 +345,31 @@ static void handle_keyboard_report(const esp_hidh_event_data_t *p)
 
     /* Raport skladajacy sie wylacznie z kodow bledu ignorujemy calkowicie -
      * nadpisanie stanu zerami zgubiloby klawisz naprawde trzymany. */
-    if (!(rollover && keys[0] == 0 && d[0] == 0)) {
+    bool only_errors = rollover && keys[0] == 0 && d[0] == 0;
+    if (!only_errors) {
         taskENTER_CRITICAL(&s_mux);
         s_state.modifiers = d[0];
         memcpy(s_state.keys, keys, HID_KEYS_MAX);
         taskEXIT_CRITICAL(&s_mux);
     }
 
-    /* Raportow klawiatury jest malo (tylko na zmianie stanu), wiec logujemy kazdy.
-     * report_id i map sa w logu, bo klawiatura ma wiecej niz jeden raport 8-bajtowy. */
+    /* Raport samego rollovera nic nie wnosi, a AULA wysyla trzy takie po kazdym
+     * nacisnieciu klawisza (§4.17) - w logu to trzy czwarte linii. Zliczamy je
+     * i raportujemy zbiorczo, zeby log nadawal sie do czytania. */
+    if (only_errors) {
+        static uint32_t rollover_count;
+        static int64_t last_us;
+        int64_t now = esp_timer_get_time();
+        rollover_count++;
+        if ((now - last_us) > 1000000) {
+            last_us = now;
+            ESP_LOGD(TAG, "odfiltrowanych raportow ErrorRollOver: %" PRIu32, rollover_count);
+        }
+        return;
+    }
+
     char prefix[40];
-    snprintf(prefix, sizeof(prefix), "KBD map=%u id=%u%s", p->input.map_index,
-             p->input.report_id, rollover ? " (rollover)" : "");
+    snprintf(prefix, sizeof(prefix), "KBD map=%u id=%u", p->input.map_index, p->input.report_id);
     log_hex(prefix, d, len);
 }
 

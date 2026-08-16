@@ -86,6 +86,26 @@ Klucze parowania są zapisywane w NVS, więc po restarcie urządzenia łączą s
 i sparować go ponownie** — Windows cache'uje deskryptor per sparowane urządzenie i inaczej
 pokaże stary układ osi i przycisków.
 
+## Mapowanie wejść na pada
+
+| Wejście | Wyjście na padzie |
+|---|---|
+| `W` / `S` / `A` / `D` | lewy analog (skos skalowany, żeby nie był szybszy) |
+| ruch myszy | prawy analog (przyrost skalowany; po zatrzymaniu gałka wraca do środka) |
+| lewy / prawy / środkowy przycisk myszy | przycisk 1 / 2 / 3 |
+| `Spacja` | przycisk 4 |
+| lewy `Shift` / lewy `Ctrl` | przycisk 5 / 6 |
+| `E` / `Q` / `R` / `F` / `Tab` / `Esc` | przycisk 7 / 8 / 9 / 10 / 11 / 12 |
+
+Czułość myszy reguluje `CONFIG_APP_MOUSE_SCALE_DIV` (większa wartość = mniej czuła).
+Zmiana wymaga przebudowania: `scripts\build-win.bat esp32c3 menuconfig`, sekcja
+*Mostek HID (konfiguracja aplikacji)*.
+
+Do sprawdzenia samego deskryptora HID, bez klawiatury i myszy, jest
+`CONFIG_APP_GAMEPAD_SELFTEST` — pad krąży wtedy analogami i cyklicznie wciska przyciski.
+Przy włączonym selfteście mapowanie wejść jest nieaktywne (obie rzeczy pisałyby ten sam
+raport).
+
 ## Stan projektu
 
 Patrz tabela w [`AGENTS.md`](AGENTS.md#2-stan-projektu) — tam jest rozdzielone to, co

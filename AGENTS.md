@@ -44,10 +44,13 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | Bond pada przeżywa restart C3 | po `reset` PC łączy się sam po 2,1 s, bez akcji użytkownika — czyli `NVS_PERSIST=y` działa |
 | Skaner znajduje klawiaturę | `HID ed:c7:b1:bb:83:01 type=1 rssi=-32 appearance=0x03c1 'AULA-F99Pro'` — adres **Random**, appearance keyboard |
 | Połączenie z klawiaturą się ustanawia | `GAP procedure initiated: connect` → `Connection established` |
-| **Klawiatura podłączona i wysyła raporty** | `KBD len=8 [00 00 07 …]` przy pisaniu — keycody `07`/`04`/`16`/`0b`/`0d` to `d`/`a`/`s`/`h`/`j` |
+| **Klawiatura podłączona i wysyła raporty** | `OPEN c8:d7:b2:79:50:5f 'AULA-F99Pro 5.0 ' vid=0x3554 pid=0xfa07`, potem `KBD map=0 id=1 len=8 [00 00 14 …]` przy pisaniu |
+| Tabela raportów klawiatury odczytana | 10 raportów, maska usage `0x63`, w tym własny raport myszy `id=5` (§4.16) |
+| Klasyfikacja urządzenia (kbd/mouse) | `wejscia 1 (kbd=1 mouse=1)` — poprawiona, liczona z listy raportów (§4.15) |
+| **Rekonekcja po wybudzeniu klawiatury** | `DIR_IND BOND` bez nazwy i appearance → połączenie bez akcji użytkownika (§4.20) |
 | Bond klawiatury zapisany w NVS | `bondow w NVS: 2` (PC + klawiatura) po restarcie C3 |
-| Pamięć z padem + klawiaturą | `heap 192140 B (min 191192 B)` |
-| Klasyfikacja urządzenia (kbd/mouse) | naprawiona: liczona z listy raportów, nie z `esp_hidh_dev_usage_get()` (§4.15). **Do potwierdzenia w logu.** |
+| Margines stosu `hid_scan` | `po esp_hidh_dev_open zostalo 5588 B stosu` z 8192 B, czyli szczyt ~2604 B (§4.11) |
+| Pamięć z padem + klawiaturą | `heap 192100 B (min 191148 B)` |
 | Mysz AJAZZ AJ159 Pro | **jeszcze nie testowana** |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
@@ -279,27 +282,69 @@ Poprawnie ustawiane jest `report->usage` — per raport, na podstawie Report Map
   daje gotową maskę),
 - `usage` w `ESP_HIDH_INPUT_EVENT` jest wiarygodne i po nim rozdzielamy raporty.
 
-### 4.16 AULA F99 Pro wysyła serie `ErrorRollOver` po każdym naciśnięciu
+### 4.16 AULA F99 Pro: dziesięć raportów, w tym własny raport myszy
 
-Log z płytki przy pisaniu na klawiaturze (`07` = `d`, `04` = `a`, `16` = `s`):
+Tabela raportów odczytana z urządzenia (log z płytki, 2026-08-16):
 
 ```
-KBD len=8 [00 00 07 00 00 00 00 00]
-KBD len=8 [00 00 00 00 00 00 00 00]
-KBD len=8 [00 00 01 00 00 00 00 00]     <- trzy razy, ~130 ms odstępu
-KBD len=8 [00 00 00 00 00 00 00 00]
+map=0 id=1  typ=OUTPUT usage=KEYBOARD len=1
+map=0 id=1  typ=INPUT  usage=KEYBOARD len=8      <- ten dostajemy w praktyce
+map=0 id=2  typ=INPUT  usage=KEYBOARD len=8
+map=0 id=2  typ=INPUT  usage=KEYBOARD len=20     <- prawdopodobnie NKRO (bitmapa)
+map=0 id=3  typ=INPUT  usage=CCONTROL len=2      <- klawisze multimedialne
+map=0 id=4  typ=INPUT  usage=GENERIC  len=1      <- system control
+map=0 id=5  typ=INPUT  usage=MOUSE    len=6      <- warstwa myszy w klawiaturze
+map=0 id=19 typ=INPUT  usage=VENDOR   len=19
+map=0 id=19 typ=OUTPUT usage=VENDOR   len=19
+```
+
+Maska usage z raportów INPUT wychodzi `0x63` = KEYBOARD | MOUSE | CCONTROL | VENDOR.
+
+Dwa wnioski:
+
+1. **`mouse=1` w logu nie znaczy „mysz podłączona"** — sama klawiatura wystawia raport myszy
+   (`id=5`, 6 B), bo ma warstwę Fn z emulacją myszy. Flaga mówi „są dostępne raporty myszy",
+   nie „jest fizyczna mysz". Przy testach myszy AJ159 Pro trzeba patrzeć na liczbę urządzeń,
+   nie na tę flagę.
+2. Raport `id=5 usage=MOUSE len=6` jest zgodny z hipotezą 16-bitowych osi
+   (1 B przyciski + 2 B X + 2 B Y + 1 B kółko = 6 B), ale nadal **nie jest to potwierdzone
+   danymi** — trzeba zobaczyć surowe bajty przy realnym ruchu.
+
+Przy okazji: raport `id=19 usage=VENDOR` przychodzi zaraz po połączeniu jako
+`RAW len=19 [0a 01 00 04 05 64 01 …]`. `64` = 100 dziesiętnie, a chwilę wcześniej jest
+`bateria 100%`, więc to najprawdopodobniej ramka statusu urządzenia. Ignorujemy ją.
+
+### 4.17 AULA F99 Pro wysyła serie `ErrorRollOver` po każdym naciśnięciu
+
+Log przy pisaniu (`14` = `q`, `1a` = `w`, `08` = `e`):
+
+```
+KBD map=0 id=1 len=8 [00 00 14 00 00 00 00 00]
+KBD map=0 id=1 len=8 [00 00 00 00 00 00 00 00]
+KBD map=0 id=1 (rollover) len=8 [00 00 01 00 00 00 00 00]   <- trzy razy, ~130 ms
+KBD map=0 id=1 len=8 [00 00 00 00 00 00 00 00]
 ```
 
 `0x01` w pozycji keycodu to **`ErrorRollOver`** z tabeli USB HID Keyboard/Keypad
-(0x01 ErrorRollOver, 0x02 POSTFail, 0x03 ErrorUndefined) — nie klawisz. Bez filtra pad
-dostawałby fantomowy przycisk po każdym naciśnięciu.
+(0x01 ErrorRollOver, 0x02 POSTFail, 0x03 ErrorUndefined) — nie klawisz. Potwierdzone, że
+przychodzi na **tym samym** `map=0 id=1` co prawdziwe klawisze, czyli to nie jest inny raport
+źle zinterpretowany. Bez filtra pad dostawałby fantomowy przycisk po każdym naciśnięciu.
 
 `handle_keyboard_report()` zeruje keycody 0x01–0x03, a raport złożony wyłącznie z nich
 (bez modyfikatorów) ignoruje w całości — nadpisanie stanu zerami zgubiłoby klawisz
-naprawdę trzymany. Skąd te raporty się biorą, powie `map=`/`id=` w logu; filtr jest
-poprawny niezależnie od źródła, bo wynika ze specyfikacji.
+naprawdę trzymany.
 
-### 4.17 Beacon Swift Pair z Windows w wynikach skanu
+### 4.18 Nieszkodliwe błędy w logu przy połączeniu z klawiaturą
+
+Trzy rzeczy, które wyglądają na awarię, a nią nie są:
+
+| Linia | Co to |
+|---|---|
+| `Read complete; status=14` | `BLE_HS_EDONE` — koniec odczytu, nie błąd |
+| `Subscribe complete; status=259` / `269` | `0x103` i `0x10D` to błędy ATT 0x03 (Write Not Permitted) i 0x0D (Invalid Attribute Value Length) — `esp_hidh` próbuje włączyć notyfikacje na charakterystykach, które ich nie mają (raporty OUTPUT/VENDOR). Subskrypcja raportu klawiatury kończy się `status=0` |
+| `ogf=0x08, ocf=0x0013, hci_err=0x212` | `HCI_LE_Connection_Update` z parametrami, których kontroler nie przyjął. Połączenie działa dalej z dotychczasowymi parametrami. **Do sprawdzenia przy pomiarach opóźnienia** — jeśli interwał połączenia zostanie duży, to jest pierwszy podejrzany |
+
+### 4.19 Beacon Swift Pair z Windows w wynikach skanu
 
 W każdym skanie widać urządzenie z rotującym adresem Random, silnym sygnałem i bez nazwy:
 
@@ -315,6 +360,23 @@ próba połączenia skończyłaby się 30-sekundowym timeoutem w blokującym `es
 
 To był początkowo podejrzany o bycie klawiaturą (rotujący adres, mocny sygnał). Nie jest —
 klawiatura po prostu zasypia i przestaje rozgłaszać.
+
+### 4.20 Klawiatura wracająca ze snu nie rozgłasza UUID 0x1812
+
+Potwierdzone na sprzęcie: po wybudzeniu AULA F99 Pro rozgłasza się tak:
+
+```
+HID c8:d7:b2:79:50:5f type=1 rssi=-36 DIR_IND BOND appearance=0x0000 '?'
+```
+
+Ani nazwy, ani appearance, ani UUID usługi HID. Kwalifikacja oparta wyłącznie na treści
+pakietu ADV (§4.4) **przepuściłaby ten przypadek**. Dlatego kandydatem jest też:
+
+- adres obecny na liście bondów w NVS (`ble_store_util_bonded_peers()`),
+- rozgłoszenie kierunkowe `BLE_HCI_ADV_RPT_EVTYPE_DIR_IND` (urządzenie celuje w konkretny host).
+
+Adres w bondzie to adres tożsamości, a w skanie może przyjść z innym oznaczeniem typu,
+dlatego porównujemy same bajty adresu, bez `type`.
 
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 
@@ -386,12 +448,14 @@ bo w razie problemu wiadomo, która rola zawiodła.
 
 - [x] **Etap 0** — szkielet ESP-IDF (target esp32c3, konsola USB Serial/JTAG), skrypty
       build/flash/monitor, boot potwierdzony na COM6.
-- [ ] **Etap 1** — tylko host. Klawiatura **i** mysz połączone jednocześnie, raporty w logu.
-      Zmierzyć `free_heap` z dwoma połączeniami.
+- [~] **Etap 1** — tylko host. **Klawiatura zweryfikowana na sprzęcie** (połączenie,
+      raporty, rekonekcja po wybudzeniu, `heap 192100 B`). Mysz AJ159 Pro nadal nietestowana,
+      więc dwa jednoczesne połączenia centralne **nie są jeszcze potwierdzone**.
 - [x] **Etap 2** — pad. Własna usługa HID, syntetyczny wzorzec testowy. Windows paruje,
       `joy.cpl` pokazuje ruch. **Zweryfikowane na sprzęcie 2026-08-16.**
-- [ ] **Etap 3** — scalenie. Zadanie raportujące ~100 Hz, mapowanie wejść, wysyłka tylko przy
-      zmianie stanu. Weryfikacja end-to-end.
+- [~] **Etap 3** — scalenie. `input_mapper.c` napisany i wystartowany na płytce
+      (`mapowanie wejsc na pada wlaczone (100 Hz, dzielnik myszy 8)`), selftest wyłączony.
+      **Weryfikacja end-to-end w `joy.cpl` jeszcze nie zrobiona.**
 
 ## 6. Zasady dla agenta
 

@@ -71,6 +71,7 @@ CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
 # a wolamy je z app_main. Domyslne 3584 B jest zbyt ciasne.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=5120
 
-# Etap 2: pad chodzi syntetycznym wzorcem, zeby dalo sie sprawdzic joy.cpl bez
-# klawiatury i myszy. WYLACZYC w Etapie 3, gdy wejdzie realne mapowanie.
-CONFIG_APP_GAMEPAD_SELFTEST=y
+# Etap 3: pad chodzi realnym mapowaniem wejsc, nie wzorcem testowym. Wzorzec
+# zostaje jako narzedzie diagnostyczne - wlaczyc, gdy trzeba sprawdzic sam
+# deskryptor HID w joy.cpl bez klawiatury i myszy.
+CONFIG_APP_GAMEPAD_SELFTEST=n
