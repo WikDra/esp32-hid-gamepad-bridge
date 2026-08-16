@@ -9,3 +9,6 @@ firmware/dependencies.lock
 firmware/sdkconfig.local
 firmware/sdkconfig.local.*
 !firmware/sdkconfig.local.example
+
+# pliki pomocnicze diagnostyki (nm, mapy)
+nm.txt
