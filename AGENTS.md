@@ -51,7 +51,10 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | Bond klawiatury zapisany w NVS | `bondow w NVS: 2` (PC + klawiatura) po restarcie C3 |
 | Margines stosu `hid_scan` | `po esp_hidh_dev_open zostalo 5588 B stosu` z 8192 B, czyli szczyt ~2604 B (§4.11) |
 | Pamięć z padem + klawiaturą | `heap 192100 B (min 191148 B)` |
-| Mysz AJAZZ AJ159 Pro | **jeszcze nie testowana** |
+| **Etap 3 end-to-end: klawiatura → pad → PC** | zweryfikowane w `joy.cpl`; w logu zgadza się każde mapowanie: `04`→`L(-127,0)`, `07`→`L(127,0)`, `1a`→`L(0,-127)`, `16`→`L(0,127)`, `2c`→`btn=0x008`, `02`(LShift)→`0x010`, `01`(LCtrl)→`0x020`, `08`→`0x040`, `14`→`0x080`, `15`→`0x100`, `2b`→`0x400`, `29`→`0x800` |
+| Klawisze niezmapowane są ignorowane | `04` (LAlt) i `35` (`` ` ``) nie zmieniają raportu pada |
+| Pamięć z padem + klawiaturą + mapperem | `heap 188692 B (min 187720 B)` |
+| Mysz AJAZZ AJ159 Pro | **jeszcze nie testowana** — dekodowanie osi nadal zgadywane (§4.10) |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
 
@@ -192,9 +195,23 @@ zwykle raportuje 12- lub 16-bitowo, a OpenLara nigdy nie potwierdziła myszy na 
 (w jej `AGENTS.md` jest tylko „powinna działać").
 
 `ble_hid_host.c` rozpoznaje po długości raportu: `len >= 5` → 16-bit little-endian,
-inaczej 8-bit. Równolegle loguje surowe bajty (`MOU len=… [hex]`) przy pierwszych ośmiu
-raportach i potem raz na sekundę, żeby dało się odczytać prawdziwy układ z logu
-i poprawić przed Etapem 3.
+inaczej 8-bit. **To jest hipoteza, nie wiedza.** Żeby ją rozstrzygnąć danymi, a nie
+zgadywaniem, `handle_mouse_report()` przy pierwszych 40 raportach loguje surowe bajty
+i obok nich **wszystkie trzy** możliwe interpretacje:
+
+```
+MOU map=0 id=5 len=6 [00 12 00 f4 ff 00]
+  btn=0x00 | 8-bit(  18,   0) 12-bit(   18,   -1) 16-bit(    18,   -12) | uzywam(18,-12)
+```
+
+- **8-bit**: `d[1]`, `d[2]` — klasyczny boot protocol,
+- **12-bit**: `X = d1 | (d2 & 0x0F) << 8`, `Y = (d2 >> 4) | d3 << 4` — typowe pakowanie
+  w myszach o wyższym DPI,
+- **16-bit**: `d[1..2]`, `d[3..4]` little-endian.
+
+Przy powolnym ruchu **w jedną oś** poprawny wariant jest widoczny natychmiast: pozostałe
+dwa dają albo śmieci, albo niezerową drugą oś. Po ustaleniu układu heurystykę trzeba
+zastąpić twardym dekodowaniem i opisać tu wynik.
 
 ### 4.11 `esp_hidh_dev_open()` potrzebuje grubego stosu w **swoim** zadaniu
 
