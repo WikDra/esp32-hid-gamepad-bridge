@@ -73,6 +73,10 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | Zabezpieczenie z §4.23 zadziałało w praktyce | gdy mysz zasnęła w trakcie odkrywania usług klawiatury, link padł (`reason=520`), `esp_hidh_dev_open()` zawisło i firmware zrobił kontrolowany restart zamiast zawisnąć na stałe |
 | **Naprawa §4.28 potwierdzona na sprzęcie** | `polaczenie nawiazane, conn_handle=4` → `mtu update event; conn_handle=4 mtu=247` → **bez paniki**, 180 s pracy, `razem 2/2 urzadzen`. To była niezawodna recepta na crash |
 | **Mysz milczała po ponownym połączeniu** | przyczyna: `esp_hidh` nigdy nie inicjuje szyfrowania, a HOGP tego wymaga (§4.29). Naprawione, potwierdzone logiem: `szyfrowanie: conn_handle=3 status=0 \| enc=1 bond=1`, `zapis CCCD: status=0` ×6, `MOU map=0 id=5 len=7 [00 35 00 7e 00 00 00]` |
+| **Naprawa §4.29 potwierdzona end-to-end: mysz → prawy analog** | oba linki zaszyfrowane (`enc=1 bond=1` dla `conn_handle=3` i `4`), wszystkie `zapis CCCD: status=0`, raporty `MOU … dx=-18 dy=-2` → `pad: R(-15,0)`, przyciski myszy `btn=0x002` |
+| Pełne mapowanie klawiatury potwierdzone ponownie | `1a`→`L(0,-127)`, `04`→`L(-127,0)`, `16`→`L(0,127)`, `07`→`L(127,0)`, skos `16`+`07`→`L(90,90)` |
+| **Dwa kolejne cykle uśpienie → powrót myszy, bez crashu** | `reason=531` → `zasoby odlaczonego urzadzenia zwolnione` → skan → `kandydat` → `conn_handle=4` → `razem 2/2`; w jednym przebiegu 180 s wyszło pięć otwarć urządzeń |
+| Brak wycieku pamięci przez 180 s i kilka cykli | `heap 188856 B` z dwoma urządzeniami, `189816 B` po rozłączeniu, `min 179248 B` |
 | Naprawa | lokalna kopia komponentu `esp_hid` z jednolinijkową łatką + kontrole granic. Potwierdzone, że build bierze naszą kopię (`check_local_esp_hid.py`) i że łatka jest w binarce. **Weryfikacja cyklu uśpienia na sprzęcie do zrobienia** |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
@@ -495,7 +499,8 @@ Trzy rzeczy, które wyglądają na awarię, a nią nie są:
 |---|---|
 | `Read complete; status=14` | `BLE_HS_EDONE` — koniec odczytu, nie błąd |
 | `Subscribe complete; status=259` / `269` | **Nie dotyczy subskrypcji.** To wynik `register_for_notify()`, które pisze `{1,0}` do uchwytu **wartości** charakterystyki, a nie do CCCD — ATT 0x03 (Write Not Permitted) jest tam normalny. Prawdziwa subskrypcja to `zapis CCCD` (§4.29) |
-| `ogf=0x08, ocf=0x0013, hci_err=0x212` | `HCI_LE_Connection_Update` odrzucony przez kontroler. **NIE jest nieszkodliwy** — koreluje z crashem z §4.21, który wystąpił dokładnie w timerze tej procedury. Połączenie działa dalej z dotychczasowymi parametrami, ale to jest podejrzany numer jeden przy każdej niestabilności |
+| `ogf=0x08, ocf=0x0013, hci_err=0x212` | `HCI_LE_Connection_Update` odrzucony przez kontroler. Podejrzewany o związek z crashem z §4.21 — **niesłusznie**, przyczyną było §4.28. Połączenie działa dalej z dotychczasowymi parametrami |
+| `raport nieobslugiwany: usage=GENERIC map=0 id=5` z `RAW len=7` | raport myszy, który przyszedł **w trakcie** odkrywania usług, przed sparsowaniem Report Map — `usage` jest wtedy jeszcze nieznane. Trafia w to tylko okno otwierania urządzenia, w którym mapper i tak wstrzymuje raporty pada |
 
 ### 4.19 Beacon Swift Pair z Windows w wynikach skanu
 
@@ -1024,7 +1029,9 @@ Do zamknięcia PoC zostaje:
       `conn_handle=4`, `mtu update event … mtu=247`, bez paniki, 180 s i `razem 2/2`.
 - [x] **naprawa §4.29: mysz milczała po ponownym połączeniu** (brak szyfrowania linku).
       Potwierdzone logiem: `enc=1 bond=1`, wszystkie `zapis CCCD: status=0`, raporty `MOU`.
-- [ ] potwierdzenie w `joy.cpl`, że ruch myszy znowu rusza prawym analogiem,
+- [x] **potwierdzenie, że ruch myszy znowu rusza prawym analogiem.** W logu widać pełny
+      łańcuch: `MOU … dx=-18 dy=-2` → `pad: R(-15,0)`, plus przyciski myszy i skos
+      klawiatury `L(90,90)` w tym samym przebiegu.
 - [ ] dobranie `CONFIG_APP_MOUSE_SCALE_DIV` do gustu,
 - [ ] pomiar opóźnienia wejście → pad.
 
