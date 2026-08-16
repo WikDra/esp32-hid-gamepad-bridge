@@ -17,6 +17,7 @@
 #include "esp_hid_common.h"
 #include "esp_hidh.h"
 #include "esp_log.h"
+#include "esp_private/esp_hidh_private.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -179,20 +180,6 @@ static void device_register(const ble_addr_t *addr, uint8_t usage_mask, esp_hidh
     taskEXIT_CRITICAL(&s_mux);
 }
 
-static void device_unregister(esp_hidh_dev_t *dev)
-{
-    taskENTER_CRITICAL(&s_mux);
-    for (int i = 0; i < HID_HOST_MAX_DEVICES; i++) {
-        if (s_devs[i].in_use && s_devs[i].dev == dev) {
-            s_devs[i].in_use = false;
-            s_devs[i].usage_mask = 0;
-            s_devs[i].dev = NULL;
-        }
-    }
-    refresh_connected_flags_locked();
-    taskEXIT_CRITICAL(&s_mux);
-}
-
 int ble_hid_host_device_count(void)
 {
     int n = 0;
@@ -204,6 +191,71 @@ int ble_hid_host_device_count(void)
     }
     taskEXIT_CRITICAL(&s_mux);
     return n;
+}
+
+/*
+ * Zdejmuje urzadzenie z tablicy po adresie i zwraca jego wskaznik esp_hidh.
+ * Po adresie, a nie po wskazniku, bo tak identyfikuje je zdarzenie GAP.
+ */
+static esp_hidh_dev_t *device_take_by_addr(const uint8_t *addr_val)
+{
+    esp_hidh_dev_t *dev = NULL;
+    taskENTER_CRITICAL(&s_mux);
+    for (int i = 0; i < HID_HOST_MAX_DEVICES; i++) {
+        if (s_devs[i].in_use && memcmp(s_devs[i].addr.val, addr_val, 6) == 0) {
+            dev = s_devs[i].dev;
+            s_devs[i].in_use = false;
+            s_devs[i].usage_mask = 0;
+            s_devs[i].dev = NULL;
+            break;
+        }
+    }
+    refresh_connected_flags_locked();
+    taskEXIT_CRITICAL(&s_mux);
+    return dev;
+}
+
+/*
+ * Urzadzenia odlaczone, czekajace na zwolnienie zasobow. Nie zwalniamy ich
+ * w watku hosta NimBLE (skad przychodzi zdarzenie rozlaczenia), bo free_inner
+ * bierze muteks listy urzadzen esp_hidh - robi to zadanie skanujace.
+ */
+static esp_hidh_dev_t *s_dead[HID_HOST_MAX_DEVICES];
+
+static void device_mark_dead(esp_hidh_dev_t *dev)
+{
+    taskENTER_CRITICAL(&s_mux);
+    for (int i = 0; i < HID_HOST_MAX_DEVICES; i++) {
+        if (s_dead[i] == NULL) {
+            s_dead[i] = dev;
+            break;
+        }
+    }
+    taskEXIT_CRITICAL(&s_mux);
+}
+
+static void reap_dead_devices(void)
+{
+    for (int i = 0; i < HID_HOST_MAX_DEVICES; i++) {
+        esp_hidh_dev_t *dev;
+        taskENTER_CRITICAL(&s_mux);
+        dev = s_dead[i];
+        s_dead[i] = NULL;
+        taskEXIT_CRITICAL(&s_mux);
+        if (dev == NULL) {
+            continue;
+        }
+        /*
+         * UWAGA: esp_hidh_dev_free() z publicznego API jest w IDF PUSTE
+         * (esp_hidh.c: "return ESP_OK;"). Zasoby zwalnia esp_hidh_dev_free_inner(),
+         * ktore normalnie wola wewnetrzny handler ESP_HIDH_CLOSE_EVENT - a to
+         * zdarzenie na sciezce NimBLE nie przychodzi nigdy (patrz AGENTS.md 4.25).
+         * Bez tego wywolania kazdy cykl uspienia urzadzenia zostawialby wpis
+         * w liscie esp_hidh i jego bufory na stercie.
+         */
+        esp_hidh_dev_free_inner(dev);
+        ESP_LOGI(TAG, "zasoby odlaczonego urzadzenia zwolnione");
+    }
 }
 
 void ble_hid_host_log_devices(void)
@@ -483,12 +535,17 @@ static void hidh_callback(void *args, esp_event_base_t base, int32_t id, void *e
     }
 
     case ESP_HIDH_CLOSE_EVENT: {
+        /*
+         * Na sciezce NimBLE to zdarzenie NIE PRZYCHODZI (AGENTS.md 4.25) - obsluga
+         * zostaje, bo jest poprawna i zadziala, jesli IDF kiedys to naprawi.
+         * Realnie rozlaczenie wykrywa gap_disconnect_listener().
+         */
         esp_hidh_dev_t *dev = p->close.dev;
         const uint8_t *bda = esp_hidh_dev_bda_get(dev);
         ESP_LOGW(TAG, "CLOSE " ADDR_FMT " reason=%d", ADDR_ARG(bda), p->close.reason);
-        device_unregister(dev);
-        /* Wymagane przez API: dopiero to zwalnia pamiec urzadzenia. */
-        esp_hidh_dev_free(dev);
+        if (device_take_by_addr(bda) != NULL) {
+            device_mark_dead(dev);
+        }
         break;
     }
 
@@ -496,6 +553,43 @@ static void hidh_callback(void *args, esp_event_base_t base, int32_t id, void *e
         ESP_LOGD(TAG, "zdarzenie hidh %" PRId32, id);
         break;
     }
+}
+
+/*
+ * Rozlaczenie wykrywamy sami, z globalnego zdarzenia GAP.
+ *
+ * Po co, skoro esp_hidh ma ESP_HIDH_CLOSE_EVENT: bo na sciezce NimBLE to zdarzenie
+ * nie przychodzi. nimble_hidh.c:687 wysyla je tylko pod warunkiem dev->connected,
+ * a to pole nie jest w tym pliku ustawiane na true ANI RAZU (AGENTS.md 4.25).
+ *
+ * Skutkiem byl dokladnie objaw zglaszany przez wlasciciela: mysz zasypia, zamyka
+ * link, a tablica urzadzen dalej ja trzyma. Licznik zostaje na 2/2, wiec skaner
+ * przestaje szukac i mysz nie ma jak wrocic - mimo ze firmware dziala normalnie.
+ *
+ * Listener jest globalny, wiec widzi tez rozlaczenie PC. To nie problem: szukamy
+ * adresu w NASZEJ tablicy wejsc, a PC w niej nie ma. Tym samym unikamy bledu,
+ * na ktorym wyklada sie nimble_hidd (brak sprawdzenia, czyje to polaczenie).
+ */
+static struct ble_gap_event_listener s_gap_listener;
+
+static int gap_disconnect_listener(struct ble_gap_event *event, void *arg)
+{
+    if (event->type != BLE_GAP_EVENT_DISCONNECT) {
+        return 0;
+    }
+
+    const struct ble_gap_conn_desc *conn = &event->disconnect.conn;
+    esp_hidh_dev_t *dev = device_take_by_addr(conn->peer_id_addr.val);
+    if (dev == NULL) {
+        /* Adres tozsamosci i adres uzyty w eterze moga sie roznic. */
+        dev = device_take_by_addr(conn->peer_ota_addr.val);
+    }
+    if (dev != NULL) {
+        ESP_LOGW(TAG, "wejscie odlaczone " ADDR_FMT " reason=%d, wracam do skanowania",
+                 ADDR_ARG(conn->peer_id_addr.val), event->disconnect.reason);
+        device_mark_dead(dev);
+    }
+    return 0;
 }
 
 /* ------------------------------------------------- otwieranie z ograniczeniem czasu */
@@ -880,6 +974,7 @@ static void scan_task(void *arg)
     ESP_LOGI(TAG, "zaczynam skanowanie (do %d urzadzen HID)", HID_HOST_MAX_DEVICES);
 
     while (true) {
+        reap_dead_devices();
         if (ble_hid_host_device_count() >= HID_HOST_MAX_DEVICES) {
             vTaskDelay(pdMS_TO_TICKS(3000));
             continue;
@@ -910,6 +1005,14 @@ esp_err_t ble_hid_host_start(void)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_hidh_init: %s", esp_err_to_name(err));
         return err;
+    }
+
+    /* Wykrywanie rozlaczen. Musi byc nasze, bo ESP_HIDH_CLOSE_EVENT na NimBLE
+     * nie przychodzi (AGENTS.md 4.25). */
+    int rc = ble_gap_event_listener_register(&s_gap_listener, gap_disconnect_listener, NULL);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "ble_gap_event_listener_register: rc=%d", rc);
+        return ESP_FAIL;
     }
 
     /*

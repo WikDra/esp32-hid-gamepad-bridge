@@ -63,7 +63,8 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | **Mysz → prawy analog działa end-to-end** | właściciel potwierdził w `joy.cpl`: lewo/prawo to oś Z, góra/dół to obrót Z (zgodne z deskryptorem, §4.24) |
 | Kółko i przyciski myszy | `btn=0x001` / `0x002` w raporcie pada, kółko czytane jako `int8` |
 | Crash w timerze GAP przy łączeniu z myszą | wystąpił **raz**, `Load access fault` wewnątrz NimBLE — patrz §4.21. Złagodzenie wgrane, **skuteczność niepotwierdzona** |
-| **Blokada `esp_hidh_dev_open()` na zawsze** | znaleziona i obsłużona — to była przyczyna „mysz po zaśnięciu nie wraca bez restartu" (§4.23) |
+| **Blokada `esp_hidh_dev_open()` na zawsze** | znaleziona i obsłużona — realny błąd, ale **nie** przyczyna objawu z rekonekcją (§4.23) |
+| **Brak `ESP_HIDH_CLOSE_EVENT` na NimBLE** | to była przyczyna „mysz po zaśnięciu nie wraca": tablica trzymała odłączone urządzenie 145 s, licznik `2/2` blokował skanowanie (§4.25). Rozłączenie wykrywamy teraz z GAP. **Do potwierdzenia na sprzęcie** |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
 
@@ -559,6 +560,72 @@ Gdyby to kiedyś zmieniać (np. na `Rx`/`Ry`), trzeba pamiętać, że **każda z
 `s_report_map` wymaga usunięcia pada z listy urządzeń Bluetooth w Windows i sparowania
 od nowa** (§4.7).
 
+### 4.25 `ESP_HIDH_CLOSE_EVENT` nigdy nie przychodzi na ścieżce NimBLE
+
+**To była prawdziwa przyczyna „mysz po zaśnięciu nie wraca bez restartu C3."** §4.23 opisuje
+inny, realny błąd, który też występował — ale po jego naprawie objaw został.
+
+Log z płytki (180 s, oba urządzenia podłączone poprawnie):
+
+```
+I (33680) podlaczone (maska usage 0x63), razem 2/2 urzadzen
+I (35520) NimBLE: disconnect; reason=531        <- 0x213, mysz sama zamknela link
+I (74410) KBD map=0 id=1 len=8 [00 00 08 …]    <- klawiatura dalej dziala
+I (180240) wejscia 2 | [0] f4:ee:…c8:75 | [1] c8:d7:…50:5f
+```
+
+Mysz odpadła w 35 s, a tablica urządzeń trzymała ją jeszcze 145 s później. Nie ma linii
+`CLOSE`. Skutek: licznik został na `2/2`, a `scan_task` skanuje tylko wtedy, gdy urządzeń
+jest mniej niż limit — więc przestał szukać i mysz nie miała jak wrócić.
+
+Przyczyna w `nimble_hidh.c`:
+
+```c
+nimble_hidh.c:686   dev = esp_hidh_dev_get_by_conn_id(event->disconnect.conn.conn_handle);
+nimble_hidh.c:687   if (!dev->connected) {
+                        dev->status = event->disconnect.reason;
+                        dev->ble.conn_id = -1;      /* cicho, bez zdarzenia */
+                    } else {
+                        dev->connected = false;
+                        ...
+                        esp_event_post_to(... ESP_HIDH_CLOSE_EVENT ...);
+                    }
+```
+
+Zdarzenie leci tylko w gałęzi `else`. A `connected` w całym `nimble_hidh.c` występuje
+**dokładnie dwa razy**: w tym warunku i przy ustawianiu na `false`. **Nigdzie nie jest
+ustawiane na `true`** (sprawdzone grepem `connected = true`: zero trafień). Struktura jest
+zerowana przy alokacji, więc warunek zawsze wybiera gałąź cichą i `CLOSE_EVENT` nie
+przychodzi nigdy.
+
+Druga pułapka w tym samym miejscu: **`esp_hidh_dev_free()` z publicznego API jest puste**:
+
+```c
+esp_hidh.c   esp_err_t esp_hidh_dev_free(esp_hidh_dev_t *dev) { return ESP_OK; }
+```
+
+Zasoby zwalnia `esp_hidh_dev_free_inner()` (zadeklarowane w publicznym
+`include/esp_private/esp_hidh_private.h`), wołane z wewnętrznego handlera `CLOSE_EVENT`.
+Skoro to zdarzenie nie przychodzi, każdy cykl uśpienia zostawiałby wpis w liście
+`s_esp_hidh_devices` i jego bufory na stercie.
+
+**Rozwiązanie:** rozłączenie wykrywamy sami, z globalnego zdarzenia GAP
+(`ble_gap_event_listener_register`). Na `BLE_GAP_EVENT_DISCONNECT` szukamy adresu peera
+(`peer_id_addr`, a jeśli nie pasuje, to `peer_ota_addr`) w **naszej** tablicy wejść; jeśli
+jest, zdejmujemy go i oddajemy `esp_hidh_dev_free_inner()` w zadaniu skanującym — nie
+w wątku hosta NimBLE, bo `free_inner` bierze muteks listy urządzeń.
+
+Listener jest globalny, więc widzi też rozłączenie PC. To nieszkodliwe, bo dopasowujemy
+adres do własnej tablicy wejść, w której PC nie występuje. Tym samym z założenia unikamy
+błędu, na którym wykłada się `nimble_hidd` (§4.2, brak sprawdzenia, czyje to połączenie).
+
+Obsługa `ESP_HIDH_CLOSE_EVENT` zostaje w kodzie — jest poprawna i zadziała, gdyby IDF
+kiedyś to naprawiło. Podwójne zwolnienie nie grozi, bo `device_take_by_addr()` zdejmuje
+wpis tylko raz.
+
+To **piąta** udokumentowana wada `esp_hidh` na ścieżce NimBLE (po §4.2, §4.11, §4.15,
+§4.23) i najsilniejszy argument, żeby poza PoC napisać klienta HOGP wprost na NimBLE GATT.
+
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 
 Źródło: `D:\wysypisko\openlara_esp32\retro-go\openlara\components\OpenLara\src\platform\retrogo\`
@@ -639,8 +706,9 @@ bo w razie problemu wiadomo, która rola zawiodła.
 
 Do zamknięcia PoC zostaje:
 
-- [ ] sprawdzenie, czy blokada z §4.23 faktycznie zniknęła (mysz zasypia i wraca sama,
-      bez restartu C3 — a jeśli restart się zdarzy, ma być automatyczny i widoczny w logu),
+- [ ] potwierdzenie, że po uśpieniu urządzenia licznik `wejscia` spada i mostek je odzyskuje
+      bez restartu (w logu: `wejscie odlaczone … reason=…` i `zasoby odlaczonego urzadzenia
+      zwolnione`, potem `kandydat …` i `razem 2/2`),
 - [ ] sprawdzenie, czy crash z §4.21 wraca po powiększeniu puli wpisów,
 - [ ] dobranie `CONFIG_APP_MOUSE_SCALE_DIV` do gustu,
 - [ ] pomiar opóźnienia wejście → pad.
