@@ -627,6 +627,12 @@ typedef struct {
 static SemaphoreHandle_t s_open_done;
 static esp_hidh_dev_t *volatile s_open_result;
 static volatile uint32_t s_open_generation;
+static volatile bool s_opening;
+
+bool ble_hid_host_is_opening(void)
+{
+    return s_opening;
+}
 
 static void open_task(void *arg)
 {
@@ -666,9 +672,11 @@ static esp_hidh_dev_t *open_device_guarded(const ble_addr_t *addr)
 
     s_open_result = NULL;
     xSemaphoreTake(s_open_done, 0); /* wyczyscic ewentualny stary sygnal */
+    s_opening = true;
 
     if (xTaskCreate(open_task, "hid_open", 8192, ctx, 4, NULL) != pdPASS) {
         ESP_LOGE(TAG, "nie moge utworzyc zadania otwierajacego");
+        s_opening = false;
         free(ctx);
         return NULL;
     }
@@ -681,6 +689,7 @@ static esp_hidh_dev_t *open_device_guarded(const ble_addr_t *addr)
         vTaskDelay(pdMS_TO_TICKS(500)); /* zeby log zdazyl wyjsc na konsole */
         esp_restart();
     }
+    s_opening = false;
     return s_open_result;
 }
 

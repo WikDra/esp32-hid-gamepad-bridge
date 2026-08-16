@@ -213,6 +213,32 @@ static void mapper_task(void *arg)
         stick_from_mouse(&in, &out.rx, &out.ry);
         out.buttons = buttons_from_state(&in);
 
+        /*
+         * Otwieranie urzadzenia HID to najciezszy moment dla stacku: jeden link robi
+         * dziesiatki procedur GATT (odkrywanie uslug, odczyt Report Map, subskrypcje),
+         * a pozostale dwa sa aktywne. Oba crashe, ktore widzielismy, wypadly wlasnie
+         * wtedy - i oba w wewnetrznych pulach NimBLE (AGENTS.md 4.21, 4.26). Nie
+         * dokladamy do tego ~16 notyfikacji pada na sekunde.
+         *
+         * Raz, na wejsciu w ten stan, wysylamy raport zerowy, zeby PC nie zostal
+         * z wychylona galka albo wcisnietym przyciskiem na czas przerwy.
+         */
+        static bool was_opening;
+        bool opening = ble_hid_host_is_opening();
+        if (opening) {
+            if (!was_opening) {
+                gamepad_state_t neutral = {0};
+                ble_gamepad_send(&neutral);
+                ESP_LOGI(TAG, "otwieranie urzadzenia - wstrzymuje raporty pada");
+            }
+            was_opening = true;
+            continue;
+        }
+        if (was_opening) {
+            ESP_LOGI(TAG, "otwieranie zakonczone - wracam do raportowania");
+            was_opening = false;
+        }
+
         bool sent = ble_gamepad_send(&out);
 
         /* Log tylko przy realnej zmianie i nie czesciej niz raz na 250 ms -

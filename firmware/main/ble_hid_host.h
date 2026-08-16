@@ -48,6 +48,14 @@ void ble_hid_host_take_state(hid_input_state_t *out);
 /* Liczba aktualnie otwartych urzadzen HID (0..HID_HOST_MAX_DEVICES). */
 int ble_hid_host_device_count(void);
 
+/*
+ * Czy trwa wlasnie otwieranie urzadzenia (polaczenie + pelne odkrywanie uslug GATT).
+ * To najciezszy moment dla stacku: jeden link robi dziesiatki procedur GATT, a
+ * pozostale dwa sa aktywne. Zadanie mapujace wstrzymuje wtedy notyfikacje pada,
+ * zeby nie dokladac obciazenia - patrz AGENTS.md 4.26.
+ */
+bool ble_hid_host_is_opening(void);
+
 /* Wypisuje na konsole liste podlaczonych urzadzen - do diagnostyki. */
 void ble_hid_host_log_devices(void);
 

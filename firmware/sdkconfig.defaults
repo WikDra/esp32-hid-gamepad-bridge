@@ -24,6 +24,13 @@ CONFIG_BT_NIMBLE_MAX_BONDS=5
 # wprost, zeby bylo widoczne, ze to swiadoma wartosc, a nie przypadek.
 CONFIG_BT_CTRL_BLE_MAX_ACT=6
 
+# Pula procedur klienta GATT. Domyslne 4 jest wymiarowane pod jeden link, a u nas
+# esp_hidh robi pelne odkrywanie uslug na jednym urzadzeniu, podczas gdy drugie
+# strumieniuje raporty, a pad wysyla notyfikacje do PC. W crashu z 16.08.2026
+# (Instruction access fault, MEPC=0x3fc98678) feralny adres lezal DOKLADNIE
+# wewnatrz ble_gattc_proc_mem, czyli pamieci tej puli - stad podniesienie.
+CONFIG_BT_NIMBLE_GATT_MAX_PROCS=12
+
 # Obie role naraz - to jest caly sens projektu. Domyslnie oba sa y, ale niech
 # bedzie wpisane, bo wylaczenie ktorejkolwiek cicho zabija pol aplikacji.
 CONFIG_BT_NIMBLE_ROLE_CENTRAL=y

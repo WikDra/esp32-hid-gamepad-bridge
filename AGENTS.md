@@ -65,7 +65,8 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | Crash w timerze GAP przy łączeniu z myszą | wystąpił **dwa razy**, `Load access fault` wewnątrz NimBLE. Powiększenie puli wpisów **nie pomogło** (§4.21). Obejście: budzić mysz jako pierwszą |
 | **Blokada `esp_hidh_dev_open()` na zawsze** | znaleziona i obsłużona — realny błąd, ale **nie** przyczyna objawu z rekonekcją (§4.23) |
 | **Brak `ESP_HIDH_CLOSE_EVENT` na NimBLE** | to była przyczyna „mysz po zaśnięciu nie wraca": tablica trzymała odłączone urządzenie 145 s, licznik `2/2` blokował skanowanie (§4.25) |
-| Wykrywanie rozłączeń z GAP działa | w logu po 710 s pracy tablica jest pusta (`wejscia 0`), a zaraz potem klawiatura łączy się od nowa. Przed poprawką wpisy zostawały na zawsze |
+| **Cykl uśpienie → powrót myszy przechodzi** | w logu: `wejscie odlaczone f4:ee:… reason=531` → `zasoby odlaczonego urzadzenia zwolnione` → `wejscia 1` → `skan` → `kandydat f4:ee:…` → ponowne połączenie. Wykrywanie rozłączeń z GAP działa |
+| Drugi crash: skok w pulę procedur GATT | `Instruction access fault`, `MEPC=0x3fc98678` leży w `ble_gattc_proc_mem` (§4.26). `GATT_MAX_PROCS` podniesione 4 → 12, pad milczy na czas otwierania. **Skuteczność niepotwierdzona** |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
 
@@ -654,6 +655,67 @@ wpis tylko raz.
 
 To **piąta** udokumentowana wada `esp_hidh` na ścieżce NimBLE (po §4.2, §4.11, §4.15,
 §4.23) i najsilniejszy argument, żeby poza PoC napisać klienta HOGP wprost na NimBLE GATT.
+
+### 4.26 Drugi crash: skok w `ble_gattc_proc_mem` przy ponownym otwieraniu myszy
+
+Inna sygnatura niż §4.21, ale ten sam moment — otwieranie urządzenia HID. Wystąpił po
+poprawnym cyklu: mysz odpadła (`wejscie odlaczone … reason=531`), zasoby zwolnione, skaner
+znalazł ją ponownie i w trakcie odkrywania usług:
+
+```
+Guru Meditation Error: Core 0 panic'ed (Instruction access fault).
+MEPC : 0x3fc98678   RA : 0x3fc98678   MCAUSE : 0x00000001   MTVAL : 0x3fc98678
+S0/FP: 0x3fc98678   S5 : 0x3fc98678   S6 : 0x3fc98678   S11 : 0x3fc98678
+```
+
+`Instruction access fault` z `MEPC` w obszarze DRAM to próba **wykonania danych**, czyli
+skok przez zepsuty wskaźnik. To, że `RA` i cztery rejestry zachowywane przez wywoływanego
+mają **tę samą** wartość, wskazuje na ramkę stosu odtworzoną z nadpisanej pamięci.
+
+`addr2line` na ELF-ie z tego builda (`37d0aee95`, zgodny z logiem):
+
+```
+0x42008926  open_task            ble_hid_host.c:637   <- nasze zadanie
+0x4200a706  esp_hidh_dev_open    esp_hidh.c:204
+0x42009ff8  unlock_devices       esp_hidh.c:41
+```
+
+Rozstrzygające jest to, **czym jest sam adres** `0x3fc98678`. Z tablicy symboli
+(`riscv32-esp-elf-nm -n`):
+
+```
+3fc9861c b ble_gattc_proc_pool
+3fc98638 b ble_gattc_proc_mem      <- 0x3fc98678 lezy tutaj (+0x40)
+3fc98738 b ble_l2cap_sig_proc_pool
+3fc98754 b ble_l2cap_sig_proc_mem
+3fc98788 b ble_gap_update_entry_pool
+3fc987a4 b ble_gap_update_entry_mem
+```
+
+Czyli w `RA` wylądował wskaźnik **wewnątrz puli procedur klienta GATT**. Dodatkowo widać, że
+obszar zepsuty w §4.21 (`ble_gap_update_entry_*`) leży w tej samej okolicy BSS, kilkadziesiąt
+bajtów dalej. Oba crashe dotyczą więc wewnętrznych pul NimBLE alokowanych obok siebie.
+
+**Zmiana:** `CONFIG_BT_NIMBLE_GATT_MAX_PROCS` z 4 na 12. Domyślne 4 jest wymiarowane pod
+jeden link, a u nas `esp_hidh` wykonuje pełne odkrywanie usług (dziesiątki procedur GATT:
+discover services, discover chars, discover descriptors, odczyt Report Map, siedem
+subskrypcji CCCD) na jednym urządzeniu, podczas gdy drugie strumieniuje raporty, a pad
+notyfikuje PC.
+
+**Druga poprawka, w naszym kodzie:** zadanie mapujące **wstrzymuje notyfikacje pada** na
+czas otwierania urządzenia (`ble_hid_host_is_opening()`). To najcięższy moment dla stacku
+i oba crashe wypadły dokładnie wtedy — nie ma powodu dokładać do tego ~16 raportów pada na
+sekundę. Na wejściu w przerwę idzie jeden raport zerowy, żeby PC nie został z wychyloną
+gałką.
+
+**To są hipotezy, nie dowód.** Za pierwszą stoi mocna przesłanka (feralny adres leży
+dokładnie w tej puli), za drugą tylko korelacja czasowa. Trop, którego jeszcze nie
+wykorzystaliśmy: `MYNEWT_VAL_BLE_L2CAP_SIG_MAX_PROCS` wychodzi w naszej konfiguracji na
+**1** (bo `EATT_CHAN_NUM` i `L2CAP_COC_MAX_NUM` są zerowe), a to pula procedur, którymi peery
+proszą o zmianę parametrów połączenia — czyli mechanizmu, który w logu bez przerwy zgłasza
+`hci_err=0x212`. Tej wartości **nie da się** nadpisać przez `-D`, bo definicja w
+`esp_nimble_cfg.h` nie ma osłony `#ifndef`; trzeba by podnieść
+`CONFIG_BT_NIMBLE_L2CAP_COC_MAX_NUM`, co przy okazji włącza nieużywane kanały L2CAP CoC.
 
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 
