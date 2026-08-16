@@ -1,0 +1,116 @@
+# Lokalna latka komponentu esp_hid z ESP-IDF 5.5.1
+#
+# Naprawia blad opisany w AGENTS.md 4.27: services_discovered w nimble_hidh.c nie jest
+# zerowane, wiec przy trzecim otwarciu urzadzenia HID svc_disced() pisze poza tablice
+# service_result[10] lezaca na stosie wolajacego i niszczy ramke stosu. Objawialo sie
+# to jako Instruction access fault przy powrocie myszy po uspieniu.
+#
+# Odtworzenie po podniesieniu wersji IDF (z katalogu firmware/components/esp_hid):
+#   cp -r \/components/esp_hid/. .
+#   patch -p0 < PATCH.diff
+#   wsl python3 scripts/check_local_esp_hid.py
+#
+# Rozniacy sie plik jest dokladnie jeden: src/nimble_hidh.c
+--- src/nimble_hidh.c
++++ src/nimble_hidh.c
+@@ -42,6 +42,14 @@
+ 
+ /* variables used for attribute discovery */
+ static int services_discovered;
++
++/*
++ * LOKALNA LATKA: oryginal ma te rozmiary wpisane liczbami w trzech miejscach i nie
++ * sprawdza ich przy zapisie. Nazwane stale pozwalaja pilnowac granic w callbackach.
++ */
++#define BLE_HIDH_MAX_SERVICES 10
++#define BLE_HIDH_MAX_CHRS     20
++#define BLE_HIDH_MAX_DSCS     20
+ static int chrs_discovered;
+ static int dscs_discovered;
+ static int status = 0;
+@@ -173,6 +181,13 @@
+     status = error->status;
+     switch (error->status) {
+     case 0:
++        /* LOKALNA LATKA: bez tego warunku urzadzenie z wieksza liczba uslug niz
++         * rozmiar tablicy nadpisuje stos wolajacego. Oryginal ma tu tylko komentarz
++         * "fatal if services are more than 10" i zaden test. */
++        if (services_discovered >= BLE_HIDH_MAX_SERVICES) {
++            ESP_LOGE(TAG, "za duzo uslug (>%d), pomijam nadmiar", BLE_HIDH_MAX_SERVICES);
++            break;
++        }
+         memcpy(service_result + services_discovered, service, sizeof(struct ble_gatt_svc));
+         services_discovered++;
+         uuid16 = ble_uuid_u16(&service->uuid.u);
+@@ -223,6 +238,11 @@
+     case 0:
+         ESP_LOGD(TAG, "Char discovered : def handle : %04x, val_handle : %04x, properties : %02x\n, uuid : %04x",
+                  chr->def_handle, chr->val_handle, chr->properties, ble_uuid_u16(&chr->uuid.u));
++        /* LOKALNA LATKA: kontrola granicy, oryginal jej nie ma. */
++        if (chrs_discovered >= BLE_HIDH_MAX_CHRS) {
++            ESP_LOGE(TAG, "za duzo charakterystyk (>%d), pomijam nadmiar", BLE_HIDH_MAX_CHRS);
++            break;
++        }
+         memcpy(chrs + chrs_discovered, chr, sizeof(struct ble_gatt_chr));
+         chrs_discovered++;
+         break;
+@@ -262,6 +282,11 @@
+     case 0:
+         ESP_LOGD(TAG, "DISC discovered : handle : %04x, uuid : %04x",
+                  dsc->handle, ble_uuid_u16(&dsc->uuid.u));
++        /* LOKALNA LATKA: kontrola granicy, oryginal jej nie ma. */
++        if (dscs_discovered >= BLE_HIDH_MAX_DSCS) {
++            ESP_LOGE(TAG, "za duzo deskryptorow (>%d), pomijam nadmiar", BLE_HIDH_MAX_DSCS);
++            break;
++        }
+         memcpy(dscr + dscs_discovered, dsc, sizeof(struct ble_gatt_dsc));
+         dscs_discovered++;
+         break;
+@@ -301,11 +326,28 @@
+     esp_hid_report_item_t *r;
+     esp_hid_report_map_t *map;
+ 
+-    struct ble_gatt_svc service_result[10];
++    struct ble_gatt_svc service_result[BLE_HIDH_MAX_SERVICES];
+     uint16_t dcount = 10;
+     uint8_t hidindex = 0;
+     int rc;
+ 
++    /*
++     * ==== LOKALNA LATKA (esp32-hid-gamepad-bridge, AGENTS.md 4.27) ====
++     *
++     * services_discovered jest w tym pliku statyczne i NIE BYLO ZEROWANE NIGDZIE.
++     * chrs_discovered i dscs_discovered sa resetowane (linie 502 i 508 oryginalu),
++     * services_discovered - nie. Licznik rosl wiec przez caly czas zycia firmware'u,
++     * a svc_disced() pisze pod service_result + services_discovered, gdzie
++     * service_result to tablica 10 elementow NA STOSIE WOLAJACEGO.
++     *
++     * Skutek na sprzecie: dwa pierwsze urzadzenia laczyly sie zawsze, a trzecie
++     * otwarcie (czyli powrot urzadzenia po uspieniu) niszczylo ramke stosu zadania
++     * hid_open. Objawialo sie to jako "Instruction access fault" z MEPC=RA=smiec
++     * i deterministycznym zestawem rejestrow, w ktorych dalo sie rozpoznac wpisy
++     * struct ble_gatt_svc (UUID 0x1800/0x1801/0x180A/0x180F/0x1812 i zakresy uchwytow).
++     */
++    services_discovered = 0;
++
+     rc = ble_gattc_disc_all_svcs(dev->ble.conn_id, svc_disced, service_result);
+     if (rc != 0) {
+         ESP_LOGD(TAG, "Error discovering services : %d", rc);
+@@ -346,7 +388,7 @@
+                 continue;
+             }
+ 
+-            struct ble_gatt_chr char_result[20];
++            struct ble_gatt_chr char_result[BLE_HIDH_MAX_CHRS];
+             uint16_t ccount = 20;
+             rc = ble_gattc_disc_all_chrs(dev->ble.conn_id, service_result[s].start_handle,
+                                          service_result[s].end_handle, chr_disced, char_result);
+@@ -454,7 +496,7 @@
+                             continue;
+                         }
+                     }
+-                    struct ble_gatt_dsc descr_result[20];
++                    struct ble_gatt_dsc descr_result[BLE_HIDH_MAX_DSCS];
+                     uint16_t dcount = 20;
+                     uint16_t chr_end_handle;
+                     if (c + 1 < ccount) {
