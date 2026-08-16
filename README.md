@@ -72,6 +72,10 @@ Kolejność ma znaczenie — najpierw wejścia, potem PC:
 2. Wprowadź klawiaturę w tryb parowania BLE (AULA F99 Pro: `Fn` + **cyfra** kanału BT,
    przytrzymane ~3 s — dioda kanału zaczyna mrugać szybko). Mostek skanuje w pętli
    i połączy się sam.
+
+   Windows w tym momencie też zobaczy klawiaturę i zaproponuje jej sparowanie —
+   **odrzuć to okno**. Jeśli klawiatura sparuje się z Windows, połączy się tam, a nie
+   z mostkiem.
 3. To samo z myszą (AJAZZ AJ159 Pro: przełącznik trybu na BT, przycisk parowania).
 4. Na PC: *Ustawienia → Bluetooth → Dodaj urządzenie* → wybierz **C3 Gamepad**.
 5. Sprawdź w `joy.cpl` (Win+R → `joy.cpl` → *Właściwości*), czy pad reaguje.

@@ -40,6 +40,11 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | Pad rozgłasza się | `rozglaszam jako 'C3 Gamepad' (appearance 0x03c4)` |
 | **Obie role naraz na jednym C3** | w jednym logu: `rozglaszam jako 'C3 Gamepad'` + `skan: 2 urzadzen` w pętli, bez crashy |
 | Pamięć z oboma rolami aktywnymi | `heap 197712 B (min 197712 B)` — zapas ~190 kB |
+| **Windows paruje pada i widzi go w `joy.cpl`** | `PC podlaczony, conn_handle=1`, `szyfrowanie/parowanie: status=0`, `PC wlaczyl notyfikacje raportu`, `MTU=256`; właściciel potwierdził, że w `joy.cpl` widać sekwencję testową |
+| Bond pada przeżywa restart C3 | po `reset` PC łączy się sam po 2,1 s, bez akcji użytkownika — czyli `NVS_PERSIST=y` działa |
+| Skaner znajduje klawiaturę | `HID ed:c7:b1:bb:83:01 type=1 rssi=-32 appearance=0x03c1 'AULA-F99Pro'` — adres **Random**, appearance keyboard |
+| Połączenie z klawiaturą się ustanawia | `GAP procedure initiated: connect` → `Connection established` |
+| Odczyt usług klawiatury | **jeszcze nie** — pierwsza próba wywaliła stos zadania, patrz §4.11 |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
 
@@ -184,6 +189,73 @@ inaczej 8-bit. Równolegle loguje surowe bajty (`MOU len=… [hex]`) przy pierws
 raportach i potem raz na sekundę, żeby dało się odczytać prawdziwy układ z logu
 i poprawić przed Etapem 3.
 
+### 4.11 `esp_hidh_dev_open()` potrzebuje grubego stosu w **swoim** zadaniu
+
+Objaw na sprzęcie (2026-08-16), dokładnie w chwili połączenia z klawiaturą:
+
+```
+hid_host:  HID ed:c7:b1:bb:83:01 type=1 rssi=-32 appearance=0x03c1 'AULA-F99Pro'
+NimBLE:    Connection established
+Guru Meditation Error: Core 0 panic'ed (Stack protection fault).
+Detected in task "hid_scan"
+Stack pointer: 0x3fcace20   Stack bounds: 0x3fcaceb8 - 0x3fcadeb0
+```
+
+Wskaźnik stosu **poniżej** dolnej granicy, czyli przepełnienie. Powód: `esp_hidh_dev_open()`
+jest w pełni blokujące i wykonuje `read_device_services()` **w zadaniu wołającego**, a ta
+funkcja trzyma na stosie trzy tablice jednocześnie:
+
+```
+nimble_hidh.c   struct ble_gatt_svc service_result[10];
+nimble_hidh.c     struct ble_gatt_chr char_result[20];
+nimble_hidh.c       struct ble_gatt_dsc descr_result[20];
+```
+
+plus `esp_hid_parse_report_map()`. Przykład `esp_hid_host` z IDF daje swojemu zadaniu
+`6 * 1024` — i to jest właściwa kalibracja, nie 4 kB.
+
+Dwie poprawki, obie potrzebne:
+
+1. `hid_scan` dostaje **8192 B** zamiast 4096 B.
+2. `try_connect_candidates()` i `log_scan_results()` **nie kopiują już całej tablicy
+   kandydatów na stos**. `sizeof(candidate_t) * 24` to ~1,5 kB, a pierwsza wersja trzymała
+   tę kopię przez cały czas trwania blokującego `esp_hidh_dev_open()`. Teraz jest
+   `candidate_get(idx, &jeden)`.
+
+Po każdej próbie połączenia logujemy `uxTaskGetStackHighWaterMark()`, żeby margines był
+widoczny w logu, a nie zgadywany.
+
+### 4.12 Logi INFO z NimBLE zalewają konsolę przy aktywnym padzie
+
+Na poziomie INFO NimBLE drukuje dwie linie plus pustą przy **każdej** notyfikacji:
+
+```
+I (44106) NimBLE: GATT procedure initiated: notify;
+I (44106) NimBLE: att_handle=21
+```
+
+Przy padzie wysyłającym ~16 raportów/s daje to ~3000 linii w 60-sekundowym logu i własne
+komunikaty stają się niewidoczne. `CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y` to usuwa,
+zachowując błędy.
+
+### 4.13 `hci_err=0x21A` przy łączeniu z klawiaturą jest nieszkodliwe
+
+```
+NimBLE: ogf=0x08, ocf=0x0022, hci_err=0x21A : BLE_ERR_UNSUPP_REM_FEATURE
+```
+
+`OGF 0x08 / OCF 0x0022` to `HCI_LE_Set_Data_Length`. AULA F99 Pro nie wspiera LE Data Packet
+Length Extension, więc kontroler odpowiada „unsupported remote feature". NimBLE to obsługuje
+i jedzie dalej z domyślną długością pakietu. Nie ma związku z crashem z §4.11 — ta linia
+pojawia się po prostu w tym samym momencie.
+
+### 4.14 Windows widzi klawiaturę w trybie parowania i proponuje ją sparować
+
+Gdy AULA F99 Pro rozgłasza się w trybie parowania, Windows też ją widzi i wyskakuje z
+propozycją sparowania. **Nie klikać tego** — jeśli klawiatura sparuje się z Windows, połączy
+się tam, a nie z mostkiem, i C3 przestanie ją widzieć w skanie. Propozycję trzeba odrzucić
+i zostawić klawiaturę w trybie parowania dla C3.
+
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 
 Źródło: `D:\wysypisko\openlara_esp32\retro-go\openlara\components\OpenLara\src\platform\retrogo\`
@@ -256,8 +328,8 @@ bo w razie problemu wiadomo, która rola zawiodła.
       build/flash/monitor, boot potwierdzony na COM6.
 - [ ] **Etap 1** — tylko host. Klawiatura **i** mysz połączone jednocześnie, raporty w logu.
       Zmierzyć `free_heap` z dwoma połączeniami.
-- [ ] **Etap 2** — tylko pad. Własna usługa HID, syntetyczny wzorzec testowy (bez klawiatury
-      i myszy). Windows paruje, `joy.cpl` pokazuje ruch.
+- [x] **Etap 2** — pad. Własna usługa HID, syntetyczny wzorzec testowy. Windows paruje,
+      `joy.cpl` pokazuje ruch. **Zweryfikowane na sprzęcie 2026-08-16.**
 - [ ] **Etap 3** — scalenie. Zadanie raportujące ~100 Hz, mapowanie wejść, wysyłka tylko przy
       zmianie stanu. Weryfikacja end-to-end.
 

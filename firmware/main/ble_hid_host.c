@@ -469,18 +469,44 @@ static void candidates_clear_stale(void)
     taskEXIT_CRITICAL(&s_mux);
 }
 
+/* Kopiuje JEDEN wpis z tablicy kandydatow. Swiadomie nie ma tu wersji kopiujacej
+ * cala tablice: sizeof(candidate_t) * CANDIDATES_MAX to ~1,5 kB, a te petle wolaja
+ * potem esp_hidh_dev_open(), ktore samo zjada kilka kilobajtow stosu. Pierwsza
+ * wersja kopiowala cala tablice i konczylo sie to "Stack protection fault"
+ * w zadaniu hid_scan przy pierwszym polaczeniu z klawiatura. */
+static bool candidate_get(int idx, candidate_t *out)
+{
+    bool ok = false;
+    taskENTER_CRITICAL(&s_mux);
+    if (s_cands[idx].in_use) {
+        *out = s_cands[idx];
+        ok = true;
+    }
+    taskEXIT_CRITICAL(&s_mux);
+    return ok;
+}
+
+static void candidate_set_cooldown(const ble_addr_t *addr)
+{
+    int64_t until = esp_timer_get_time() + RETRY_COOLDOWN_US;
+    taskENTER_CRITICAL(&s_mux);
+    for (int i = 0; i < CANDIDATES_MAX; i++) {
+        if (s_cands[i].in_use && addr_eq(&s_cands[i].addr, addr)) {
+            s_cands[i].cooldown_until_us = until;
+        }
+    }
+    taskEXIT_CRITICAL(&s_mux);
+}
+
 static void log_scan_results(void)
 {
-    candidate_t list[CANDIDATES_MAX];
-    taskENTER_CRITICAL(&s_mux);
-    memcpy(list, s_cands, sizeof(list));
-    taskEXIT_CRITICAL(&s_mux);
-
+    candidate_t c;
     int total = 0, hid = 0;
+
     for (int i = 0; i < CANDIDATES_MAX; i++) {
-        if (list[i].in_use) {
+        if (candidate_get(i, &c)) {
             total++;
-            if (list[i].looks_like_hid) {
+            if (c.looks_like_hid) {
                 hid++;
             }
         }
@@ -489,64 +515,58 @@ static void log_scan_results(void)
     /* Logujemy wszystko, nie tylko HID - jak klawiatura nie chce sie polaczyc,
      * pierwsze pytanie jest "czy w ogole ja slyszymy". */
     for (int i = 0; i < CANDIDATES_MAX; i++) {
-        if (!list[i].in_use) {
+        if (!candidate_get(i, &c)) {
             continue;
         }
         ESP_LOGI(TAG, "  %s " ADDR_FMT " type=%u rssi=%4d appearance=0x%04x '%s'",
-                 list[i].looks_like_hid ? "HID" : "   ", ADDR_ARG(list[i].addr.val),
-                 list[i].addr.type, list[i].rssi, list[i].appearance,
-                 list[i].name[0] ? list[i].name : "?");
+                 c.looks_like_hid ? "HID" : "   ", ADDR_ARG(c.addr.val),
+                 c.addr.type, c.rssi, c.appearance, c.name[0] ? c.name : "?");
     }
 }
 
 static void try_connect_candidates(void)
 {
-    candidate_t list[CANDIDATES_MAX];
-    taskENTER_CRITICAL(&s_mux);
-    memcpy(list, s_cands, sizeof(list));
-    taskEXIT_CRITICAL(&s_mux);
-
-    int64_t now = esp_timer_get_time();
+    candidate_t c;
 
     for (int i = 0; i < CANDIDATES_MAX; i++) {
         if (ble_hid_host_device_count() >= HID_HOST_MAX_DEVICES) {
             return;
         }
-        candidate_t *c = &list[i];
-        if (!c->in_use || !c->looks_like_hid) {
+        if (!candidate_get(i, &c) || !c.looks_like_hid) {
             continue;
         }
-        if (c->cooldown_until_us > now || device_is_open(&c->addr)) {
+        if (c.cooldown_until_us > esp_timer_get_time() || device_is_open(&c.addr)) {
             continue;
         }
 
         ESP_LOGI(TAG, "kandydat " ADDR_FMT " type=%u '%s' appearance=0x%04x rssi=%d",
-                 ADDR_ARG(c->addr.val), c->addr.type, c->name[0] ? c->name : "?",
-                 c->appearance, c->rssi);
+                 ADDR_ARG(c.addr.val), c.addr.type, c.name[0] ? c.name : "?",
+                 c.appearance, c.rssi);
 
         /* Nie da sie jednoczesnie skanowac i inicjowac polaczenia. */
         ble_gap_disc_cancel();
         vTaskDelay(pdMS_TO_TICKS(200));
 
         uint8_t bda[6];
-        memcpy(bda, c->addr.val, sizeof(bda));
-        /* Blokujace: w srodku jest ble_gap_connect + odczyt uslug (i ewentualne
-         * auto-parowanie). Dlatego to zadanie, a nie callback stacku. */
-        esp_hidh_dev_t *dev = esp_hidh_dev_open(bda, ESP_HID_TRANSPORT_BLE, c->addr.type);
+        memcpy(bda, c.addr.val, sizeof(bda));
+        /*
+         * Blokujace i bardzo grube na stosie: w srodku jest ble_gap_connect, pelne
+         * odkrywanie uslug GATT i parsowanie Report Map. read_device_services()
+         * w nimble_hidh.c trzyma na stosie WOLAJACEGO trzy tablice naraz
+         * (service_result[10], char_result[20], descr_result[20]) - patrz rozmiar
+         * stosu przy xTaskCreate na koncu pliku.
+         */
+        esp_hidh_dev_t *dev = esp_hidh_dev_open(bda, ESP_HID_TRANSPORT_BLE, c.addr.type);
+        ESP_LOGI(TAG, "  po esp_hidh_dev_open zostalo %u B stosu",
+                 (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
         if (dev == NULL) {
             ESP_LOGW(TAG, "  nie udalo sie otworzyc, cooldown %d s", RETRY_COOLDOWN_US / 1000000);
-            taskENTER_CRITICAL(&s_mux);
-            for (int j = 0; j < CANDIDATES_MAX; j++) {
-                if (s_cands[j].in_use && addr_eq(&s_cands[j].addr, &c->addr)) {
-                    s_cands[j].cooldown_until_us = esp_timer_get_time() + RETRY_COOLDOWN_US;
-                }
-            }
-            taskEXIT_CRITICAL(&s_mux);
+            candidate_set_cooldown(&c.addr);
             continue;
         }
 
         esp_hid_usage_t usage = esp_hidh_dev_usage_get(dev);
-        device_register(&c->addr, usage, dev);
+        device_register(&c.addr, usage, dev);
         ESP_LOGI(TAG, "  podlaczone: usage=%s, razem %d/%d urzadzen",
                  esp_hid_usage_str(usage), ble_hid_host_device_count(), HID_HOST_MAX_DEVICES);
     }
@@ -618,7 +638,15 @@ esp_err_t ble_hid_host_start(void)
         return err;
     }
 
-    if (xTaskCreate(scan_task, "hid_scan", 4096, NULL, 4, NULL) != pdPASS) {
+    /*
+     * 8 kB, nie 4 kB. Powod: esp_hidh_dev_open() wykonuje sie w TYM zadaniu i przez
+     * read_device_services() klada na naszym stosie service_result[10] +
+     * char_result[20] + descr_result[20] naraz, plus parser Report Map. Przy 4 kB
+     * konczylo sie to "Stack protection fault" dokladnie w momencie polaczenia
+     * z klawiatura (potwierdzone na sprzecie). Przyklad esp_hid_host z IDF daje
+     * swojemu zadaniu 6 kB; bierzemy 8 kB i logujemy high water mark.
+     */
+    if (xTaskCreate(scan_task, "hid_scan", 8192, NULL, 4, NULL) != pdPASS) {
         ESP_LOGE(TAG, "nie moge utworzyc zadania skanujacego");
         return ESP_ERR_NO_MEM;
     }
