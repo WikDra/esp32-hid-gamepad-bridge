@@ -91,8 +91,13 @@ Kolejność ma znaczenie — najpierw wejścia, potem PC:
    **odrzuć to okno**. Jeśli klawiatura sparuje się z Windows, połączy się tam, a nie
    z mostkiem.
 3. To samo z myszą (AJAZZ AJ159 Pro: przełącznik trybu na BT, przycisk parowania).
-4. Na PC: *Ustawienia → Bluetooth → Dodaj urządzenie* → wybierz **C3 Gamepad**.
-5. Sprawdź w `joy.cpl` (Win+R → `joy.cpl` → *Właściwości*), czy pad reaguje.
+4. Na PC: *Ustawienia → Bluetooth → Dodaj urządzenie* → wybierz pada. W profilu Xbox
+   rozgłasza się jako **Xbox Wireless Controller**, w generycznym jako **C3 Gamepad**.
+5. Sprawdź, czy Windows podpiął właściwy sterownik. W profilu Xbox w `joy.cpl` (Win+R →
+   `joy.cpl`) urządzenie ma się nazywać **„Urządzenie wejściowe Bluetooth LE zgodne
+   z interfejsem XINPUT"** — wtedy pad idzie przez XInput i widzą go gry. Jeśli zamiast
+   tego zobaczysz „Kontroler gier zgodny z HID" albo „6-osiowy 17-przyciskowy pad", to
+   podpiął się sterownik generyczny; przyczyny i diagnostyka w `AGENTS.md` §4.32.
 
 Klucze parowania są zapisywane w NVS, więc po restarcie urządzenia łączą się same.
 
@@ -107,14 +112,39 @@ pokaże stary układ osi i przycisków.
 
 ## Mapowanie wejść na pada
 
-| Wejście | Wyjście na padzie |
-|---|---|
-| `W` / `S` / `A` / `D` | lewy analog (skos skalowany, żeby nie był szybszy) |
-| ruch myszy | prawy analog (przyrost skalowany; po zatrzymaniu gałka wraca do środka) |
-| lewy / prawy / środkowy przycisk myszy | przycisk 1 / 2 / 3 |
-| `Spacja` | przycisk 4 |
-| lewy `Shift` / lewy `Ctrl` | przycisk 5 / 6 |
-| `E` / `Q` / `R` / `F` / `Tab` / `Esc` | przycisk 7 / 8 / 9 / 10 / 11 / 12 |
+Wejścia są te same w obu profilach — różni się tylko to, czym są po stronie PC. Kolumna
+„Xbox (XInput)" dotyczy profilu domyślnego.
+
+| Wejście | Profil Xbox (XInput) | Profil generyczny |
+|---|---|---|
+| `W` / `S` / `A` / `D` | lewy analog | lewy analog |
+| ruch myszy | prawy analog | prawy analog |
+| lewy przycisk myszy | **prawy spust (RT)** | przycisk 1 |
+| prawy przycisk myszy | **lewy spust (LT)** | przycisk 2 |
+| środkowy przycisk myszy | klik prawej gałki (RS) | przycisk 3 |
+| `Spacja` | **A** | przycisk 4 |
+| lewy `Shift` | klik lewej gałki (LS) | przycisk 5 |
+| lewy `Ctrl` | **B** | przycisk 6 |
+| `E` | **X** | przycisk 7 |
+| `Q` | **Y** | przycisk 8 |
+| `R` | LB | przycisk 9 |
+| `F` | RB | przycisk 10 |
+| `Tab` | View (dawne Back) | przycisk 11 |
+| `Esc` | Menu (dawne Start) | przycisk 12 |
+
+Skos na lewym analogu jest skalowany, żeby nie był szybszy niż ruch w linii prostej.
+Prawy analog dostaje przeskalowany przyrost myszy i po zatrzymaniu wraca do środka.
+
+Dwie rzeczy, które warto wiedzieć przy testowaniu profilu Xbox:
+
+- **Spusty są analogowe, nie są przyciskami.** Kliknięcie myszą daje pełne wychylenie
+  (1023), ale w siatce przycisków `joy.cpl` nic się nie zaświeci — spusty widać na osi.
+  W logu płytki widać je wprost: `xbox: LT=1023 RT=0 …`.
+- **Krzyżak (hat switch) jest na razie nieużywany** — mapper nie czyta klawiszy strzałek.
+
+Przypisanie zmienia się w jednym miejscu: tablica `s_xbox_ctrl` w
+[`firmware/main/ble_gamepad.c`](firmware/main/ble_gamepad.c). Wejścia i profil generyczny
+zostają wtedy nietknięte, bo `input_mapper` nie wie, który profil jest aktywny.
 
 Czułość myszy reguluje `CONFIG_APP_MOUSE_SCALE_DIV` (większa wartość = mniej czuła).
 Zmiana wymaga przebudowania: `scripts\build-win.bat esp32c3 menuconfig`, sekcja

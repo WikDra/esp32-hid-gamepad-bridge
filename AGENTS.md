@@ -82,6 +82,8 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | Pełne mapowanie klawiatury potwierdzone ponownie | `1a`→`L(0,-127)`, `04`→`L(-127,0)`, `16`→`L(0,127)`, `07`→`L(127,0)`, skos `16`+`07`→`L(90,90)` |
 | **Dwa kolejne cykle uśpienie → powrót myszy, bez crashu** | `reason=531` → `zasoby odlaczonego urzadzenia zwolnione` → skan → `kandydat` → `conn_handle=4` → `razem 2/2`; w jednym przebiegu 180 s wyszło pięć otwarć urządzeń |
 | Brak wycieku pamięci przez 180 s i kilka cykli | `heap 188856 B` z dwoma urządzeniami, `189816 B` po rozłączeniu, `min 179248 B` |
+| **XInput działa — Etap 4 osiągnięty** | po zmianie tożsamości na PID `0x0B13` (§4.32) `joy.cpl` pokazuje urządzenie jako **„Urządzenie wejściowe Bluetooth LE zgodne z interfejsem XINPUT"**. Właściciel potwierdził: **Rocket League obsługuje pada, Steam go widzi.** Apex Legends jeszcze nieprzetestowany |
+| Tożsamość odczytana z systemu | `HID\{00001812-…}_Dev_VID&02045e_PID&02fd_REV&0408` przy pierwszym podejściu — dowód, że PnP ID dociera do Windows bezbłędnie i że problemem był wyłącznie **wybór PID** (§4.32) |
 | Naprawa | lokalna kopia komponentu `esp_hid` z jednolinijkową łatką + kontrole granic. Potwierdzone, że build bierze naszą kopię (`check_local_esp_hid.py`) i że łatka jest w binarce. **Weryfikacja cyklu uśpienia na sprzęcie do zrobienia** |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
@@ -1194,11 +1196,11 @@ bo w razie problemu wiadomo, która rola zawiodła.
       `joy.cpl` pokazuje ruch. **Zweryfikowane na sprzęcie 2026-08-16.**
 - [x] **Etap 3** — scalenie. Klawiatura **i mysz** → pad, potwierdzone w `joy.cpl`: WASD na
       lewym analogu, ruch myszy na osi Z / obrocie Z, przyciski i kółko działają.
-- [ ] **Etap 4** — profil XInput. Mostek podaje się za pada Xbox One S: deskryptor 334 B
-      bajt w bajt z prawdziwego pada, PnP ID z VID Microsoftu, własna usługa HID i DIS
-      napisane wprost na GATT (§4.30, §4.31). **Zbudowane i wgrane, czeka na weryfikację:**
-      trzeba usunąć pada z listy urządzeń Bluetooth w Windows i sparować od nowa, bo
-      zmienił się deskryptor **i** tożsamość.
+- [x] **Etap 4** — profil XInput. Mostek podaje się za pada Xbox Series X (PID `0x0B13`):
+      deskryptor 283 B bajt w bajt z prawdziwego pada, PnP ID z VID Microsoftu, własna
+      usługa HID i DIS napisane wprost na GATT (§4.30, §4.31, §4.32).
+      **Zweryfikowane na sprzęcie:** `joy.cpl` pokazuje „Urządzenie wejściowe Bluetooth LE
+      zgodne z interfejsem XINPUT", Rocket League obsługuje pada, Steam go widzi.
 
 Do zamknięcia PoC zostaje:
 
