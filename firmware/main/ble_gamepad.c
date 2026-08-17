@@ -27,17 +27,13 @@ static const char *TAG = "gamepad";
 
 /* ------------------------------------------------- profil: pad Xbox One S */
 
-#define GAMEPAD_REPORT_ID  XBOX_RPT_ID_INPUT
-#define GAMEPAD_REPORT_LEN 16
-
-#define XBOX_RPT_LEN_CONSUMER 1  /* przycisk Guide            */
-#define XBOX_RPT_LEN_RUMBLE   8  /* enable + 4x sila + czasy  */
-#define XBOX_RPT_LEN_BATTERY  1  /* Battery Strength          */
+#define GAMEPAD_REPORT_ID  0x01
+#define GAMEPAD_REPORT_LEN XBOX_INPUT_REPORT_LEN
 
 /*
- * Maski przyciskow z prawdziwego pada Xbox One S. Deskryptor deklaruje 15
- * przyciskow (Button 1..15), ale pad uzywa ich z dziurami - bity 2, 5, 8 i 9
- * zostaja puste. Nie wygladzamy tego, bo celem jest zgodnosc z oryginalem.
+ * Maski przyciskow z prawdziwego pada Xbox. Deskryptor deklaruje 15 przyciskow
+ * (Button 1..15), ale pad uzywa ich z dziurami - bity 2, 5, 8 i 9 zostaja puste.
+ * Nie wygladzamy tego, bo celem jest zgodnosc z oryginalem.
  */
 #define XBOX_BTN_A     0x0001
 #define XBOX_BTN_B     0x0002
@@ -54,12 +50,18 @@ static const char *TAG = "gamepad";
 #define XBOX_TRIGGER_MAX 1023  /* spusty sa 10-bitowe */
 
 /*
- * Tozsamosc urzadzenia. To ona decyduje, czy Windows zaladuje sterownik pada
- * Xbox i udostepni urzadzenie przez XInput - deskryptor sam nie wystarcza.
+ * Tozsamosc urzadzenia. To ona decyduje, czy Windows zaladuje sterownik XInput -
+ * deskryptor sam nie wystarcza.
  *
  * PnP ID (charakterystyka 0x2A50) ma 7 bajtow: zrodlo VID, VID, PID, wersja.
  * Zrodlo 0x02 znaczy "rejestr USB Implementers Forum" i tak wlasnie jest
  * w padzie, bo VID 0x045E to numer USB Microsoftu.
+ *
+ * PID NIE JEST DOWOLNY. Sterownik XInput dla BLE w Windows (xinputhid.inf, sekcja
+ * Btle_Bus = "Bluetooth LE XINPUT compatible input device") wiaze sie wylacznie
+ * z PID 0x0B13 oraz 0x0B20..0x0B27. Pada Xbox One S (model 1708, PID 0x02FD) na
+ * tej liscie NIE MA - sprawdzone na tej maszynie i opisane w AGENTS.md 4.32.
+ * Dlatego udajemy pada Xbox Series X (model 1914, PID 0x0B13).
  *
  * DLACZEGO WLASNA USLUGA, A NIE ble_svc_dis Z NimBLE: tamta implementacja
  * wpisuje pierwszy bajt na sztywno jako 0x01 (zrodlo = Bluetooth SIG) i dokleja
@@ -71,10 +73,10 @@ static const char *TAG = "gamepad";
 #define DIS_CHR_UUID16_MANUF    0x2A29
 
 static const uint8_t s_pnp_id[7] = {
-    0x02,        /* Vendor ID Source: USB Implementers Forum */
-    0x5E, 0x04,  /* Vendor ID: 0x045E Microsoft              */
-    0xFD, 0x02,  /* Product ID: 0x02FD pad Xbox One S (1708) */
-    0x08, 0x04,  /* Product Version: 0x0408                  */
+    0x02,        /* Vendor ID Source: USB Implementers Forum   */
+    0x5E, 0x04,  /* Vendor ID: 0x045E Microsoft                */
+    0x13, 0x0B,  /* Product ID: 0x0B13 pad Xbox Series X (1914) */
+    0x09, 0x05,  /* Product Version: 0x0509                    */
 };
 
 static const char s_manufacturer[] = "Microsoft";
@@ -320,22 +322,12 @@ static struct hid_report_def s_rpt_input = {
 
 #if CONFIG_APP_GAMEPAD_PROFILE_XBOX
 /*
- * Prawdziwy pad deklaruje w Report Map cztery raporty, wiec wystawiamy wszystkie
- * cztery charakterystyki - inaczej w deskryptorze bylyby raporty, do ktorych nie
- * ma dostepu.
- *
- * Uwaga na 0x04: nazwa w zrodle referencyjnym sugeruje wyjscie ("EXTRA_OUTPUT"),
- * ale w deskryptorze jest to Battery Strength jako INPUT.
+ * Ten deskryptor deklaruje dwa raporty: wejsciowy pada i wyjsciowy z wibracjami.
+ * Identyfikatory i dlugosci NIE sa tu wpisane liczbami - wypelniamy je w
+ * register_hid_service() z tablicy xbox_reports[], ktora generator policzyl
+ * wprost z deskryptora. Inaczej dalo by sie po cichu rozjechac z Report Map.
  */
-static struct hid_report_def s_rpt_consumer = {
-    .id = XBOX_RPT_ID_CONSUMER, .type = HID_RPT_TYPE_INPUT, .len = XBOX_RPT_LEN_CONSUMER,
-};
-static struct hid_report_def s_rpt_rumble = {
-    .id = XBOX_RPT_ID_RUMBLE, .type = HID_RPT_TYPE_OUTPUT, .len = XBOX_RPT_LEN_RUMBLE,
-};
-static struct hid_report_def s_rpt_battery = {
-    .id = XBOX_RPT_ID_BATTERY, .type = HID_RPT_TYPE_INPUT, .len = XBOX_RPT_LEN_BATTERY,
-};
+static struct hid_report_def s_rpt_rumble;
 #endif
 
 static int hid_access(uint16_t conn_handle, uint16_t attr_handle,
@@ -478,15 +470,7 @@ static const struct ble_gatt_svc_def s_hid_defs[] = {
             },
 #if CONFIG_APP_GAMEPAD_PROFILE_XBOX
             {
-                /* Przycisk Guide/Xbox, Consumer Page. */
-                .uuid = BLE_UUID16_DECLARE(HID_CHR_UUID16_REPORT),
-                .access_cb = hid_access,
-                .arg = (void *)&s_rpt_consumer,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY |
-                         BLE_GATT_CHR_F_READ_ENC,
-                .descriptors = HID_RPT_REF_DSC(s_rpt_consumer),
-            }, {
-                /* Wibracje - Windows pisze tutaj. */
+                /* Wibracje - tutaj pisze sterownik pada Xbox. */
                 .uuid = BLE_UUID16_DECLARE(HID_CHR_UUID16_REPORT),
                 .access_cb = hid_access,
                 .arg = (void *)&s_rpt_rumble,
@@ -494,14 +478,6 @@ static const struct ble_gatt_svc_def s_hid_defs[] = {
                          BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_READ_ENC |
                          BLE_GATT_CHR_F_WRITE_ENC,
                 .descriptors = HID_RPT_REF_DSC(s_rpt_rumble),
-            }, {
-                /* Poziom baterii jako raport HID (osobno od uslugi 0x180F). */
-                .uuid = BLE_UUID16_DECLARE(HID_CHR_UUID16_REPORT),
-                .access_cb = hid_access,
-                .arg = (void *)&s_rpt_battery,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY |
-                         BLE_GATT_CHR_F_READ_ENC,
-                .descriptors = HID_RPT_REF_DSC(s_rpt_battery),
             },
 #endif
             {
@@ -516,11 +492,33 @@ static const struct ble_gatt_svc_def s_hid_defs[] = {
 
 static esp_err_t register_hid_service(void)
 {
-    if (REPORT_MAP_BYTES > 512) {
-        /* Nie limit naszej implementacji, tylko przypomnienie: przy dluzszej
-         * Report Map trzeba sprawdzic, czy host poradzi sobie z Read Blob. */
-        ESP_LOGW(TAG, "Report Map %u B - nietypowo duza", (unsigned)REPORT_MAP_BYTES);
+#if CONFIG_APP_GAMEPAD_PROFILE_XBOX
+    /*
+     * Identyfikatory i dlugosci raportow bierzemy z tablicy policzonej przez
+     * generator wprost z deskryptora, zeby kod nie mogl sie z nim rozjechac.
+     * Jesli deskryptor kiedys zadeklaruje inny zestaw raportow, chcemy o tym
+     * wiedziec od razu przy starcie, a nie z zachowania Windows.
+     */
+    const size_t nrpts = sizeof(xbox_reports) / sizeof(xbox_reports[0]);
+    if (nrpts != 2 || xbox_reports[0].type != HID_RPT_TYPE_INPUT ||
+        xbox_reports[1].type != HID_RPT_TYPE_OUTPUT) {
+        ESP_LOGE(TAG, "deskryptor deklaruje %u raportow w nieoczekiwanym ukladzie",
+                 (unsigned)nrpts);
+        return ESP_ERR_INVALID_STATE;
     }
+    if (xbox_reports[0].len > HID_RPT_MAX_LEN || xbox_reports[1].len > HID_RPT_MAX_LEN) {
+        ESP_LOGE(TAG, "raport dluzszy niz bufor %d B", HID_RPT_MAX_LEN);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    s_rpt_input.id = xbox_reports[0].id;
+    s_rpt_input.type = xbox_reports[0].type;
+    s_rpt_input.len = xbox_reports[0].len;
+
+    s_rpt_rumble.id = xbox_reports[1].id;
+    s_rpt_rumble.type = xbox_reports[1].type;
+    s_rpt_rumble.len = xbox_reports[1].len;
+#endif
 
     int rc = ble_gatts_count_cfg(s_hid_defs);
     if (rc != 0) {
@@ -533,12 +531,14 @@ static esp_err_t register_hid_service(void)
         return ESP_FAIL;
     }
 
-    unsigned reports = 1;
 #if CONFIG_APP_GAMEPAD_PROFILE_XBOX
-    reports = 4;
+    ESP_LOGI(TAG, "usluga HID: Report Map %u B, raporty 0x%02x INPUT %u B + 0x%02x OUTPUT %u B",
+             (unsigned)REPORT_MAP_BYTES, s_rpt_input.id, s_rpt_input.len,
+             s_rpt_rumble.id, s_rpt_rumble.len);
+#else
+    ESP_LOGI(TAG, "usluga HID: Report Map %u B, raport wejsciowy 0x%02x %u B",
+             (unsigned)REPORT_MAP_BYTES, s_rpt_input.id, s_rpt_input.len);
 #endif
-    ESP_LOGI(TAG, "usluga HID: Report Map %u B, raportow %u, raport wejsciowy %u B",
-             (unsigned)REPORT_MAP_BYTES, reports, GAMEPAD_REPORT_LEN);
     return ESP_OK;
 }
 
@@ -861,7 +861,8 @@ esp_err_t ble_gamepad_start(void)
     }
 
 #if CONFIG_APP_GAMEPAD_PROFILE_XBOX
-    ESP_LOGI(TAG, "profil: pad Xbox One S (XInput), tozsamosc Microsoft");
+    ESP_LOGI(TAG, "profil: pad Xbox Series X (XInput), PID 0x%02x%02x",
+             s_pnp_id[4], s_pnp_id[3]);
     /* Mapowanie w logu, bo inaczej trzeba je zgadywac z kodu przy kazdym tescie. */
     ESP_LOGI(TAG, "przyciski -> Xbox: 1=%s 2=%s 3=%s 4=%s 5=%s 6=%s",
              s_xbox_ctrl[0].name, s_xbox_ctrl[1].name, s_xbox_ctrl[2].name,

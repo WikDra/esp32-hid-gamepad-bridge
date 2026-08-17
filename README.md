@@ -16,7 +16,7 @@ Pad ma **dwa profile**, wybierane w menuconfig (`APP_GAMEPAD_PROFILE`):
 
 | Profil | Co widzi PC |
 |---|---|
-| **Xbox (XInput)** — domyślny | Mostek podaje się za bezprzewodowy pad Xbox One S: deskryptor raportu bajt w bajt z prawdziwego pada i PnP ID z VID Microsoftu. Windows ładuje swój sterownik pada Xbox i udostępnia urządzenie przez **XInput**, czyli widzą go też gry, które nie obsługują DirectInput. |
+| **Xbox (XInput)** — domyślny | Mostek podaje się za bezprzewodowy pad Xbox Series X: deskryptor raportu bajt w bajt z prawdziwego pada oraz PnP ID z VID Microsoftu i PID 0x0B13 (tylko z tej rodziny PID sterownik XInput w Windows sie wiaze). Windows ładuje swój sterownik pada Xbox i udostępnia urządzenie przez **XInput**, czyli widzą go też gry, które nie obsługują DirectInput. |
 | generyczny (DirectInput) | 4 osie i 12 przycisków, widoczne w `joy.cpl`. Gry korzystające wyłącznie z XInput takiego pada nie zobaczą. To profil zweryfikowany w Etapie 3, zostaje jako wyjście awaryjne. |
 
 Przełączenie profilu zmienia deskryptor **i** tożsamość urządzenia, więc wymaga usunięcia

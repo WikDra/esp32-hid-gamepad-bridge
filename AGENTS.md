@@ -19,8 +19,8 @@ wyglądają jak jeden kontroler.
 
 Pad ma dwa profile, wybierane w menuconfig (`APP_GAMEPAD_PROFILE`):
 
-- **Xbox (XInput)** — mostek podaje się za bezprzewodowy pad Xbox One S: deskryptor raportu
-  bajt w bajt taki jak w prawdziwym padzie i PnP ID z VID Microsoftu. Windows ładuje wtedy
+- **Xbox (XInput)** — mostek podaje się za bezprzewodowy pad Xbox Series X (PID 0x0B13):
+  deskryptor raportu bajt w bajt taki jak w prawdziwym padzie i PnP ID z VID Microsoftu. Windows ładuje wtedy
   swój sterownik pada Xbox i udostępnia urządzenie przez XInput (§4.30, §4.31).
 - **generyczny (DirectInput)** — 4 osie `int8` i 12 przycisków, widoczne w `joy.cpl`.
   Profil zweryfikowany w Etapie 3, zostaje jako wyjście awaryjne.
@@ -1064,6 +1064,58 @@ Profil wybiera się w menuconfig (`APP_GAMEPAD_PROFILE`); generyczny pad DirectI
 zostaje jako wyjście awaryjne, bo to on jest zweryfikowany w Etapie 3. **Przełączenie
 profilu zmienia deskryptor i tożsamość, więc wymaga usunięcia pada z listy urządzeń
 Bluetooth w Windows i sparowania od nowa** (§4.7).
+
+### 4.32 Windows wiąże sterownik XInput tylko z PID 0x0B13 i 0x0B20–0x0B27
+
+Pierwsze podejście do Etapu 4 udawało pada **Xbox One S (model 1708, PID 0x02FD)** — ten
+model ma w projekcie referencyjnym najlepiej opisany deskryptor. Windows sparował
+urządzenie, przeczytał deskryptor i **podpiął generyczny sterownik**: w `joy.cpl` pojawił
+się „6-osiowy 17-przyciskowy pad", a Apex Legends, Rocket League i Steam pada nie widziały
+w ogóle. Liczby się zgadzały (4 osie + 2 spusty = 6 osi; 15 przycisków + AC Back +
+AC Home = 17), czyli deskryptor był sparsowany poprawnie — po prostu nie uruchomiło to
+XInput.
+
+Rozstrzygające było sprawdzenie, **jaki identyfikator sprzętowy nadał nam Windows**:
+
+```
+PS> Get-PnpDevice -Class HIDClass | ... DEVPKEY_Device_HardwareIds
+HID\{00001812-0000-1000-8000-00805f9b34fb}_Dev_VID&02045e_PID&02fd_REV&0408
+```
+
+Czyli tożsamość dotarła **idealnie**: źródło `02` (USB), VID `045e`, PID `02fd`. Problem był
+gdzie indziej — w tym, z czym Windows umie się z tym powiązać. Sterownik siedzi
+w `C:\Windows\INF\xinputhid.inf`:
+
+```
+Btle_Bus.DeviceDesc = "Bluetooth LE XINPUT compatible input device"
+...
+%Btle_Bus.DeviceDesc%=Btle_Bus, BTHLEDevice\{...1812...}_Dev_VID&02045e_PID&0b13
+%Btle_Bus.DeviceDesc%=Btle_Bus, BTHLEDevice\{...1812...}_Dev_VID&02045e_PID&0b20
+   ... 0b21, 0b22, 0b23, 0b24, 0b25, 0b26, 0b27
+```
+
+**Dopasowanie idzie tylko po VID i PID; `REV` w nim nie występuje.** Lista obejmuje
+wyłącznie rodzinę `0x0Bxx`, czyli pady z ery Series X/S. `0x02FD` (One S) jej nie ma —
+i dlatego pad z tamtą tożsamością nigdy nie dostanie XInput po BLE, niezależnie od
+deskryptora.
+
+Wniosek praktyczny: **udajemy pada Xbox Series X (model 1914): PID `0x0B13`, wersja
+`0x0509`**, z deskryptorem `XboxOneS_1914_HIDDescriptor` (283 B, dwa raporty: `0x01` INPUT
+16 B i `0x03` OUTPUT 8 B). Wcześniejszy wybór modelu 1708 był podyktowany komentarzem
+w projekcie referencyjnym o obsłudze wibracji na starszych jądrach Linuksa — dla Windows
+liczy się dokładnie odwrotna rzecz.
+
+Metodologicznie warto to zapamiętać: przy udawaniu urządzenia **nie ma sensu zgadywać, czy
+system nas rozpoznał** — wystarczy odczytać nadany identyfikator sprzętowy i sprawdzić go
+w plikach INF. To dwa polecenia i daje odpowiedź pewną zamiast prób.
+
+Uwaga: deskryptor 1914 deklaruje **dwa** raporty, nie cztery jak 1708 (nie ma osobnego
+raportu z przyciskiem Guide ani z poziomem baterii). Dlatego identyfikatory i długości
+raportów nie są w kodzie wpisane liczbami — `scripts/gen_xbox_report_map.py` liczy je
+z sumy bitów pól w deskryptorze i emituje tablicę `xbox_reports[]`, a
+`register_hid_service()` sprawdza jej układ przy starcie. Generator potwierdził przy okazji
+niezależnie, że raport wejściowy ma 16 bajtów — czyli tyle, ile wyszło z ręcznej analizy
+w §4.31.
 
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 

@@ -34,12 +34,15 @@ menu "Mostek HID (konfiguracja aplikacji)"
                 To profil zweryfikowany w Etapie 3 - zostaje jako wyjscie awaryjne.
 
         config APP_GAMEPAD_PROFILE_XBOX
-            bool "Pad Xbox One S (XInput)"
+            bool "Pad Xbox Series X (XInput)"
             help
-                Mostek podaje sie za bezprzewodowy pad Xbox One S (model 1708):
+                Mostek podaje sie za bezprzewodowy pad Xbox Series X (model 1914):
                 deskryptor raportu bajt w bajt taki jak w prawdziwym padzie oraz
-                PnP ID z VID Microsoftu. Windows laduje wtedy swoj sterownik pada
-                Xbox i udostepnia urzadzenie przez XInput.
+                PnP ID z VID Microsoftu i PID 0x0B13. Windows laduje wtedy swoj sterownik
+                XInput i udostepnia urzadzenie przez XInput.
+
+                PID nie jest dowolny - xinputhid.inf wiaze sie tylko z 0x0B13
+                i 0x0B20..0x0B27, patrz AGENTS.md 4.32.
 
                 Osie sa 16-bitowe, spusty 10-bitowe, jest hat switch i 15 przyciskow.
                 Szczegoly mapowania wejsc: AGENTS.md 4.31.
