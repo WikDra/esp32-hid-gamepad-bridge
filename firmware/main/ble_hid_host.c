@@ -1121,14 +1121,16 @@ static void scan_round(void)
  * i oba crashe z historii projektu wypadly wlasnie wtedy (4.21, 4.26). Zageszczanie
  * zdarzen polaczenia w tym momencie nie ma sensu - raportow jeszcze nie ma.
  *
- * DLACZEGO 15 ms, a nie 7,5 ms (minimum ze specyfikacji): na jednej antenie mamy trzy
- * linki plus okresowy skan. 15 ms daje 66 Hz na urzadzenie, czyli trzykrotnie wiecej
- * niz dotad, i tyle samo, ile Windows negocjuje dla naszego pada - wiec caly lancuch
- * wejscie -> pad -> PC pracuje z tym samym rytmem. Zejscie nizej warto sprawdzic
- * pomiarem, nie zalozeniem.
+ * DLACZEGO NIE ZAWSZE MINIMUM: na jednej antenie mamy trzy linki plus okresowy skan,
+ * a krotszy interwal to wiecej zdarzen polaczenia w tej samej sekundzie, takze pustych.
+ * Wartosc jest wiec w Kconfig (APP_INPUT_CONN_ITVL), zeby dala sie cofnac bez grzebania
+ * w kodzie. Domyslne 6 jednostek, czyli 7,5 ms, to minimum ze specyfikacji BLE i tyle
+ * potrzebuje AJ159 Pro na swoje 125 Hz.
  */
-#define FAST_ITVL_MIN 9   /* 11,25 ms - dolna granica, kontroler moze wybrac wiecej */
-#define FAST_ITVL_MAX 12  /* 15 ms                                                  */
+#define FAST_ITVL_MIN CONFIG_APP_INPUT_CONN_ITVL
+/* Gorna granica z zapasem: kontroler ma czym manewrowac przy trzech linkach, a i tak
+ * dostaniemy nie mniej niz FAST_ITVL_MIN. */
+#define FAST_ITVL_MAX (CONFIG_APP_INPUT_CONN_ITVL + 2)
 
 static void request_fast_interval(esp_hidh_dev_t *dev)
 {
@@ -1169,7 +1171,10 @@ static void request_fast_interval(esp_hidh_dev_t *dev)
 static void scan_task(void *arg)
 {
     ble_stack_wait_synced(portMAX_DELAY);
-    ESP_LOGI(TAG, "zaczynam skanowanie (do %d urzadzen HID)", HID_HOST_MAX_DEVICES);
+    ESP_LOGI(TAG, "zaczynam skanowanie (do %d urzadzen HID, docelowy interwal %u.%02u ms = %u Hz)",
+             HID_HOST_MAX_DEVICES,
+             (unsigned)(FAST_ITVL_MIN * 125 / 100), (unsigned)(FAST_ITVL_MIN * 125 % 100),
+             (unsigned)(1000 * 100 / (FAST_ITVL_MIN * 125)));
 
     while (true) {
         reap_dead_devices();

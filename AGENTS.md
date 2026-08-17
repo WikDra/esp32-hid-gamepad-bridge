@@ -1160,10 +1160,12 @@ i on negocjuje sensowną wartość. Widać to w logu przy szyfrowaniu.
 - **Dopiero po otwarciu**, nie zaraz po połączeniu. Odkrywanie usług to najcięższy moment
   dla stacku i oba historyczne crashe wypadły właśnie wtedy (§4.21, §4.26); zagęszczanie
   zdarzeń połączenia w chwili, gdy raportów jeszcze nie ma, byłoby ryzykiem bez zysku.
-- **15 ms, a nie 7,5 ms** (minimum ze specyfikacji). Na jednej antenie mamy trzy linki plus
-  okresowy skan. 15 ms daje 66 Hz na urządzenie — trzykrotnie więcej niż dotąd — i tyle samo,
-  ile ma link do PC, więc cały łańcuch pracuje w jednym rytmie. Zejście niżej warto oprzeć
-  na pomiarze, nie na założeniu.
+- **Docelowy interwał jest w Kconfig** (`APP_INPUT_CONN_ITVL`), bo to kompromis, nie
+  stała: krótszy interwał to więcej zdarzeń połączenia w tej samej sekundzie, także
+  pustych, a na jednej antenie mamy trzy linki plus okresowy skan. Pierwsze podejście
+  dawało 15 ms (66 Hz); po zgłoszeniu, że AJ159 Pro obsługuje **125 Hz po BT**, zejście
+  do **7,5 ms** — minimum ze specyfikacji BLE, 133 Hz. Gdyby pojawiła się niestabilność,
+  wartość podnosi się jedną opcją, bez grzebania w kodzie.
 - **Jeśli urządzenie już ma krótki interwał, nie ruszamy go.**
 
 Nierozstrzygnięty wątek obok: `hci_err=0x212` na `ocf=0x0013` (LE Connection Update)
