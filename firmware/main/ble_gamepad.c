@@ -748,6 +748,23 @@ bool ble_gamepad_send(const gamepad_state_t *state)
         return false;
     }
 
+#if CONFIG_APP_GAMEPAD_PROFILE_XBOX
+    /*
+     * Logujemy tylko czesc "cyfrowa" raportu - spusty, hat i przyciski (bajty 8..15).
+     * Osi nie, bo przy ruchu myszy zmieniaja sie kilkanascie razy na sekunde i zalalyby
+     * konsole. Dzieki temu widac wprost, czy klik myszy wyszedl jako spust: w joy.cpl
+     * spusty NIE sa przyciskami, wiec inaczej trzeba by to zgadywac.
+     */
+    if (!s_have_last || memcmp(rpt + 8, s_last_report + 8, GAMEPAD_REPORT_LEN - 8) != 0) {
+        ESP_LOGI(TAG, "xbox: LT=%u RT=%u hat=%u btn=0x%04x share=%u",
+                 (unsigned)(rpt[8] | (rpt[9] << 8)),
+                 (unsigned)(rpt[10] | (rpt[11] << 8)),
+                 rpt[12],
+                 (unsigned)(rpt[13] | (rpt[14] << 8)),
+                 rpt[15]);
+    }
+#endif
+
     struct os_mbuf *om = ble_hs_mbuf_from_flat(rpt, sizeof(rpt));
     if (om == NULL) {
         ESP_LOGW(TAG, "brak mbuf na raport");
