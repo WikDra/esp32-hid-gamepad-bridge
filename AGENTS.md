@@ -1128,6 +1128,50 @@ z sumy bitów pól w deskryptorze i emituje tablicę `xbox_reports[]`, a
 niezależnie, że raport wejściowy ma 16 bajtów — czyli tyle, ile wyszło z ręcznej analizy
 w §4.31.
 
+### 4.33 Dlaczego mysz raportowała tylko ~20–25 razy na sekundę
+
+To nie ograniczenie myszy, tylko **interwał połączenia BLE**. Peryferial może wysłać
+notyfikację wyłącznie w zdarzeniu połączenia, więc interwał jest sztywnym górnym limitem
+częstotliwości raportów — niezależnie od tego, jak szybko urządzenie próbkuje wewnętrznie.
+
+Kto go ustala: central, przy wywołaniu `ble_gap_connect()`. A `esp_hidh` podaje tam `NULL`:
+
+```c
+nimble_hidh.c:991   ret = ble_gap_connect(own_addr_type, &addr, 30000, NULL,
+                                          esp_hidh_gattc_event_handler, NULL);
+```
+
+więc obowiązują domyślne z NimBLE:
+
+```c
+ble_gap.h:113   #define BLE_GAP_INITIAL_CONN_ITVL_MIN   BLE_GAP_CONN_ITVL_MS(30)
+ble_gap.h:116   #define BLE_GAP_INITIAL_CONN_ITVL_MAX   BLE_GAP_CONN_ITVL_MS(50)
+```
+
+30–50 ms to 20–33 Hz i dokładnie tyle mierzyliśmy w §4.22 (raporty co ~40–50 ms). Zgodność
+jest na tyle dokładna, że nie ma tu miejsca na inną hipotezę.
+
+Dla porównania: link do PC ma `itvl=12`, czyli **15 ms** — bo tam centralem jest Windows
+i on negocjuje sensowną wartość. Widać to w logu przy szyfrowaniu.
+
+**Poprawka:** po otwarciu urządzenia wołamy `ble_gap_update_params()` z żądaniem 11,25–15 ms
+(`request_fast_interval()` w `ble_hid_host.c`). Trzy decyzje projektowe warte zapisania:
+
+- **Dopiero po otwarciu**, nie zaraz po połączeniu. Odkrywanie usług to najcięższy moment
+  dla stacku i oba historyczne crashe wypadły właśnie wtedy (§4.21, §4.26); zagęszczanie
+  zdarzeń połączenia w chwili, gdy raportów jeszcze nie ma, byłoby ryzykiem bez zysku.
+- **15 ms, a nie 7,5 ms** (minimum ze specyfikacji). Na jednej antenie mamy trzy linki plus
+  okresowy skan. 15 ms daje 66 Hz na urządzenie — trzykrotnie więcej niż dotąd — i tyle samo,
+  ile ma link do PC, więc cały łańcuch pracuje w jednym rytmie. Zejście niżej warto oprzeć
+  na pomiarze, nie na założeniu.
+- **Jeśli urządzenie już ma krótki interwał, nie ruszamy go.**
+
+Nierozstrzygnięty wątek obok: `hci_err=0x212` na `ocf=0x0013` (LE Connection Update)
+pojawia się w logu stale, jeszcze zanim sami cokolwiek aktualizujemy. Ktoś inicjuje zmianę
+parametrów i kontroler ją odrzuca. Sprawdzone, że nie chodzi o `min_ce_len`/`max_ce_len` —
+domyślne są `0x0000`. Jeśli nasze żądanie skrócenia interwału dostanie ten sam błąd, to
+właśnie ten trop trzeba rozwikłać.
+
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 
 Źródło: `D:\wysypisko\openlara_esp32\retro-go\openlara\components\OpenLara\src\platform\retrogo\`

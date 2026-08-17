@@ -595,7 +595,6 @@ static int gap_disconnect_listener(struct ble_gap_event *event, void *arg)
     if (event->type == BLE_GAP_EVENT_CONNECT && event->connect.status == 0) {
         ESP_LOGI(TAG, "polaczenie nawiazane, conn_handle=%u (limit tablic w NimBLE: %d)",
                  event->connect.conn_handle, CONFIG_BT_NIMBLE_MAX_CONNECTIONS);
-
         /*
          * Profil HOGP wymaga, zeby central zaszyfrowal link przed korzystaniem
          * z uslugi HID. esp_hidh NIE ROBI TEGO NIGDY (grep po security_initiate
@@ -631,10 +630,11 @@ static int gap_disconnect_listener(struct ble_gap_event *event, void *arg)
     if (event->type == BLE_GAP_EVENT_ENC_CHANGE) {
         struct ble_gap_conn_desc desc;
         if (ble_gap_conn_find(event->enc_change.conn_handle, &desc) == 0) {
-            ESP_LOGI(TAG, "szyfrowanie: conn_handle=%u status=%d | enc=%d auth=%d bond=%d",
+            ESP_LOGI(TAG, "szyfrowanie: conn_handle=%u status=%d | enc=%d auth=%d bond=%d | itvl=%u (%u ms)",
                      event->enc_change.conn_handle, event->enc_change.status,
                      desc.sec_state.encrypted, desc.sec_state.authenticated,
-                     desc.sec_state.bonded);
+                     desc.sec_state.bonded,
+                     desc.conn_itvl, (unsigned)(desc.conn_itvl * 125 / 100));
         } else {
             ESP_LOGW(TAG, "szyfrowanie: conn_handle=%u status=%d (brak deskryptora)",
                      event->enc_change.conn_handle, event->enc_change.status);
@@ -645,6 +645,25 @@ static int gap_disconnect_listener(struct ble_gap_event *event, void *arg)
     if (event->type == BLE_GAP_EVENT_PARING_COMPLETE) {
         ESP_LOGI(TAG, "parowanie zakonczone: conn_handle=%u status=%d",
                  event->pairing_complete.conn_handle, event->pairing_complete.status);
+        return 0;
+    }
+
+    /*
+     * Interwal polaczenia jest GORNYM LIMITEM czestotliwosci raportow: peryferial
+     * moze wyslac notyfikacje tylko w zdarzeniu polaczenia. esp_hidh wola
+     * ble_gap_connect() z NULL jako parametrami, wiec obowiazuja domyslne z NimBLE,
+     * czyli 30-50 ms - stad mysz raportowala tylko ~20-25 razy na sekunde.
+     * Logujemy wartosc, zeby bylo widac, co kontroler faktycznie wynegocjowal.
+     */
+    if (event->type == BLE_GAP_EVENT_CONN_UPDATE) {
+        struct ble_gap_conn_desc d;
+        if (ble_gap_conn_find(event->conn_update.conn_handle, &d) == 0) {
+            ESP_LOGI(TAG, "parametry linku %u: status=%d itvl=%u (%u.%02u ms) latency=%u timeout=%u",
+                     event->conn_update.conn_handle, event->conn_update.status,
+                     d.conn_itvl, (unsigned)(d.conn_itvl * 125 / 100),
+                     (unsigned)(d.conn_itvl * 125 % 100),
+                     d.conn_latency, d.supervision_timeout);
+        }
         return 0;
     }
 
@@ -992,6 +1011,9 @@ static void log_scan_results(void)
     }
 }
 
+/* Definicja nizej - skraca interwal polaczenia swiezo otwartego urzadzenia. */
+static void request_fast_interval(esp_hidh_dev_t *dev);
+
 static void try_connect_candidates(void)
 {
     candidate_t c;
@@ -1041,6 +1063,8 @@ static void try_connect_candidates(void)
             ESP_LOGW(TAG, "  brak raportow wejsciowych - urzadzenie nic nam nie da");
         }
 
+        request_fast_interval(dev);
+
         /*
          * Odstep przed kolejna proba. Swiezo podlaczone urzadzenie wlasnie zapisalo
          * sie na kilka charakterystyk i zaczyna nadawac raporty; odkrywanie uslug
@@ -1081,6 +1105,65 @@ static void scan_round(void)
                         pdMS_TO_TICKS(SCAN_DURATION_MS + 2000));
     log_scan_results();
     try_connect_candidates();
+}
+
+/*
+ * Skracamy interwal polaczenia swiezo otwartego urzadzenia wejsciowego.
+ *
+ * DLACZEGO: peryferial moze wyslac notyfikacje tylko w zdarzeniu polaczenia, czyli
+ * interwal jest gornym limitem czestotliwosci raportow. esp_hidh wola
+ * ble_gap_connect() z NULL jako parametrami (nimble_hidh.c:991), wiec obowiazuja
+ * domyslne z NimBLE: BLE_GAP_INITIAL_CONN_ITVL_MIN/MAX to 30 i 50 ms. Stad mysz
+ * raportowala tylko ~20-25 razy na sekunde, mimo ze probkuje znacznie szybciej.
+ *
+ * DLACZEGO DOPIERO TUTAJ, a nie zaraz po polaczeniu: odkrywanie uslug to najciezszy
+ * moment dla stacku (dziesiatki procedur GATT przy dwoch innych aktywnych linkach)
+ * i oba crashe z historii projektu wypadly wlasnie wtedy (4.21, 4.26). Zageszczanie
+ * zdarzen polaczenia w tym momencie nie ma sensu - raportow jeszcze nie ma.
+ *
+ * DLACZEGO 15 ms, a nie 7,5 ms (minimum ze specyfikacji): na jednej antenie mamy trzy
+ * linki plus okresowy skan. 15 ms daje 66 Hz na urzadzenie, czyli trzykrotnie wiecej
+ * niz dotad, i tyle samo, ile Windows negocjuje dla naszego pada - wiec caly lancuch
+ * wejscie -> pad -> PC pracuje z tym samym rytmem. Zejscie nizej warto sprawdzic
+ * pomiarem, nie zalozeniem.
+ */
+#define FAST_ITVL_MIN 9   /* 11,25 ms - dolna granica, kontroler moze wybrac wiecej */
+#define FAST_ITVL_MAX 12  /* 15 ms                                                  */
+
+static void request_fast_interval(esp_hidh_dev_t *dev)
+{
+    if (dev == NULL || dev->ble.conn_id < 0) {
+        return;
+    }
+    const uint16_t conn_handle = (uint16_t)dev->ble.conn_id;
+
+    struct ble_gap_conn_desc desc;
+    if (ble_gap_conn_find(conn_handle, &desc) != 0) {
+        return;
+    }
+    if (desc.conn_itvl <= FAST_ITVL_MAX) {
+        ESP_LOGI(TAG, "  interwal linku %u to juz %u (%u ms), nie zmieniam",
+                 conn_handle, desc.conn_itvl, (unsigned)(desc.conn_itvl * 125 / 100));
+        return;
+    }
+
+    const struct ble_gap_upd_params params = {
+        .itvl_min = FAST_ITVL_MIN,
+        .itvl_max = FAST_ITVL_MAX,
+        .latency = 0,
+        .supervision_timeout = desc.supervision_timeout,
+        .min_ce_len = 0,
+        .max_ce_len = 0,
+    };
+    int rc = ble_gap_update_params((uint16_t)conn_handle, &params);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "  nie moge skrocic interwalu linku %u: rc=%d (zostaje %u ms)",
+                 conn_handle, rc, (unsigned)(desc.conn_itvl * 125 / 100));
+        return;
+    }
+    ESP_LOGI(TAG, "  prosze o krotszy interwal linku %u: %u ms -> %u..%u ms",
+             conn_handle, (unsigned)(desc.conn_itvl * 125 / 100),
+             (unsigned)(FAST_ITVL_MIN * 125 / 100), (unsigned)(FAST_ITVL_MAX * 125 / 100));
 }
 
 static void scan_task(void *arg)
