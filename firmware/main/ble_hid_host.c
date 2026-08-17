@@ -1011,6 +1011,19 @@ static void log_scan_results(void)
     }
 }
 
+/*
+ * Kontroler C3 odrzuca aktualizacje parametrow polaczenia z HCI 0x12 (Invalid HCI
+ * Command Parameters). To jest to samo, co od poczatku widzielismy w logu jako
+ * "ocf=0x0013, hci_err=0x212" - jeszcze zanim sami cokolwiek aktualizowalismy,
+ * czyli odrzucane sa takze aktualizacje inicjowane przez NimBLE lub przez peera.
+ *
+ * Nie wiemy, KTORY parametr mu nie pasuje, wiec probujemy po kolei kilka zestawow
+ * i logujemy wynik kazdej proby. Kolejnosc nie jest przypadkowa: jesli przejdzie
+ * dopiero dluzszy interwal, ograniczeniem jest sam interwal (trzy linki na jednej
+ * antenie). Jesli przejdzie wariant z ce_len albo z dluzszym timeoutem nadzoru, to
+ * problemem byl ten parametr. A jesli odrzucona zostanie nawet proba "bez zmiany
+ * interwalu", to kontroler nie przyjmuje tej komendy w ogole.
+ */
 /* Definicja nizej - skraca interwal polaczenia swiezo otwartego urzadzenia. */
 static void request_fast_interval(esp_hidh_dev_t *dev);
 
@@ -1149,23 +1162,53 @@ static void request_fast_interval(esp_hidh_dev_t *dev)
         return;
     }
 
-    const struct ble_gap_upd_params params = {
-        .itvl_min = FAST_ITVL_MIN,
-        .itvl_max = FAST_ITVL_MAX,
-        .latency = 0,
-        .supervision_timeout = desc.supervision_timeout,
-        .min_ce_len = 0,
-        .max_ce_len = 0,
-    };
-    int rc = ble_gap_update_params((uint16_t)conn_handle, &params);
-    if (rc != 0) {
-        ESP_LOGW(TAG, "  nie moge skrocic interwalu linku %u: rc=%d (zostaje %u ms)",
-                 conn_handle, rc, (unsigned)(desc.conn_itvl * 125 / 100));
-        return;
+    /*
+     * Ustalone eksperymentem na sprzecie (log z 2026-08-17):
+     *  - 7,5 ms odrzucone z HCI 0x12, TAKZE w wariantach z ce_len i z dluzszym
+     *    timeoutem nadzoru - czyli problemem jest sam interwal, nie inny parametr,
+     *  - 15-20 ms przyjete, a kontroler wybral GORNA granice zakresu (dostalismy 20 ms).
+     *
+     * Dlatego prosimy o konkretna wartosc (min = max), a nie o zakres, i schodzimy
+     * drabinka od najkrotszej. Pierwsza przyjeta wygrywa, wiec dostajemy najkrotszy
+     * interwal, jaki ten kontroler przy trzech linkach dopuszcza.
+     */
+    const uint16_t ladder[] = {CONFIG_APP_INPUT_CONN_ITVL, 8, 10, 12, 16, 24};
+
+    ESP_LOGI(TAG, "  link %u: interwal %u (%u ms), latency=%u, timeout nadzoru=%u (%u ms)",
+             conn_handle, desc.conn_itvl, (unsigned)(desc.conn_itvl * 125 / 100),
+             desc.conn_latency, desc.supervision_timeout,
+             (unsigned)(desc.supervision_timeout * 10));
+
+    for (size_t i = 0; i < sizeof(ladder) / sizeof(ladder[0]); i++) {
+        const uint16_t itvl = ladder[i];
+        if (i > 0 && itvl <= CONFIG_APP_INPUT_CONN_ITVL) {
+            continue; /* juz probowane jako wartosc z Kconfig */
+        }
+        if (itvl >= desc.conn_itvl) {
+            break; /* dluzszy niz obecny nie ma sensu */
+        }
+        const struct ble_gap_upd_params params = {
+            .itvl_min = itvl,
+            .itvl_max = itvl,
+            .latency = 0,
+            .supervision_timeout = desc.supervision_timeout,
+            .min_ce_len = 0,
+            .max_ce_len = 0,
+        };
+        int rc = ble_gap_update_params(conn_handle, &params);
+        if (rc == 0) {
+            ESP_LOGI(TAG, "  PRZYJETE: interwal %u (%u.%02u ms = %u Hz)",
+                     itvl, (unsigned)(itvl * 125 / 100), (unsigned)(itvl * 125 % 100),
+                     (unsigned)(1000 * 100 / (itvl * 125)));
+            return;
+        }
+        /* rc >= 0x200 to blad HCI; kod z listy Bluetooth to rc - 0x200. */
+        ESP_LOGW(TAG, "  interwal %u (%u.%02u ms) odrzucony: rc=%d (HCI 0x%02x)",
+                 itvl, (unsigned)(itvl * 125 / 100), (unsigned)(itvl * 125 % 100),
+                 rc, rc >= 0x200 ? (unsigned)(rc - 0x200) : 0u);
     }
-    ESP_LOGI(TAG, "  prosze o krotszy interwal linku %u: %u ms -> %u..%u ms",
-             conn_handle, (unsigned)(desc.conn_itvl * 125 / 100),
-             (unsigned)(FAST_ITVL_MIN * 125 / 100), (unsigned)(FAST_ITVL_MAX * 125 / 100));
+    ESP_LOGW(TAG, "  zaden interwal nie przeszedl - zostaje %u ms",
+             (unsigned)(desc.conn_itvl * 125 / 100));
 }
 
 static void scan_task(void *arg)

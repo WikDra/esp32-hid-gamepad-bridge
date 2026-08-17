@@ -83,7 +83,7 @@ menu "Mostek HID (konfiguracja aplikacji)"
         int "Wejscia: docelowy interwal polaczenia [jednostki 1,25 ms]"
         depends on APP_ENABLE_HID_HOST
         range 6 40
-        default 6
+        default 12
         help
             Gorny limit czestotliwosci raportow z klawiatury i myszy. Peryferial moze
             wyslac notyfikacje tylko w zdarzeniu polaczenia, wiec interwal decyduje
@@ -92,15 +92,17 @@ menu "Mostek HID (konfiguracja aplikacji)"
             Wartosc w jednostkach 1,25 ms:
               6  = 7,5 ms  -> 133 Hz  (minimum ze specyfikacji BLE)
               8  = 10 ms   -> 100 Hz
-              12 = 15 ms   ->  66 Hz  (tyle negocjuje Windows dla naszego pada)
-              24 = 30 ms   ->  33 Hz  (domyslne NimBLE, patrz AGENTS.md 4.33)
+              12 = 15 ms   ->  66 Hz  (domyslne; tyle negocjuje tez Windows dla pada)
+              24 = 30 ms   ->  33 Hz
+              36 = 45 ms   ->  22 Hz  (tyle wychodzilo bez tej poprawki)
 
-            Domyslne 6 wynika z tego, ze AJAZZ AJ159 Pro obsluguje 125 Hz po BT,
-            a do tego potrzeba wlasnie minimalnego interwalu.
+            ZMIERZONE NA SPRZECIE: kontroler C3 przy trzech linkach ODRZUCA interwaly
+            7,5 / 10 / 12,5 ms z bledem HCI 0x12, a przyjmuje 15 ms. Sprawdzone, ze nie
+            chodzi o ce_len ani o timeout nadzoru - te same wartosci z ich zmianami tez
+            byly odrzucane. Szczegoly w AGENTS.md 4.33.
 
-            UWAGA na koszt: mamy trzy linki i okresowy skan na jednej antenie, a krotszy
-            interwal to wiecej zdarzen polaczenia w tej samej sekundzie, takze pustych.
-            Jesli pojawi sie niestabilnosc albo zerwania linku, podnies te wartosc.
+            Zostawienie tu mniejszej wartosci nie zaszkodzi: firmware schodzi drabinka
+            i uzywa najkrotszego interwalu, ktory kontroler przyjmie. Widac to w logu.
 
     config APP_MOUSE_SCALE_DIV
         int "Mapowanie: dzielnik czulosci myszy"

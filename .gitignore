@@ -16,3 +16,7 @@ nm.txt
 # Klon repo referencyjnego (Mystfit/ESP32-BLE-CompositeHID) do generowania deskryptora Xbox.
 # Wygenerowany naglowek jest w repo, wiec do budowania ten katalog nie jest potrzebny.
 .ref/
+
+# Build po stronie Windows (scripts\build-native-win.bat) - osobny, zeby nie mieszac z WSL.
+firmware/build.win.*
+firmware/sdkconfig.win.*

@@ -1171,8 +1171,56 @@ i on negocjuje sensowną wartość. Widać to w logu przy szyfrowaniu.
 Nierozstrzygnięty wątek obok: `hci_err=0x212` na `ocf=0x0013` (LE Connection Update)
 pojawia się w logu stale, jeszcze zanim sami cokolwiek aktualizujemy. Ktoś inicjuje zmianę
 parametrów i kontroler ją odrzuca. Sprawdzone, że nie chodzi o `min_ce_len`/`max_ce_len` —
-domyślne są `0x0000`. Jeśli nasze żądanie skrócenia interwału dostanie ten sam błąd, to
-właśnie ten trop trzeba rozwikłać.
+domyślne są `0x0000`.
+
+#### Rozstrzygnięcie: kontroler C3 przy trzech linkach nie zejdzie poniżej 15 ms
+
+Pierwsze żądanie 7,5 ms zwróciło `rc=530`, czyli `0x212` — **dokładnie ten sam błąd, który
+od początku widzieliśmy w logu jako `hci_err=0x212` na `ocf=0x0013`**. To był jeden problem,
+nie dwa: kontroler odrzuca aktualizacje parametrów połączenia.
+
+Zamiast zgadywać, który parametr mu nie pasuje, firmware przeprowadził eksperyment sam —
+sześć zestawów po kolei, każdy z wynikiem w logu. Wynik pierwszej serii:
+
+| Próba | Wynik |
+|---|---|
+| 7,5–10 ms | odrzucona, HCI 0x12 |
+| 7,5–10 ms **z `ce_len`** | odrzucona, HCI 0x12 |
+| 7,5–10 ms **z timeoutem nadzoru 4 s** | odrzucona, HCI 0x12 |
+| 15–20 ms | **przyjęta**, link dostał 20 ms |
+
+To wyklucza `ce_len` i timeout nadzoru — problemem jest **sam interwał**. Druga obserwacja
+z tej serii: przy podaniu zakresu kontroler wybrał jego **górną** granicę (poprosiliśmy
+15–20 ms, dostaliśmy 20 ms). Dlatego prosimy teraz o konkretną wartość (`min == max`).
+
+Druga seria, drabinką od najkrótszej, dała **identyczny wynik dla obu urządzeń**
+(klawiatura `conn_handle=3`, mysz `conn_handle=4`):
+
+```
+interwal 6 (7.50 ms) odrzucony: rc=530 (HCI 0x12)
+interwal 8 (10.00 ms) odrzucony: rc=530 (HCI 0x12)
+interwal 10 (12.50 ms) odrzucony: rc=530 (HCI 0x12)
+PRZYJETE: interwal 12 (15.00 ms = 66 Hz)
+parametry linku 3: status=0 itvl=12 (15.00 ms) latency=0 timeout=256
+```
+
+Czyli **15 ms to podłoga tego kontrolera przy trzech aktywnych linkach**. Efekt końcowy:
+45 ms → 15 ms, z 22 Hz na 66 Hz, czyli trzykrotnie. Deklarowanych przez AJ159 Pro 125 Hz
+**nie da się osiągnąć** — to ograniczenie kontrolera, nie naszego kodu.
+
+Czego nie wiem: dokładnej reguły, którą stosuje kontroler. Zwraca „Invalid HCI Command
+Parameters", co sugeruje walidację wartości, a nie brak zasobów — ale 12,5 ms jest poprawną
+wartością w rozumieniu specyfikacji, więc to walidacja **kontekstowa**, zależna od tego, co
+już jest zestawione. Warto zauważyć, że link do PC też pracuje na 15 ms (wybrał go Windows),
+więc możliwe, że kontroler wymaga wspólnej siatki dla wszystkich linków.
+
+**Tani eksperyment, gdyby ktoś chciał to domknąć:** wyłączyć Bluetooth w PC (znika trzeci
+link) i sprawdzić, czy wtedy 7,5 ms przechodzi. Jeśli tak, ograniczeniem jest liczba linków
+i wspólna siatka; jeśli nie, to sztywny limit kontrolera. Firmware sam zaloguje wynik, bo
+drabinka jest w kodzie na stałe.
+
+Drabinka zostaje włączona także dlatego, że nie wpisuje wyniku na sztywno: gdyby przyszła
+wersja IDF albo inna liczba linków dopuszczała krótszy interwał, firmware sam go weźmie.
 
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 
