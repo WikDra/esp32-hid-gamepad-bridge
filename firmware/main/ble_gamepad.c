@@ -672,6 +672,39 @@ static uint16_t axis_to_u16(int8_t v)
     return (uint16_t)((t * 65535 + 127) / 254);
 }
 
+/*
+ * Hat switch pada Xbox: 0 = wysrodkowany, dalej 1..8 zgodnie z ruchem wskazowek
+ * zegara od gory (N, NE, E, SE, S, SW, W, NW). Deskryptor deklaruje go jako pole
+ * 4-bitowe z Null State, wiec 0 znaczy "brak kierunku".
+ *
+ * Tablica zamiast lancucha warunkow, bo trzeba rozstrzygnac osiem kombinacji plus
+ * przypadki, w ktorych wcisniete sa przeciwne kierunki. Te znosza sie - inaczej
+ * wynik zalezalby od kolejnosci sprawdzania. Indeks: bit0 gora, bit1 prawo,
+ * bit2 dol, bit3 lewo.
+ */
+static uint8_t hat_from_dpad(uint8_t dpad)
+{
+    static const uint8_t hat[16] = {
+        0, /* ----  brak          */
+        1, /* U     gora          */
+        3, /* R     prawo         */
+        2, /* UR    gora-prawo    */
+        5, /* D     dol           */
+        0, /* UD    znosza sie    */
+        4, /* RD    dol-prawo     */
+        3, /* URD   zostaje prawo */
+        7, /* L     lewo          */
+        8, /* UL    gora-lewo     */
+        0, /* RL    znosza sie    */
+        1, /* URL   zostaje gora  */
+        6, /* DL    dol-lewo      */
+        7, /* UDL   zostaje lewo  */
+        5, /* RDL   zostaje dol   */
+        0, /* URDL  znosza sie    */
+    };
+    return hat[dpad & 0x0F];
+}
+
 static void build_report(const gamepad_state_t *state, uint8_t *rpt)
 {
     uint16_t buttons = 0;
@@ -714,7 +747,7 @@ static void build_report(const gamepad_state_t *state, uint8_t *rpt)
     rpt[9]  = (uint8_t)(trigger_l >> 8);   /* gorne 6 bitow to dopelnienie */
     rpt[10] = (uint8_t)(trigger_r & 0xFF);
     rpt[11] = (uint8_t)(trigger_r >> 8);
-    rpt[12] = 0;                            /* hat switch: 0 = wysrodkowany */
+    rpt[12] = hat_from_dpad(state->dpad);   /* krzyzak, 0 = wysrodkowany */
     rpt[13] = (uint8_t)(buttons & 0xFF);
     rpt[14] = (uint8_t)((buttons >> 8) & 0x7F);
     rpt[15] = 0;                            /* przycisk Share */

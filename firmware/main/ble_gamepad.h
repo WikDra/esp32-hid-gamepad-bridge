@@ -16,6 +16,16 @@
 extern "C" {
 #endif
 
+/* Krzyzak (hat switch). Bitmapa, bo klawisze strzalek sa niezalezne; przeciwne
+ * kierunki wcisniete naraz znosza sie w ble_gamepad.c.
+ *
+ * UWAGA: krzyzak dziala tylko w profilu Xbox. Deskryptor pada generycznego nie ma
+ * hat switcha, a dodanie go wymagaloby re-parowania tamtego profilu w Windows. */
+#define GAMEPAD_DPAD_UP    0x01
+#define GAMEPAD_DPAD_RIGHT 0x02
+#define GAMEPAD_DPAD_DOWN  0x04
+#define GAMEPAD_DPAD_LEFT  0x08
+
 /* Osie sa 8-bitowe ze znakiem, zakres -127..127, srodek 0.
  * Przyciski: bit 0 = przycisk 1, ..., bit 11 = przycisk 12. */
 typedef struct {
@@ -24,6 +34,7 @@ typedef struct {
     int8_t rx;
     int8_t ry;
     uint16_t buttons;
+    uint8_t dpad;
 } gamepad_state_t;
 
 /* Rejestruje usluge HID w GATT i uruchamia zadanie rozglaszajace.

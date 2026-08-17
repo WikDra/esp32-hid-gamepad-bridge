@@ -82,7 +82,10 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | Pełne mapowanie klawiatury potwierdzone ponownie | `1a`→`L(0,-127)`, `04`→`L(-127,0)`, `16`→`L(0,127)`, `07`→`L(127,0)`, skos `16`+`07`→`L(90,90)` |
 | **Dwa kolejne cykle uśpienie → powrót myszy, bez crashu** | `reason=531` → `zasoby odlaczonego urzadzenia zwolnione` → skan → `kandydat` → `conn_handle=4` → `razem 2/2`; w jednym przebiegu 180 s wyszło pięć otwarć urządzeń |
 | Brak wycieku pamięci przez 180 s i kilka cykli | `heap 188856 B` z dwoma urządzeniami, `189816 B` po rozłączeniu, `min 179248 B` |
-| **XInput działa — Etap 4 osiągnięty** | po zmianie tożsamości na PID `0x0B13` (§4.32) `joy.cpl` pokazuje urządzenie jako **„Urządzenie wejściowe Bluetooth LE zgodne z interfejsem XINPUT"**. Właściciel potwierdził: **Rocket League obsługuje pada, Steam go widzi.** Apex Legends jeszcze nieprzetestowany |
+| **XInput działa — Etap 4 osiągnięty** | po zmianie tożsamości na PID `0x0B13` (§4.32) `joy.cpl` pokazuje urządzenie jako **„Urządzenie wejściowe Bluetooth LE zgodne z interfejsem XINPUT"**. Właściciel potwierdził: **Rocket League, Apex Legends i Steam obsługują pada** |
+| **Rozstrzygający dowód: Windows przysyła wibracje** | `raport wyjsciowy id=3 (8 B): 0f 00 00 00 00 ff 00 eb` — polecenie rumble wysyła wyłącznie sterownik pada Xbox, nie zwykła obsługa HID. Pierwszy bajt `0x0f` to „DC Enable Actuators" ze wszystkimi czterema silnikami |
+| Krzyżak ze strzałek | zaimplementowany w profilu Xbox (hat switch 1–8, przeciwne kierunki znoszą się); w profilu generycznym nieaktywny, bo tamten deskryptor nie ma hat switcha |
+| Czułość myszy dobrana | `CONFIG_APP_MOUSE_SCALE_DIV` 8 → **24** (3× mniej czuła) po zgłoszeniu, że gałka zbyt szybko dobija do maksimum |
 | Tożsamość odczytana z systemu | `HID\{00001812-…}_Dev_VID&02045e_PID&02fd_REV&0408` przy pierwszym podejściu — dowód, że PnP ID dociera do Windows bezbłędnie i że problemem był wyłącznie **wybór PID** (§4.32) |
 | Naprawa | lokalna kopia komponentu `esp_hid` z jednolinijkową łatką + kontrole granic. Potwierdzone, że build bierze naszą kopię (`check_local_esp_hid.py`) i że łatka jest w binarce. **Weryfikacja cyklu uśpienia na sprzęcie do zrobienia** |
 
@@ -1059,8 +1062,14 @@ przypisania to jedna tablica:
 Wybór jest mój, kierowany tym, jak te klawisze działają w grach: lewy przycisk myszy to
 strzał (prawy spust), prawy to celowanie (lewy spust), Shift to sprint (klik gałki).
 Osie 8-bitowe są skalowane do 16 bitów tak, że zero wypada dokładnie na 32768, a końce
-zakresu na 0 i 65535. Hat switch jest na razie zawsze wyśrodkowany — klawiszy strzałek
-mapper nie czyta.
+zakresu na 0 i 65535.
+
+Krzyżak jest zasilany **klawiszami strzałek**. `input_mapper` składa z nich bitmapę
+(`GAMEPAD_DPAD_*`), a `ble_gamepad.c` zamienia ją na wartość hat switcha przez tablicę
+16-elementową: 0 = wyśrodkowany, 1–8 zgodnie z ruchem wskazówek zegara od góry.
+Przeciwne kierunki wciśnięte naraz **znoszą się** — bez tego wynik zależałby od
+kolejności sprawdzania warunków. W profilu generycznym krzyżak jest nieaktywny, bo tamten
+deskryptor nie ma hat switcha.
 
 Profil wybiera się w menuconfig (`APP_GAMEPAD_PROFILE`); generyczny pad DirectInput
 zostaje jako wyjście awaryjne, bo to on jest zweryfikowany w Etapie 3. **Przełączenie
@@ -1200,7 +1209,8 @@ bo w razie problemu wiadomo, która rola zawiodła.
       deskryptor 283 B bajt w bajt z prawdziwego pada, PnP ID z VID Microsoftu, własna
       usługa HID i DIS napisane wprost na GATT (§4.30, §4.31, §4.32).
       **Zweryfikowane na sprzęcie:** `joy.cpl` pokazuje „Urządzenie wejściowe Bluetooth LE
-      zgodne z interfejsem XINPUT", Rocket League obsługuje pada, Steam go widzi.
+      zgodne z interfejsem XINPUT", Rocket League i Apex Legends obsługują pada, Steam go
+      widzi, a Windows przysyła polecenia wibracji (`raport wyjsciowy id=3`).
 
 Do zamknięcia PoC zostaje:
 
@@ -1213,7 +1223,8 @@ Do zamknięcia PoC zostaje:
 - [x] **potwierdzenie, że ruch myszy znowu rusza prawym analogiem.** W logu widać pełny
       łańcuch: `MOU … dx=-18 dy=-2` → `pad: R(-15,0)`, plus przyciski myszy i skos
       klawiatury `L(90,90)` w tym samym przebiegu.
-- [ ] dobranie `CONFIG_APP_MOUSE_SCALE_DIV` do gustu,
+- [x] **dobranie `CONFIG_APP_MOUSE_SCALE_DIV` do gustu** — 8 → 24 po zgłoszeniu, że gałka
+      zbyt szybko dobija do maksimum.
 - [ ] pomiar opóźnienia wejście → pad.
 
 ## 6. Zasady dla agenta

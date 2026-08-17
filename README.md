@@ -118,6 +118,7 @@ Wejścia są te same w obu profilach — różni się tylko to, czym są po stro
 | Wejście | Profil Xbox (XInput) | Profil generyczny |
 |---|---|---|
 | `W` / `S` / `A` / `D` | lewy analog | lewy analog |
+| strzałki | **krzyżak (D-pad)** | nieużywane |
 | ruch myszy | prawy analog | prawy analog |
 | lewy przycisk myszy | **prawy spust (RT)** | przycisk 1 |
 | prawy przycisk myszy | **lewy spust (LT)** | przycisk 2 |
@@ -140,15 +141,19 @@ Dwie rzeczy, które warto wiedzieć przy testowaniu profilu Xbox:
 - **Spusty są analogowe, nie są przyciskami.** Kliknięcie myszą daje pełne wychylenie
   (1023), ale w siatce przycisków `joy.cpl` nic się nie zaświeci — spusty widać na osi.
   W logu płytki widać je wprost: `xbox: LT=1023 RT=0 …`.
-- **Krzyżak (hat switch) jest na razie nieużywany** — mapper nie czyta klawiszy strzałek.
+- **Krzyżak działa tylko w profilu Xbox.** Deskryptor pada generycznego nie ma hat
+  switcha, a dodanie go wymagałoby sparowania tamtego profilu od nowa.
 
 Przypisanie zmienia się w jednym miejscu: tablica `s_xbox_ctrl` w
 [`firmware/main/ble_gamepad.c`](firmware/main/ble_gamepad.c). Wejścia i profil generyczny
 zostają wtedy nietknięte, bo `input_mapper` nie wie, który profil jest aktywny.
 
 Czułość myszy reguluje `CONFIG_APP_MOUSE_SCALE_DIV` (większa wartość = mniej czuła).
-Zmiana wymaga przebudowania: `scripts\build-win.bat esp32c3 menuconfig`, sekcja
-*Mostek HID (konfiguracja aplikacji)*.
+Domyślne **24** oznacza pełne wychylenie gałki przy średnio 96 zliczeniach myszy na tik
+zadania. Jeśli nadal za szybko dobija do maksimum, podnieś do 32 albo 48; jeśli za
+sztywno — zejdź do 16. Zmiana wymaga tylko przebudowania i **nie** wymaga parowania pada
+od nowa, bo deskryptor się nie zmienia:
+`scripts\build-win.bat esp32c3 menuconfig`, sekcja *Mostek HID (konfiguracja aplikacji)*.
 
 Do sprawdzenia samego deskryptora HID, bez klawiatury i myszy, jest
 `CONFIG_APP_GAMEPAD_SELFTEST` — pad krąży wtedy analogami i cyklicznie wciska przyciski.

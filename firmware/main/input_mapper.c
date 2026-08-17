@@ -8,10 +8,14 @@
  * Mapowanie (klawisze podane jako USB HID keycodes):
  *   lewy analog   <- WASD
  *   prawy analog  <- ruch myszy (przyrosty, skalowane i przycinane)
+ *   krzyzak       <- strzalki (tylko profil Xbox - generyczny nie ma hat switcha)
  *   przycisk 1..3 <- lewy / prawy / srodkowy przycisk myszy
  *   przycisk 4    <- spacja
  *   przycisk 5..6 <- lewy Shift / lewy Ctrl
  *   przycisk 7..12<- E, Q, R, F, Tab, Esc
+ *
+ * Numery przyciskow sa umowne: na kontrolki pada Xbox tlumaczy je ble_gamepad.c
+ * (tablica s_xbox_ctrl), zeby mapper nie musial wiedziec, jaki profil jest aktywny.
  */
 
 #include "input_mapper.h"
@@ -42,6 +46,10 @@ static const char *TAG = "mapper";
 #define KEY_ESC   0x29
 #define KEY_TAB   0x2B
 #define KEY_SPACE 0x2C
+#define KEY_RIGHT 0x4F
+#define KEY_LEFT  0x50
+#define KEY_DOWN  0x51
+#define KEY_UP    0x52
 
 /* Bitmapa modyfikatorow z bajtu 0 raportu klawiatury */
 #define MOD_LCTRL  0x01
@@ -193,6 +201,26 @@ static uint16_t buttons_from_state(const hid_input_state_t *st)
     return b;
 }
 
+/* Krzyzak z klawiszy strzalek. Skladamy bitmape, a zamiane na wartosc hat switcha
+ * robi ble_gamepad.c - tylko on wie, jak wyglada raport aktywnego profilu. */
+static uint8_t dpad_from_keys(const hid_input_state_t *st)
+{
+    uint8_t d = 0;
+    if (key_down(st, KEY_UP)) {
+        d |= GAMEPAD_DPAD_UP;
+    }
+    if (key_down(st, KEY_RIGHT)) {
+        d |= GAMEPAD_DPAD_RIGHT;
+    }
+    if (key_down(st, KEY_DOWN)) {
+        d |= GAMEPAD_DPAD_DOWN;
+    }
+    if (key_down(st, KEY_LEFT)) {
+        d |= GAMEPAD_DPAD_LEFT;
+    }
+    return d;
+}
+
 static void mapper_task(void *arg)
 {
     const TickType_t period = pdMS_TO_TICKS(1000 / CONFIG_APP_REPORT_RATE_HZ);
@@ -212,6 +240,7 @@ static void mapper_task(void *arg)
         stick_from_wasd(&in, &out.lx, &out.ly);
         stick_from_mouse(&in, &out.rx, &out.ry);
         out.buttons = buttons_from_state(&in);
+        out.dpad = dpad_from_keys(&in);
 
         /*
          * Otwieranie urzadzenia HID to najciezszy moment dla stacku: jeden link robi
@@ -249,8 +278,8 @@ static void mapper_task(void *arg)
             if (changed && (now - last_log_us) > 250000) {
                 last_log_us = now;
                 prev_logged = out;
-                ESP_LOGI(TAG, "pad: L(%4d,%4d) R(%4d,%4d) btn=0x%03x",
-                         out.lx, out.ly, out.rx, out.ry, out.buttons);
+                ESP_LOGI(TAG, "pad: L(%4d,%4d) R(%4d,%4d) btn=0x%03x dpad=0x%x",
+                         out.lx, out.ly, out.rx, out.ry, out.buttons, out.dpad);
             }
         }
     }
