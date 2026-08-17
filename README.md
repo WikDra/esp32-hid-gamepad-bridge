@@ -12,8 +12,15 @@ Projekt eksperymentalny (proof-of-concept). Celem jest sprawdzenie, czy jeden ES
 jednocześnie dwa połączenia jako **central** (odbiór z klawiatury i myszy) oraz jedno jako
 **peripheral** (wystawienie pada do PC).
 
-To **nie jest** emulacja pada Xbox ani XInput — PC widzi generyczny pad HID (DirectInput,
-`joy.cpl`). Gry korzystające wyłącznie z XInput go nie zobaczą.
+Pad ma **dwa profile**, wybierane w menuconfig (`APP_GAMEPAD_PROFILE`):
+
+| Profil | Co widzi PC |
+|---|---|
+| **Xbox (XInput)** — domyślny | Mostek podaje się za bezprzewodowy pad Xbox One S: deskryptor raportu bajt w bajt z prawdziwego pada i PnP ID z VID Microsoftu. Windows ładuje swój sterownik pada Xbox i udostępnia urządzenie przez **XInput**, czyli widzą go też gry, które nie obsługują DirectInput. |
+| generyczny (DirectInput) | 4 osie i 12 przycisków, widoczne w `joy.cpl`. Gry korzystające wyłącznie z XInput takiego pada nie zobaczą. To profil zweryfikowany w Etapie 3, zostaje jako wyjście awaryjne. |
+
+Przełączenie profilu zmienia deskryptor **i** tożsamość urządzenia, więc wymaga usunięcia
+pada z listy urządzeń Bluetooth w Windows i sparowania od nowa.
 
 Notatki techniczne, ustalenia i pułapki: [`AGENTS.md`](AGENTS.md).
 

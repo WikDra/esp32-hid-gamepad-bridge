@@ -100,6 +100,12 @@ CONFIG_BT_NIMBLE_HID_SERVICE=y
 # 2 i 3 rezerwuja wieksza strukture, a ble_svc_hid_add() bierze ja przez wartosc
 # (czyli na stos wolajacego).
 CONFIG_BT_NIMBLE_SVC_HID_MAX_INSTANCES=1
+# Te dwie opcje wymiaruja strukture ble_svc_hid_params, ktorej JUZ NIE UZYWAMY:
+# usluga HID pada jest napisana wprost na GATT w ble_gamepad.c, bo ble_svc_hid
+# trzyma dlugosc Report Map w polu uint8_t i obcielaby deskryptor pada Xbox
+# (334 B) do 78 B - patrz AGENTS.md 4.30. Zostawiamy najmniejsze wartosci, zeby
+# nie rezerwowac BSS na nieuzywana usluge. Samej opcji BT_NIMBLE_HID_SERVICE
+# wylaczyc nie mozna, bo gatuje ona takze hosta esp_hidh (4.8).
 CONFIG_BT_NIMBLE_SVC_HID_MAX_RPTS=1
 
 # Klawiatury i myszy BLE agresywnie zasypiaja i rozpadaja polaczenie. Ponawianie

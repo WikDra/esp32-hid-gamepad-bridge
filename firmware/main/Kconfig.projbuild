@@ -15,6 +15,36 @@ menu "Mostek HID (konfiguracja aplikacji)"
             Wlacza wlasny serwer GATT z usluga HID 0x1812 i rozglaszanie.
             Etap 2 planu z AGENTS.md.
 
+    choice APP_GAMEPAD_PROFILE
+        prompt "Pad: profil widziany przez PC"
+        depends on APP_ENABLE_GAMEPAD
+        default APP_GAMEPAD_PROFILE_XBOX
+        help
+            Decyduje, czym pad podaje sie systemowi.
+
+            UWAGA: przelaczenie profilu zmienia deskryptor raportu ORAZ tozsamosc
+            urzadzenia, wiec wymaga usuniecia pada z listy urzadzen Bluetooth
+            w Windows i sparowania od nowa (AGENTS.md 4.7).
+
+        config APP_GAMEPAD_PROFILE_GENERIC
+            bool "Generyczny pad HID (DirectInput, widoczny w joy.cpl)"
+            help
+                4 osie 8-bitowe ze znakiem + 12 przyciskow, wlasne VID/PID.
+                Gry korzystajace wylacznie z XInput takiego pada NIE zobacza.
+                To profil zweryfikowany w Etapie 3 - zostaje jako wyjscie awaryjne.
+
+        config APP_GAMEPAD_PROFILE_XBOX
+            bool "Pad Xbox One S (XInput)"
+            help
+                Mostek podaje sie za bezprzewodowy pad Xbox One S (model 1708):
+                deskryptor raportu bajt w bajt taki jak w prawdziwym padzie oraz
+                PnP ID z VID Microsoftu. Windows laduje wtedy swoj sterownik pada
+                Xbox i udostepnia urzadzenie przez XInput.
+
+                Osie sa 16-bitowe, spusty 10-bitowe, jest hat switch i 15 przyciskow.
+                Szczegoly mapowania wejsc: AGENTS.md 4.31.
+    endchoice
+
     config APP_GAMEPAD_SELFTEST
         bool "Pad: syntetyczny wzorzec testowy zamiast realnych wejsc"
         depends on APP_ENABLE_GAMEPAD
@@ -27,10 +57,15 @@ menu "Mostek HID (konfiguracja aplikacji)"
     config APP_GAMEPAD_DEVICE_NAME
         string "Pad: nazwa rozglaszana w BLE"
         depends on APP_ENABLE_GAMEPAD
+        default "Xbox Wireless Controller" if APP_GAMEPAD_PROFILE_XBOX
         default "C3 Gamepad"
         help
             Nazwa widoczna na liscie urzadzen Bluetooth w Windows. Zmiana nazwy
             nie wymaga re-parowania, w przeciwienstwie do zmiany deskryptora raportu.
+
+            W profilu Xbox domyslnie taka, jak w prawdziwym padzie - Windows
+            pokazuje ja w ustawieniach Bluetooth, a przy udawaniu urzadzenia nie ma
+            powodu, zeby sie roznila.
 
     config APP_REPORT_RATE_HZ
         int "Pad: czestotliwosc zadania raportujacego [Hz]"

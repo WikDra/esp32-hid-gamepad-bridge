@@ -17,8 +17,13 @@ Jeden ESP32-C3 SuperMini pełni jednocześnie dwie role BLE:
 Wejścia są mapowane na osie i przyciski pada, więc z punktu widzenia PC klawiatura i mysz
 wyglądają jak jeden kontroler.
 
-Zakres świadomie ograniczony: **brak XInput**, brak emulacji konkretnego pada Xbox. PC widzi
-generyczny pad HID (DirectInput / `joy.cpl`).
+Pad ma dwa profile, wybierane w menuconfig (`APP_GAMEPAD_PROFILE`):
+
+- **Xbox (XInput)** — mostek podaje się za bezprzewodowy pad Xbox One S: deskryptor raportu
+  bajt w bajt taki jak w prawdziwym padzie i PnP ID z VID Microsoftu. Windows ładuje wtedy
+  swój sterownik pada Xbox i udostępnia urządzenie przez XInput (§4.30, §4.31).
+- **generyczny (DirectInput)** — 4 osie `int8` i 12 przycisków, widoczne w `joy.cpl`.
+  Profil zweryfikowany w Etapie 3, zostaje jako wyjście awaryjne.
 
 ## 2. Stan projektu
 
@@ -943,6 +948,123 @@ a dodatkowo logujemy `subskrypcja: id=… ccc_handle=…` oraz ostrzeżenie, gdy
 zostaje pominięty. Widać wtedy od razu, że AJ159 Pro ma dwa raporty INPUT
 w trybie BOOT (`protocol_mode=0`), które są pomijane **słusznie**, bo używamy trybu Report.
 
+### 4.30 Dwie usługi z NimBLE, których nie da się użyć do udawania pada Xbox
+
+Żeby Windows załadował sterownik pada Xbox i udostępnił urządzenie przez XInput,
+muszą się zgadzać **dwie** rzeczy: tożsamość (PnP ID) i deskryptor raportu. Obie gotowe
+usługi z NimBLE okazały się do tego nieprzydatne, każda z innego powodu.
+
+**`ble_svc_dis` nie potrafi ustawić źródła VID na USB.** PnP ID (charakterystyka 0x2A50)
+ma 7 bajtów: źródło VID, VID, PID, wersja. Źródło `0x01` znaczy „rejestr Bluetooth SIG",
+`0x02` — „rejestr USB Implementers Forum". Pad Xbox ma VID `0x045E`, czyli numer **USB**
+Microsoftu, więc źródło musi być `0x02`. A `ble_svc_dis.c` wpisuje pierwszy bajt na sztywno:
+
+```c
+case BLE_SVC_DIS_CHR_UUID16_PNP_ID:
+    info = ble_svc_dis_data.pnp_id;
+    uint8_t flag = 0x01;                       /* zrodlo VID, ZASZYTE */
+    os_mbuf_append(ctxt->om, &flag, sizeof flag);
+    break;
+...
+os_mbuf_append(ctxt->om, info, strlen(info));  /* i nasze 6 bajtow jako STRING */
+```
+
+Wartość jest więc doklejana jako łańcuch znaków (domyślnie `"000000"`, czyli sześć znaków
+ASCII `0x30`), a źródła nie da się zmienić z zewnątrz.
+
+**`ble_svc_hid` obcina Report Map do 255 bajtów.** Bufor ma 512 B, ale długość jest
+trzymana w `uint8_t` — i tym polem usługa karmi hosta:
+
+```c
+ble_svc_hid.h:99    uint8_t report_map[REPORT_MAP_SIZE];   /* 512 */
+ble_svc_hid.h:102   uint8_t report_map_len;                /* <- osiem bitow */
+ble_svc_hid.c:467   os_mbuf_append(ctxt->om, &hid_instances[i].report_map,
+                                   hid_instances[i].report_map_len);
+```
+
+Deskryptor pada Xbox ma **334 B**, więc Windows dostałby 78 bajtów (334 modulo 256) —
+obcięty, bezsensowny opis. Złapał to kompilator przy przypisaniu:
+`conversion from 'unsigned int' to 'uint8_t' changes value from '334' to '78'`.
+
+Komponentu `bt` nie da się sforkować tak jak `esp_hid` (§4.27) — zawiera prekompilowane
+biblioteki kontrolera. Dlatego **obie usługi są w projekcie napisane wprost na GATT**
+w `ble_gamepad.c`: HID 0x1812 (Report Map, HID Information, Control Point, Protocol Mode,
+charakterystyki Report z deskryptorami Report Reference) oraz DIS 0x180A (PnP ID,
+Manufacturer Name). Razem to ~150 linii definicji i dwa callbacki dostępu.
+
+Dwie korzyści poza samą możliwością:
+
+- uchwyty charakterystyk dostajemy wprost przez `val_handle`, więc zniknęło zgadywanie
+  przez `ble_gatts_find_chr()`, które przy kilku charakterystykach o tym samym UUID 0x2A4D
+  zwraca po prostu pierwszą,
+- widzimy zapisy hosta do raportu wyjściowego, co jest **testem rozstrzygającym**: jeśli
+  Windows wysyła polecenia wibracji, to obsługuje nas swoim sterownikiem pada, a nie jako
+  zwykłe HID.
+
+Usługa `ble_svc_dis` z NimBLE nie jest w naszym buildzie rejestrowana (`ble_svc_dis_init()`
+woła wyłącznie `nimble_hidd.c`, którego nie używamy), więc nie ma ryzyka dwóch usług 0x180A.
+Opcji `CONFIG_BT_NIMBLE_HID_SERVICE` nie można wyłączyć, bo gatuje też hosta `esp_hidh`
+(§4.8) — zostaje włączona, a jej struktury po prostu nie używamy.
+
+### 4.31 Profil Xbox: skąd deskryptor i jak mapowane są wejścia
+
+Deskryptor pochodzi z projektu **Mystfit/ESP32-BLE-CompositeHID** (licencja MIT), który
+odczytał go z prawdziwego pada Xbox One S (model 1708, firmware sprzed 2021). Nie jest
+przepisany ręcznie — generuje go `scripts/gen_xbox_report_map.py` do
+`firmware/main/xbox_report_map.h`, bo 334 bajty przepisywane z komentarzy to gwarantowana
+literówka, której potem szukalibyśmy w zachowaniu Windows, a nie w kodzie. Skrypt
+rozwiązuje nazwane identyfikatory raportów, sprawdza bilans kolekcji HID i liczy sumę
+kontrolną (`sha256 df1c86a6…`). Wygenerowany nagłówek jest w repo, więc do zwykłego
+budowania klon repo referencyjnego nie jest potrzebny.
+
+Tożsamość: źródło VID `0x02` (USB), VID `0x045E` (Microsoft), PID `0x02FD` (pad Xbox
+One S), wersja `0x0408`. Nazwa rozgłaszana: `Xbox Wireless Controller`.
+
+Raport wejściowy ma **16 bajtów**, wszystko little-endian:
+
+| Bajty | Zawartość |
+|---|---|
+| 0–1, 2–3 | X, Y — lewy analog, 16 bitów **bez znaku**, środek 32768 |
+| 4–5, 6–7 | Z, Rz — prawy analog |
+| 8–9 | hamulec = lewy spust, 10 bitów (0–1023) + 6 bitów dopełnienia |
+| 10–11 | gaz = prawy spust, 10 bitów |
+| 12 | hat switch (0 = wyśrodkowany, 1–8 kierunki) + 4 bity dopełnienia |
+| 13–14 | 15 przycisków + 1 bit dopełnienia |
+| 15 | przycisk Share + 7 bitów dopełnienia |
+
+Maski przycisków mają **dziury** — bity 2, 5, 8 i 9 są puste. Tak jest w prawdziwym padzie
+i nie wygładzamy tego, bo celem jest zgodność:
+`A=0x0001 B=0x0002 X=0x0008 Y=0x0010 LB=0x0040 RB=0x0080 View=0x0400 Menu=0x0800
+Guide=0x1000 LS=0x2000 RS=0x4000`.
+
+Mapowanie wejść zostało bez zmian — `input_mapper` nadal produkuje te same 12 przycisków
+i cztery osie `int8`, a tłumaczenie na kontrolki Xbox siedzi w `ble_gamepad.c` (tablica
+`s_xbox_ctrl`). Dzięki temu mapper nie musi wiedzieć, który profil jest aktywny, a zmiana
+przypisania to jedna tablica:
+
+| Nasz przycisk | Wejście | Kontrolka Xbox |
+|---|---|---|
+| 1 | lewy przycisk myszy | prawy spust (RT) |
+| 2 | prawy przycisk myszy | lewy spust (LT) |
+| 3 | środkowy przycisk myszy | klik prawej gałki (RS) |
+| 4 | Spacja | A |
+| 5 | lewy Shift | klik lewej gałki (LS) |
+| 6 | lewy Ctrl | B |
+| 7 / 8 | E / Q | X / Y |
+| 9 / 10 | R / F | LB / RB |
+| 11 / 12 | Tab / Esc | View / Menu |
+
+Wybór jest mój, kierowany tym, jak te klawisze działają w grach: lewy przycisk myszy to
+strzał (prawy spust), prawy to celowanie (lewy spust), Shift to sprint (klik gałki).
+Osie 8-bitowe są skalowane do 16 bitów tak, że zero wypada dokładnie na 32768, a końce
+zakresu na 0 i 65535. Hat switch jest na razie zawsze wyśrodkowany — klawiszy strzałek
+mapper nie czyta.
+
+Profil wybiera się w menuconfig (`APP_GAMEPAD_PROFILE`); generyczny pad DirectInput
+zostaje jako wyjście awaryjne, bo to on jest zweryfikowany w Etapie 3. **Przełączenie
+profilu zmienia deskryptor i tożsamość, więc wymaga usunięcia pada z listy urządzeń
+Bluetooth w Windows i sparowania od nowa** (§4.7).
+
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 
 Źródło: `D:\wysypisko\openlara_esp32\retro-go\openlara\components\OpenLara\src\platform\retrogo\`
@@ -1020,6 +1142,11 @@ bo w razie problemu wiadomo, która rola zawiodła.
       `joy.cpl` pokazuje ruch. **Zweryfikowane na sprzęcie 2026-08-16.**
 - [x] **Etap 3** — scalenie. Klawiatura **i mysz** → pad, potwierdzone w `joy.cpl`: WASD na
       lewym analogu, ruch myszy na osi Z / obrocie Z, przyciski i kółko działają.
+- [ ] **Etap 4** — profil XInput. Mostek podaje się za pada Xbox One S: deskryptor 334 B
+      bajt w bajt z prawdziwego pada, PnP ID z VID Microsoftu, własna usługa HID i DIS
+      napisane wprost na GATT (§4.30, §4.31). **Zbudowane i wgrane, czeka na weryfikację:**
+      trzeba usunąć pada z listy urządzeń Bluetooth w Windows i sparować od nowa, bo
+      zmienił się deskryptor **i** tożsamość.
 
 Do zamknięcia PoC zostaje:
 

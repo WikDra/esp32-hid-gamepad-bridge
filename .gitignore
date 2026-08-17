@@ -12,3 +12,7 @@ firmware/sdkconfig.local.*
 
 # pliki pomocnicze diagnostyki (nm, mapy)
 nm.txt
+
+# Klon repo referencyjnego (Mystfit/ESP32-BLE-CompositeHID) do generowania deskryptora Xbox.
+# Wygenerowany naglowek jest w repo, wiec do budowania ten katalog nie jest potrzebny.
+.ref/
