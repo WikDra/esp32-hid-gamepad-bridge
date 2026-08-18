@@ -2,8 +2,11 @@
 
 Notatki projektu i plan pracy dla kolejnego agenta. Stan na 2026-08-15.
 
-Repo: `https://github.com/WikDra/esp32-hid-gamepad-bridge` (prywatne).
-Instrukcja dla człowieka: [`README.md`](README.md).
+Repo: `https://github.com/WikDra/esp32-hid-gamepad-bridge`.
+Instrukcja dla człowieka: [`README.pl.md`](README.pl.md) (po polsku) albo
+[`README.md`](README.md) (po angielsku, główne). Pochodzenie materiału zewnętrznego
+i licencje: [`THIRD-PARTY.md`](THIRD-PARTY.md). Ustawienia zależne od maszyny:
+`AGENTS.local.md` (wzór w [`AGENTS.local.example.md`](AGENTS.local.example.md)).
 
 ## 1. Cel
 
@@ -103,20 +106,30 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 
 | Co | Gdzie |
 |---|---|
-| Build | WSL, `~/esp/v5.5.1/esp-idf` (dostępne też v5.3.1, v5.4.2, v5.4.3) |
-| Flash + konsola | Windows, `C:\Users\1thew\esp\v5.5.1\esp-idf` |
-| Port | COM6, VID:PID `303a:1001` |
-| `usbipd-win` | `C:\Program Files\usbipd-win\usbipd.exe`, COM6 już na liście *persisted* |
+| Build (bez WSL) | Windows, `%USERPROFILE%\esp\v5.5.1\esp-idf`, `scripts\build-native-win.bat` |
+| Build (WSL) | `~/esp/v5.5.1/esp-idf`, `scripts/build.sh` przez `scripts\build-win.bat` |
+| Flash + konsola | Windows, `scripts\flash-win.bat`, `scripts\monitor-win.bat` |
+| Płytka | ESP32-C3 z natywnym USB, VID:PID `303a:1001` (USB JTAG/serial debug unit) |
 
-**IDF musi być ≥ 5.4.3** — patrz §4.1. Wybrane v5.5.1, bo jest po obu stronach (WSL i Windows).
+Ścieżkę do windowsowej instalacji IDF nadpisuje się zmienną `IDF_WIN`, np.
+`set IDF_WIN=D:\esp\v5.5.1\esp-idf`. Numer portu COM podaje się skryptom argumentem.
+
+**IDF musi być ≥ 5.4.3** — patrz §4.1. Wybrane v5.5.1.
+
+Konkretne ścieżki, numer portu i inne rzeczy zależne od maszyny **nie należą do tego pliku** —
+idą do `AGENTS.local.md` (gitignorowany, wzór w `AGENTS.local.example.md`).
+
+Dwie drogi budowania istnieją z powodu praktycznego: WSL potrafi zawiesić się tak, że samo
+wywołanie `wsl` wisi bez końca, a `wsl --shutdown` nie odpowiada — odblokowanie wymaga wtedy
+restartu usługi `WSLService` z uprawnieniami administratora albo restartu systemu. Skoro
+ESP-IDF jest po stronie Windows i tak potrzebny do wgrywania, build nie ma powodu zależeć
+od WSL. Obie drogi używają **osobnych katalogów build** (`build.esp32c3` i
+`build.win.esp32c3`), bo ścieżki absolutne są w nich różne, a CMake nie zniesie obu w jednym.
 
 Płytka ma natywne USB, więc konsola idzie przez USB Serial/JTAG:
 `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y` + `CONFIG_ESP_CONSOLE_SECONDARY_NONE=y`.
-
-Dwuetapowy workflow (build w WSL, flash z Windows) jest przeniesiony z projektu
-`esp32_przekaznik_czujnik_obecnosci`, bo jest sprawdzony. `usbipd attach` do WSL też by
-zadziałało i pozwoliłoby na `idf.py flash monitor` w jednym miejscu — zostawione jako opcja,
-jeśli dwuetapowość zacznie przeszkadzać.
+Przy natywnym USB linie DTR/RTS sterują resetem i bootloaderem, dlatego `monitor.py`
+otwiera port z wyłączonymi DTR/RTS, a `reset_monitor.py` resetuje świadomie.
 
 ## 4. Ustalenia i pułapki
 
@@ -1331,8 +1344,9 @@ poluzowała, ustawia 6 i czyta log.
 
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 
-Źródło: `D:\wysypisko\openlara_esp32\retro-go\openlara\components\OpenLara\src\platform\retrogo\`
-(tylko do czytania — **nie modyfikować tamtego projektu**).
+Źródło: lokalny port OpenLary na ESP32-S3, katalog
+`components/OpenLara/src/platform/retrogo/` (projekt zewnętrzny, **tylko do czytania**;
+ścieżka u siebie — patrz `AGENTS.local.md`).
 
 | Plik | Co z nim robimy |
 |---|---|
@@ -1431,8 +1445,9 @@ Do zamknięcia PoC zostaje:
 
 ## 6. Zasady dla agenta
 
-- Projekty `D:\wysypisko\openlara_esp32` i `D:\wysypisko\esp32_przekaznik_czujnik_obecnosci`
-  są **wyłącznie do czytania**. Nie modyfikować ich pod żadnym pozorem.
+- Projekty referencyjne wymienione w §4.3 (port OpenLary i projekt przekaźnika) są
+  **wyłącznie do czytania**. Nie modyfikować ich pod żadnym pozorem. Ścieżki do nich —
+  jeśli są lokalnie dostępne — trzymać w `AGENTS.local.md`, nie tutaj.
 - Nie wpisywać do §2 niczego, co nie ma dowodu z logu urządzenia. „Kompiluje się" ≠
   „działa" — trzymać te dwie rzeczy w osobnych tabelach.
 - Po każdej zmianie deskryptora HID dopisać w logu commita, że wymaga re-parowania w Windows.

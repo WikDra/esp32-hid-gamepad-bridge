@@ -17,7 +17,10 @@ REM   scripts\build-native-win.bat menuconfig   - konfiguracja
 REM   scripts\build-native-win.bat fullclean    - czyszczenie
 
 setlocal
-set IDF_DIR=C:\Users\%USERNAME%\esp\v5.5.1\esp-idf
+REM Sciezke do ESP-IDF mozna nadpisac zmienna IDF_WIN, np.
+REM   set IDF_WIN=D:\esp\v5.5.1\esp-idf
+if "%IDF_WIN%"=="" set IDF_WIN=%USERPROFILE%\esp\v5.5.1\esp-idf
+set IDF_DIR=%IDF_WIN%
 set TARGET=esp32c3
 set BUILD_DIR=build.win.%TARGET%
 set SDKCONFIG=sdkconfig.win.%TARGET%

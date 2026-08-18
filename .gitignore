@@ -20,3 +20,6 @@ nm.txt
 # Build po stronie Windows (scripts\build-native-win.bat) - osobny, zeby nie mieszac z WSL.
 firmware/build.win.*
 firmware/sdkconfig.win.*
+
+# Ustawienia lokalne (sciezki, port COM, wlasny sprzet) - wzor w AGENTS.local.example.md
+AGENTS.local.md

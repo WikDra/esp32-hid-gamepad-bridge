@@ -11,8 +11,23 @@ if "%PORT%"=="" set PORT=COM6
 set TARGET=%2
 if "%TARGET%"=="" set TARGET=esp32c3
 
-set IDF_WIN=C:\Users\1thew\esp\v5.5.1\esp-idf
+REM Sciezke do windowsowej instalacji ESP-IDF mozna nadpisac zmienna IDF_WIN,
+REM np.  set IDF_WIN=D:\esp\v5.5.1\esp-idf
+if "%IDF_WIN%"=="" set IDF_WIN=%USERPROFILE%\esp\v5.5.1\esp-idf
 set BUILD_DIR=%~dp0..\firmware\build.%TARGET%
+
+if not exist "%IDF_WIN%\export.bat" (
+    echo BLAD: nie znajduje ESP-IDF w %IDF_WIN%
+    echo Ustaw sciezke:  set IDF_WIN=^<katalog esp-idf^>
+    exit /b 1
+)
+
+REM Build z WSL, a jesli go nie ma - build windowsowy (scripts\build-native-win.bat).
+if not exist "%BUILD_DIR%\flash_args" (
+    if exist "%~dp0..\firmware\build.win.%TARGET%\flash_args" (
+        set BUILD_DIR=%~dp0..\firmware\build.win.%TARGET%
+    )
+)
 
 if not exist "%BUILD_DIR%\flash_args" (
     echo Brak katalogu build %BUILD_DIR% - najpierw: scripts\build-win.bat %TARGET%
