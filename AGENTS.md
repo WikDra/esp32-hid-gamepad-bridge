@@ -1410,6 +1410,93 @@ bez paniki.
 To **dziewiąta** udokumentowana wada `esp_hid` na ścieżce NimBLE (po §4.2, §4.8, §4.11,
 §4.15, §4.23, §4.25, §4.27, §4.29) i pierwsza, która jest zwykłym brakiem `return`.
 
+### 4.35 Klawiatura nie paruje się z C6, a z C3 tak — różnica jest w odbiorze, nie w kodzie
+
+Objaw: na ESP32-C6 każda próba połączenia z AULA F99 Pro w trybie parowania kończy się
+`Connection failed; status=13` po upływie limitu, i to niezależnie od wszystkiego, co
+próbowaliśmy. Mysz AJAZZ AJ159 Pro na tej samej płytce łączy się w **310 ms**.
+
+**Rozstrzygający test: ten sam firmware na C3.** Nie inny build, nie inna konfiguracja —
+ten sam commit zbudowany na `esp32c3` i wgrany na drugą płytkę, przy tej samej klawiaturze,
+w tym samym pokoju, w tej samej sesji:
+
+```
+C6:  adv from 'AULA-F99Pro' de:cd:0d:26:18:52 rssi=-70   ->  1-3 pakiety ADV na runde, timeout
+C3:  adv from 'AULA-F99Pro' fe:ee:96:4f:6c:4a rssi=-53   ->  43 pakiety ADV na runde
+     inputs 1 (kbd=1 mouse=1)
+     [0] fe:ee:96:4f:6c:4a reports: keyboard mouse inne (mask 0x63)
+     KBD map=0 id=1 len=8 [00 00 07 00 00 00 00 00]      <- realne klawisze
+```
+
+**17 dB różnicy w RSSI i ponad dziesięciokrotna różnica w liczbie odebranych pakietów.**
+To nie jest kwestia logiki, konfiguracji ani wersji IDF — C6 po prostu słabo słyszy, a
+skoro nie słyszy, to i jego `CONNECT_IND` nie ma jak dolecieć.
+
+Dlaczego mysz działa, a klawiatura nie: mysz czytała się na C6 jako `-62`, klawiatura jako
+`-70`. Osiem decybeli decyduje o tym, po której stronie progu jesteśmy. To typowy obraz
+łącza na granicy — jedno urządzenie przechodzi, drugie nie, choć „oba są w tym samym
+pokoju".
+
+Co zostało **wykluczone osobnym pomiarem**, zanim doszliśmy do anteny (warto zapisać, żeby
+nikt nie wracał do tych tropów):
+
+| Podejrzany | Jak wykluczony |
+|---|---|
+| Windows przechwytuje klawiaturę | wpisy AULI usunięte z systemu i potwierdzone jako nieobecne; objaw został |
+| druga płytka konkuruje | C3 był odłączony, jedyny port to COM7 |
+| stary bond na kanale Fn+3 | przytrzymanie Fn+3 to pełne parowanie i usuwa poprzedniego hosta |
+| moc nadawania | podniesiona z domyślnych +3 dBm do +20 dBm, potwierdzona odczytem `TX power level: 15` |
+| głodzenie inicjatora przez link pada | cały przebieg z `pad no PC`, radio wolne, sześć prób i tak padło |
+| zwłoka uzbrojenia inicjatora | sonda łącząca się **z callbacku GAP**, mikrosekundy po pakiecie, też `status=13` |
+| filtrowanie po stronie klawiatury | sonda przy braku parowania z Windows również odrzucona |
+
+Metodologicznie najważniejsza linia w tym śledztwie: **`status=13` to timeout hosta**, czyli
+kontroler nigdy nie zgłosił zakończenia połączenia. Gdyby wysłał `CONNECT_IND` i nie dostał
+odpowiedzi, dostalibyśmy HCI `0x3E` („Connection Failed to be Established"). Brak `0x3E`
+mówi wprost, że kontroler **nie usłyszał** urządzenia w trakcie inicjowania — i to był
+pierwszy sygnał, że problem jest po stronie radia, a nie protokołu.
+
+Co z tego wynika praktycznie:
+
+- płytka MuseLab nanoESP32-C6 v1.0 wymaga sprawdzenia **anteny**: jeśli moduł jest w wersji
+  z gniazdem u.FL/IPEX (warianty `-1U`), a antena nie jest wpięta, spadek rzędu 15–20 dB
+  jest dokładnie tym, co widzimy. Na wielu płytkach wybór między anteną na PCB a gniazdem
+  robi rezystor 0 Ω albo zwora,
+- do czasu wyjaśnienia anteny klawiaturę trzeba trzymać **blisko** płytki; próg jest między
+  −62 dBm (mysz przechodzi) a −70 dBm (klawiatura nie),
+- **port na C6 sam w sobie jest poprawny**: pad działa z XInput (potwierdzone wpisem
+  `_VID&02045E_PID&0B13_REV&0509_404CCA5FC62A` w systemie), mysz łączy się i mapuje, a
+  wejścia dostają nawet 7,5 ms zamiast 15 ms z C3.
+
+#### Poprawki, które wyszły przy okazji i zostają
+
+Śledztwo wymusiło kilka zmian wartych zachowania niezależnie od anteny:
+
+- **skan pasywny** (`passive = 1`) i okno równe interwałowi. Aktywny skan kazał nam nadawać
+  `SCAN_REQ` po każdym pakiecie; po przejściu na pasywny liczba usłyszanych pakietów
+  klawiatury wzrosła z jednego na 90 s do dwóch na 15 s. Nic nie tracimy, bo ta klawiatura
+  ma w samym ADV flagi, UUID 0x1812, appearance i pełną nazwę w 31 bajtach,
+- **`ble_gap_disc_cancel()` nie dostarcza `DISC_COMPLETE`** — to zdarzenie przychodzi tylko
+  wtedy, gdy skan skończy się sam. Kod, który przerywał skan i czekał na nie, blokował się
+  do końca okna ze **zatrzymanym** skanerem: pakiet usłyszany o 28,0 s dawał próbę
+  połączenia o 34,3 s. Po ustawianiu `EV_DISC_DONE` samemu jest 10 ms,
+- **świeżość kandydata**: nie dzwonimy pod adres, którego nie słyszeliśmy od 8 s. Runda
+  raportująca `0 ADV reports` potrafiła wcześniej wybrać adres sprzed 13 s, a przy dwóch
+  adresach tej samej klawiatury w tablicy trafialiśmy w starszy, martwy,
+- **limit próby połączenia 30 s → 6 s** w naszej kopii `esp_hid` i przerwa 15 s → 5 s.
+  Peer, który zamierza odpowiedzieć, odpowiada w 310 ms; jedna długa próba tylko blokuje
+  zadanie skanujące, które w tym czasie nie słyszy nic,
+- **moc nadawania na maksimum** zamiast domyślnych +3 dBm, z odczytem poziomu z powrotem.
+
+#### Nierozstrzygnięte
+
+Klawiatura wysyła jedno zdarzenie rozgłoszeniowe co ~7,6 s i **za każdym razem pod innym
+adresem**, przy czym wszystkie obserwowane adresy mają górne bity `11`, czyli są statyczne
+losowe — a takie zgodnie ze specyfikacją nie powinny zmieniać się w trakcie pracy
+urządzenia. Na C3 to nie przeszkadza, bo przy 43 pakietach na rundę trafiamy w adres, póki
+jest żywy. Nie wiem, czy rzadkość tych zdarzeń jest cechą urządzenia, czy skutkiem słabego
+odbioru na C6 (słyszymy tylko część), i **nie zostało to rozstrzygnięte pomiarem**.
+
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 
 Źródło: lokalny port OpenLary na ESP32-S3, katalog
