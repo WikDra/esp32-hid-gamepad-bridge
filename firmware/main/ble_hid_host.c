@@ -45,6 +45,13 @@ static const char *TAG = "hid_host";
  * minute of the peer's pairing window, against one before.
  */
 #define RETRY_COOLDOWN_US    (5 * 1000 * 1000)
+
+/*
+ * How recently an address must have been heard to be worth dialling. Generous enough to
+ * cover a scan round plus the hop into the connection attempt, tight enough that we never
+ * spend a connect timeout on a device that has already gone quiet or changed address.
+ */
+#define CANDIDATE_FRESH_US   (8 * 1000 * 1000)
 #define HID_SERVICE_UUID16   0x1812
 
 #define EV_DISC_DONE   BIT0
@@ -96,6 +103,15 @@ typedef struct {
     uint8_t adv[16];
     uint8_t adv_len;
     int64_t cooldown_until_us; /* 0 = mozna probowac */
+    /*
+     * When this address was last actually heard. A candidate is only worth dialling while
+     * the device is still advertising: a peer in pairing mode picks a fresh random address
+     * every time pairing is (re)started, so an address heard a while ago may belong to
+     * nobody. Measured on hardware: a round that heard "0 ADV reports" still dialled a
+     * keyboard address from 13 s earlier, and when two addresses of the same keyboard were
+     * in the table at once we tried the older, dead one first.
+     */
+    int64_t last_seen_us;
 } candidate_t;
 static candidate_t s_cands[CANDIDATES_MAX];
 
@@ -887,6 +903,7 @@ static void candidate_seen(const struct ble_gap_disc_desc *disc, const struct bl
         /* Pakiety ADV i SCAN_RSP przychodza osobno i kazdy nosi czesc informacji -
          * so we merge rather than overwrite (AGENTS.md 4.4: filter_duplicates=0). */
         slot->rssi = disc->rssi;
+        slot->last_seen_us = esp_timer_get_time();
         slot->looks_like_hid = slot->looks_like_hid || looks_like_hid;
         slot->bonded = is_bonded_peer(&disc->addr);
         /* SCAN_RSP nadpisalby typ pakietu glownego, a chcemy wiedziec, czy
@@ -1146,6 +1163,24 @@ static void try_connect_candidates(void)
             continue;
         }
         if (c.cooldown_until_us > esp_timer_get_time() || device_is_open(&c.addr)) {
+            continue;
+        }
+
+        /*
+         * Skip addresses we have not heard recently. A connection attempt is only worth
+         * making while the device is actually advertising, and a peer in pairing mode
+         * takes a fresh random address each time pairing is restarted - so an old entry
+         * is very likely nobody at all. Every such attempt costs a full connect timeout
+         * during which we do not scan, so a stale entry does real damage.
+         *
+         * Straight from a log: a round that heard "0 ADV reports" went on to dial an
+         * address last heard 13 s earlier, and in a round where two addresses of the same
+         * keyboard were present we picked the older, dead one and spent the attempt on it.
+         */
+        int64_t age_us = esp_timer_get_time() - c.last_seen_us;
+        if (age_us > CANDIDATE_FRESH_US) {
+            ESP_LOGD(TAG, "skipping " ADDR_FMT ", last heard %lld ms ago",
+                     ADDR_ARG(c.addr.val), age_us / 1000);
             continue;
         }
 

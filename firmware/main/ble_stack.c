@@ -1,5 +1,6 @@
 #include "ble_stack.h"
 
+#include "esp_bt.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -80,6 +81,32 @@ esp_err_t ble_stack_init(void)
         ESP_LOGE(TAG, "nimble_port_init: %s", esp_err_to_name(err));
         return err;
     }
+
+    /*
+     * Transmit power to maximum, for advertising, scanning and connections alike.
+     *
+     * The default is only +3 dBm (esp_bt.h: "If none of power type is set, system will
+     * use ESP_PWR_LVL_P3 as default for ADV/SCAN/CONN0-9"), and we were leaving it there.
+     * That is a poor default for this project, where the bridge has to reach three peers
+     * at once and, unlike them, is not the device the user holds in their hand.
+     *
+     * What made this visible: a keyboard advertising at rssi -76 could be heard only once
+     * or twice per six-second scan round - a Microsoft beacon at a comparable rssi gave
+     * 21-28 packets in the same round - and every attempt to connect to it timed out,
+     * while a mouse at rssi -62 answered in 310 ms. Losing nearly all of a peer's
+     * advertising packets says the link is marginal in the direction we can measure; the
+     * connection request we send travels the same path, and nothing answered it.
+     *
+     * Raising the level costs current, which is irrelevant here because the board is
+     * USB powered. The achieved level is read back and logged rather than assumed - the
+     * setter can clamp to what the chip and the calibration data actually allow.
+     */
+    esp_err_t pwr = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P20);
+    if (pwr != ESP_OK) {
+        ESP_LOGW(TAG, "cannot set TX power: %s", esp_err_to_name(pwr));
+    }
+    ESP_LOGI(TAG, "TX power level: %d (0=-24dBm .. 15=+20dBm)",
+             (int)esp_ble_tx_power_get(ESP_BLE_PWR_TYPE_DEFAULT));
 
     /* Just Works both ways: neither the keyboard, the mouse nor the pad has any way
      * to display or enter a passkey. Bonding is on because the keyboard will not hand
