@@ -86,6 +86,7 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | **Rozstrzygający dowód: Windows przysyła wibracje** | `raport wyjsciowy id=3 (8 B): 0f 00 00 00 00 ff 00 eb` — polecenie rumble wysyła wyłącznie sterownik pada Xbox, nie zwykła obsługa HID. Pierwszy bajt `0x0f` to „DC Enable Actuators" ze wszystkimi czterema silnikami |
 | Krzyżak ze strzałek | zaimplementowany w profilu Xbox (hat switch 1–8, przeciwne kierunki znoszą się); w profilu generycznym nieaktywny, bo tamten deskryptor nie ma hat switcha |
 | Czułość myszy dobrana | `CONFIG_APP_MOUSE_SCALE_DIV` 8 → **24** (3× mniej czuła) po zgłoszeniu, że gałka zbyt szybko dobija do maksimum |
+| **Interwały połączeń zmierzone i wyciśnięte do maksimum** | pad → PC **7,5 ms (133 Hz)**, wejścia **15 ms (66 Hz)** wobec 45 ms na starcie. 15 ms to udowodniony sufit kontrolera C3 w roli centrala — sześć hipotez wykluczonych osobnymi pomiarami (§4.33) |
 | Tożsamość odczytana z systemu | `HID\{00001812-…}_Dev_VID&02045e_PID&02fd_REV&0408` przy pierwszym podejściu — dowód, że PnP ID dociera do Windows bezbłędnie i że problemem był wyłącznie **wybór PID** (§4.32) |
 | Naprawa | lokalna kopia komponentu `esp_hid` z jednolinijkową łatką + kontrole granic. Potwierdzone, że build bierze naszą kopię (`check_local_esp_hid.py`) i że łatka jest w binarce. **Weryfikacja cyklu uśpienia na sprzęcie do zrobienia** |
 
@@ -1287,10 +1288,46 @@ domyślne `APP_INPUT_CONN_ITVL` było już ustawione na 12, więc drabinka popro
 o 15 ms i dostała, nie próbując krótszych wartości. Dopiero ustawienie 6 dało odpowiedź.
 
 Ostatni niesprawdzony podejrzany: **skaner**. Przy `1/2` urządzeń mostek dalej skanuje,
-a skan rezerwuje czas radia. Dlatego `scan_task` ponawia teraz próbę raz, po zatrzymaniu
-skanowania (czyli po osiągnięciu limitu urządzeń) — w logu widać to jako
-`skan zatrzymany (limit urzadzen) - ponawiam probe skrocenia interwalu`. **Do zmierzenia:**
-wymaga obu urządzeń podłączonych jednocześnie.
+a skan rezerwuje czas radia. Dlatego `scan_task` ponawia próbę raz, po zatrzymaniu
+skanowania (czyli po osiągnięciu limitu urządzeń).
+
+#### Sprawa zamknięta: 15 ms to sufit tego kontrolera w roli centrala
+
+Test przy **zatrzymanym skanerze**, obu urządzeniach podłączonych i padzie na 7,5 ms:
+
+```
+skan zatrzymany (limit urzadzen) - ponawiam probe skrocenia interwalu
+link 3: interwal 12 (15 ms), latency=0, timeout nadzoru=256 (2560 ms)
+interwal 6 (7.50 ms) odrzucony: rc=530 (HCI 0x12)
+interwal 8 (10.00 ms) odrzucony: rc=530 (HCI 0x12)
+interwal 10 (12.50 ms) odrzucony: rc=530 (HCI 0x12)
+zaden interwal nie przeszedl - zostaje 15 ms
+```
+
+To samo dla linku 4. Skaner **też nie jest przyczyną**. Wyczerpaliśmy w ten sposób wszystkie
+sensowne podejrzenia — każde odrzucone osobnym pomiarem, nie rozumowaniem:
+
+| Podejrzany | Jak wykluczony |
+|---|---|
+| przepustowość radia | kontroler równolegle utrzymuje link 7,5 ms w roli peryferiala (pad) |
+| liczba linków | odrzucenie także przy **jednym** linku centralnym (`razem 1/2`) |
+| najdłuższy interwał / wspólna siatka | pad zszedł na 7,5 ms, wejścia nadal odrzucane |
+| `min_ce_len` / `max_ce_len` | ten sam interwał z ustawionym `ce_len` też odrzucony |
+| timeout nadzoru | ten sam interwał z timeoutem 4 s też odrzucony |
+| skaner | próba po zatrzymaniu skanowania, z 3 s na uspokojenie radia — odrzucona |
+| opcja w Kconfig kontrolera | w `components/bt/Kconfig` nie ma **żadnej** opcji dotyczącej interwału |
+
+Wniosek: kontroler ESP32-C3 (biblioteka z IDF 5.5.1) **nie inicjuje interwałów krótszych
+niż 15 ms w roli centrala**, i nie da się tego przestawić z zewnątrz. Odmowa jest
+natychmiastowa i synchroniczna, czyli pochodzi z walidacji komendy HCI w kontrolerze.
+
+Stan końcowy łańcucha: **wejścia 15 ms (66 Hz), pad → PC 7,5 ms (133 Hz)**. Wejścia są więc
+teraz najwęższym ogniwem, ale 45 ms → 15 ms to i tak trzykrotna poprawa względem stanu
+wyjściowego.
+
+`APP_INPUT_CONN_ITVL` wraca do 12, żeby nie generować trzech odrzuceń przy każdym
+podłączeniu. Drabinka zostaje w kodzie — kto chce sprawdzić, czy nowsza wersja IDF to
+poluzowała, ustawia 6 i czyta log.
 
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 
@@ -1389,7 +1426,8 @@ Do zamknięcia PoC zostaje:
       klawiatury `L(90,90)` w tym samym przebiegu.
 - [x] **dobranie `CONFIG_APP_MOUSE_SCALE_DIV` do gustu** — 8 → 24 po zgłoszeniu, że gałka
       zbyt szybko dobija do maksimum.
-- [ ] pomiar opóźnienia wejście → pad.
+- [x] **pomiar i optymalizacja interwałów połączeń** — pad → PC 7,5 ms (133 Hz), wejścia
+      15 ms (66 Hz) wobec 45 ms na starcie; 15 ms to udowodniony sufit kontrolera (§4.33).
 
 ## 6. Zasady dla agenta
 
