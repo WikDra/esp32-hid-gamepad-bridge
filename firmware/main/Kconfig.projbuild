@@ -1,163 +1,162 @@
-menu "Mostek HID (konfiguracja aplikacji)"
+menu "HID bridge (application configuration)"
 
     config APP_ENABLE_HID_HOST
-        bool "Rola central: odbieraj raporty z klawiatury i myszy BLE"
+        bool "Central role: receive reports from a BLE keyboard and mouse"
         default y
         help
-            Wlacza skaner BLE i esp_hidh (GATT client). Etap 1 planu z AGENTS.md.
-            Mozna wylaczyc, zeby testowac sama strone pada (Etap 2) bez wplywu
-            skanowania na czas anteny.
+            Enables the BLE scanner and esp_hidh (GATT client). Can be turned off to
+            test the pad side alone, without scanning competing for antenna time.
 
     config APP_ENABLE_GAMEPAD
-        bool "Rola peripheral: wystawiaj pada HID do PC"
+        bool "Peripheral role: present a HID gamepad to the PC"
         default y
         help
-            Wlacza wlasny serwer GATT z usluga HID 0x1812 i rozglaszanie.
-            Etap 2 planu z AGENTS.md.
+            Enables our own GATT server with HID service 0x1812 and advertising.
 
     choice APP_GAMEPAD_PROFILE
-        prompt "Pad: profil widziany przez PC"
+        prompt "Pad: profile the PC sees"
         depends on APP_ENABLE_GAMEPAD
         default APP_GAMEPAD_PROFILE_XBOX
         help
-            Decyduje, czym pad podaje sie systemowi.
+            Decides what the pad claims to be.
 
-            UWAGA: przelaczenie profilu zmienia deskryptor raportu ORAZ tozsamosc
-            urzadzenia, wiec wymaga usuniecia pada z listy urzadzen Bluetooth
-            w Windows i sparowania od nowa (AGENTS.md 4.7).
+            NOTE: switching the profile changes the report descriptor AND the device
+            identity, so it requires removing the pad from the Windows Bluetooth
+            device list and pairing again (AGENTS.md 4.7).
 
         config APP_GAMEPAD_PROFILE_GENERIC
-            bool "Generyczny pad HID (DirectInput, widoczny w joy.cpl)"
+            bool "Generic HID pad (DirectInput, visible in joy.cpl)"
             help
-                4 osie 8-bitowe ze znakiem + 12 przyciskow, wlasne VID/PID.
-                Gry korzystajace wylacznie z XInput takiego pada NIE zobacza.
-                To profil zweryfikowany w Etapie 3 - zostaje jako wyjscie awaryjne.
+                4 signed 8-bit axes + 12 buttons, with our own VID/PID.
+                Games that only speak XInput will NOT see this pad.
+                This is the profile verified first - kept as a fallback.
 
         config APP_GAMEPAD_PROFILE_XBOX
-            bool "Pad Xbox Series X (XInput)"
+            bool "Xbox Series X pad (XInput)"
             help
-                Mostek podaje sie za bezprzewodowy pad Xbox Series X (model 1914):
-                deskryptor raportu bajt w bajt taki jak w prawdziwym padzie oraz
-                PnP ID z VID Microsoftu i PID 0x0B13. Windows laduje wtedy swoj sterownik
-                XInput i udostepnia urzadzenie przez XInput.
+                The bridge impersonates a wireless Xbox Series X controller (model
+                1914): the report descriptor is byte-for-byte that of a real pad, and
+                the PnP ID carries Microsoft's VID with PID 0x0B13. Windows then loads
+                its own driver and exposes the device through XInput.
 
-                PID nie jest dowolny - xinputhid.inf wiaze sie tylko z 0x0B13
-                i 0x0B20..0x0B27, patrz AGENTS.md 4.32.
+                The PID is not arbitrary - xinputhid.inf binds only to 0x0B13 and
+                0x0B20..0x0B27, see AGENTS.md 4.32.
 
-                Osie sa 16-bitowe, spusty 10-bitowe, jest hat switch i 15 przyciskow.
-                Szczegoly mapowania wejsc: AGENTS.md 4.31.
+                Axes are 16-bit, triggers 10-bit, and there is a hat switch plus 15
+                buttons. Input mapping details: AGENTS.md 4.31.
     endchoice
 
     config APP_GAMEPAD_SELFTEST
-        bool "Pad: syntetyczny wzorzec testowy zamiast realnych wejsc"
+        bool "Pad: synthetic test pattern instead of real inputs"
         depends on APP_ENABLE_GAMEPAD
         default n
         help
-            Zamiast mapowac klawiature i mysz, pad krazy lewym analogiem po okregu
-            i po kolei wciska przyciski. Pozwala sprawdzic w joy.cpl, ze deskryptor
-            raportu jest poprawny, bez podlaczania klawiatury i myszy.
+            Instead of mapping the keyboard and mouse, the pad sweeps its left stick
+            around a circle and presses buttons in turn. Lets you verify in joy.cpl
+            that the report descriptor is correct without connecting any input device.
 
     config APP_GAMEPAD_DEVICE_NAME
-        string "Pad: nazwa rozglaszana w BLE"
+        string "Pad: name advertised over BLE"
         depends on APP_ENABLE_GAMEPAD
         default "Xbox Wireless Controller" if APP_GAMEPAD_PROFILE_XBOX
         default "C3 Gamepad"
         help
-            Nazwa widoczna na liscie urzadzen Bluetooth w Windows. Zmiana nazwy
-            nie wymaga re-parowania, w przeciwienstwie do zmiany deskryptora raportu.
+            The name shown in the Windows Bluetooth device list. Changing the name does
+            not require re-pairing, unlike changing the report descriptor.
 
-            W profilu Xbox domyslnie taka, jak w prawdziwym padzie - Windows
-            pokazuje ja w ustawieniach Bluetooth, a przy udawaniu urzadzenia nie ma
-            powodu, zeby sie roznila.
+            In the Xbox profile it defaults to what a real pad uses - Windows shows it
+            in the Bluetooth settings, and when impersonating a device there is no
+            reason for it to differ.
 
     config APP_PAD_CONN_ITVL
-        int "Pad: docelowy interwal polaczenia z PC [jednostki 1,25 ms]"
+        int "Pad: target connection interval to the PC [units of 1.25 ms]"
         depends on APP_ENABLE_GAMEPAD
         range 6 40
         default 6
         help
-            Interwal linku pad -> PC. To NAJWEZSZE OGNIWO calego lancucha: mysz moze
-            raportowac jak czesto chce, ale do gry trafi tylko tyle, ile przejdzie tym
-            linkiem.
+            Interval of the pad -> PC link. This is the NARROWEST POINT of the whole
+            chain: the mouse can report as often as it likes, but only what fits through
+            this link reaches the game.
 
-            Tego interwalu nie ustalamy sami - na tym linku centralem jest Windows i to
-            on go wybiera (u nas 15 ms). Peryferial moze o zmiane tylko POPROSIC, przez
-            procedure LL Connection Parameters Request albo L2CAP. Windows moze odmowic.
+            We do not set this interval ourselves - Windows is the central on this link
+            and it picks the value. A peripheral can only ASK for a change, through the
+            LL Connection Parameters Request procedure or L2CAP. Windows may refuse.
 
-            Domyslne 6 (7,5 ms = 133 Hz) wynika z tego, ze prawdziwy pad Xbox obsluguje
-            po BT 125 Hz - czyli Windows potrafi taki link utrzymac. Firmware schodzi
-            drabinka od tej wartosci i loguje, co udalo sie uzyskac.
+            The default of 6 (7.5 ms = 133 Hz) follows from a real Xbox pad doing 125 Hz
+            over BT - so Windows is clearly able to hold such a link. The firmware walks
+            a ladder from this value and logs what it managed to get.
 
     config APP_REPORT_RATE_HZ
-        int "Pad: czestotliwosc zadania raportujacego [Hz]"
+        int "Pad: report task frequency [Hz]"
         depends on APP_ENABLE_GAMEPAD
         range 10 250
         default 100
         help
-            Zadanie budzi sie z ta czestotliwoscia, ale raport idzie do PC tylko
-            wtedy, gdy stan pada sie zmienil.
+            The task wakes up at this rate, but a report is only sent to the PC when the
+            pad state has actually changed.
 
     config APP_INPUT_CONN_ITVL
-        int "Wejscia: docelowy interwal polaczenia [jednostki 1,25 ms]"
+        int "Inputs: target connection interval [units of 1.25 ms]"
         depends on APP_ENABLE_HID_HOST
         range 6 40
         default 12
         help
-            Gorny limit czestotliwosci raportow z klawiatury i myszy. Peryferial moze
-            wyslac notyfikacje tylko w zdarzeniu polaczenia, wiec interwal decyduje
-            o wszystkim - nawet mysz o wysokim polling rate nie przeslie wiecej.
+            Upper limit on the report rate from the keyboard and mouse. A peripheral can
+            only send a notification during a connection event, so the interval decides
+            everything - even a mouse with a high polling rate cannot send more.
 
-            Wartosc w jednostkach 1,25 ms:
-              6  = 7,5 ms  -> 133 Hz  (minimum ze specyfikacji BLE)
+            Value in units of 1.25 ms:
+              6  = 7.5 ms  -> 133 Hz  (minimum allowed by the BLE spec)
               8  = 10 ms   -> 100 Hz
-              12 = 15 ms   ->  66 Hz  (domyslne; tyle negocjuje tez Windows dla pada)
+              12 = 15 ms   ->  66 Hz  (default; also what Windows negotiates for the pad)
               24 = 30 ms   ->  33 Hz
-              36 = 45 ms   ->  22 Hz  (tyle wychodzilo bez tej poprawki)
+              36 = 45 ms   ->  22 Hz  (what we got before this was implemented)
 
-            ZMIERZONE NA SPRZECIE: kontroler C3 przy trzech linkach ODRZUCA interwaly
-            7,5 / 10 / 12,5 ms z bledem HCI 0x12, a przyjmuje 15 ms. Sprawdzone, ze nie
-            chodzi o ce_len ani o timeout nadzoru - te same wartosci z ich zmianami tez
-            byly odrzucane. Szczegoly w AGENTS.md 4.33.
+            MEASURED ON HARDWARE: the C3 controller REJECTS intervals of 7.5 / 10 /
+            12.5 ms with HCI error 0x12 and accepts 15 ms. Verified that neither ce_len
+            nor the supervision timeout is the cause - the same values with those changed
+            were rejected too. Details in AGENTS.md 4.33.
 
-            Zostawienie tu mniejszej wartosci nie zaszkodzi: firmware schodzi drabinka
-            i uzywa najkrotszego interwalu, ktory kontroler przyjmie. Widac to w logu.
+            Leaving a smaller value here does no harm: the firmware walks a ladder and
+            uses the shortest interval the controller accepts. The log shows each attempt.
 
     config APP_MOUSE_SCALE_DIV
-        int "Mapowanie: dzielnik czulosci myszy"
+        int "Mapping: mouse sensitivity divisor"
         depends on APP_ENABLE_GAMEPAD && APP_ENABLE_HID_HOST
         range 1 128
         default 24
         help
-            Im wieksza wartosc, tym mniej czula mysz. Pelne wychylenie osi odpowiada
-            sredniemu przyrostowi (ta wartosc * 4) zliczen myszy na jeden tik zadania,
-            czyli przy 24 to 96 zliczen na tik.
+            The larger the value, the less sensitive the mouse. Full axis deflection
+            corresponds to an average delta of (this value * 4) mouse counts per task
+            tick, i.e. 96 counts per tick at the default of 24.
 
-            Skad ta wartosc: pomiar na AJ159 Pro dal do ~355 zliczen na raport przy
-            szybszym ruchu, a raporty przychodza co ~45 ms, czyli ~79 zliczen na tik.
-            Przy poprzednim domyslnym 8 (pelne wychylenie przy 32 zliczeniach) galka
-            przybijala do maksimum praktycznie od razu. 24 daje przy takim ruchu okolo
-            80 procent wychylenia, a spokojne celowanie zostaje w dolnej czesci zakresu.
+            Where that number comes from: measurements showed up to ~355 counts per
+            report during brisk movement, and reports arrive every ~45 ms, i.e. ~79
+            counts per tick. With the previous default of 8 (full deflection at 32
+            counts) the stick hit maximum almost immediately. At 24 the same movement
+            gives around 80 % deflection, while careful aiming stays in the lower part
+            of the range.
 
-            Jesli nadal za szybko, podnies do 32 lub 48. Zmiana wymaga tylko
-            przebudowania - NIE trzeba parowac pada od nowa, bo deskryptor sie nie
-            zmienia.
+            If it is still too fast, raise it to 32 or 48. The change only requires a
+            rebuild - re-pairing the pad is NOT needed, because the descriptor does not
+            change.
 
     config APP_DEBUG_WATCH_ADDR
-        hex "Diagnostyka: adres pilnowany sprzetowym watchpointem (0 = wylaczone)"
+        hex "Diagnostics: address guarded by a hardware watchpoint (0 = disabled)"
         default 0
         help
-            Jesli rozne od zera, firmware ustawia na starcie sprzetowy watchpoint na
-            zapis pod ten adres (4 bajty). Przy zapisie leci panika z backtrace'em
-            WINOWAJCY, a nie ofiary - to jedyny sposob, zeby ustalic, kto psuje
-            statyczna strukture w cudzym komponencie.
+            When non-zero, the firmware arms a hardware write watchpoint on this address
+            (4 bytes) at startup. On a write it panics with the backtrace of the CULPRIT
+            rather than the victim - the only way to find out who is corrupting a static
+            structure inside somebody else's component.
 
-            Uzyte do sciagania crashu z AGENTS.md 4.21. Adres glowy listy wpisow
-            aktualizacji parametrow polaczenia odczytuje sie z ELF-a:
+            Used to track down the crash in AGENTS.md 4.21. The address of the GAP
+            connection-parameter update list head is read from the ELF file:
 
               riscv32-esp-elf-nm build.esp32c3/hid_gamepad_bridge.elf \\
                   | grep ble_gap_update_entries
 
-            UWAGA: adres zmienia sie miedzy buildami, wiec po kazdej zmianie kodu
-            trzeba go odczytac ponownie i sprawdzic, czy sie nie przesunal.
+            NOTE: the address changes between builds, so it must be re-read after every
+            code change and checked for having moved.
 
 endmenu
