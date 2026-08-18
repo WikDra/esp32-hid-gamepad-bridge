@@ -533,6 +533,7 @@ Trzy rzeczy, które wyglądają na awarię, a nią nie są:
 | `Subscribe complete; status=259` / `269` | **Nie dotyczy subskrypcji.** To wynik `register_for_notify()`, które pisze `{1,0}` do uchwytu **wartości** charakterystyki, a nie do CCCD — ATT 0x03 (Write Not Permitted) jest tam normalny. Prawdziwa subskrypcja to `zapis CCCD` (§4.29) |
 | `ogf=0x08, ocf=0x0013, hci_err=0x212` | `HCI_LE_Connection_Update` odrzucony przez kontroler. Podejrzewany o związek z crashem z §4.21 — **niesłusznie**, przyczyną było §4.28. Połączenie działa dalej z dotychczasowymi parametrami |
 | `raport nieobslugiwany: usage=GENERIC map=0 id=5` z `RAW len=7` | raport myszy, który przyszedł **w trakcie** odkrywania usług, przed sparsowaniem Report Map — `usage` jest wtedy jeszcze nieznane. Trafia w to tylko okno otwierania urządzenia, w którym mapper i tak wstrzymuje raporty pada |
+| **konsola milczy, choć firmware działa** | zaobserwowane raz na C6 po ~2 h bezczynności: `monitor-win.bat` nie pokazywał **nic**, a pad pozostawał sparowany z Windows. Po świadomym resecie log wrócił i heartbeat szedł równo przez 70 s ze stabilnym heapem, więc firmware żył cały czas — zamilkła sama konsola po natywnym USB. **Przyczyna nieudowodniona** (podejrzenie: host przestał odbierać z endpointu CDC i bufor się zatkał). Praktyczny wniosek: przy dłuższych przebiegach bez nadzoru zaczynać sesję od `monitor-win.bat <port> <s> reset`, a ciszy nie brać za awarię firmware'u |
 
 ### 4.19 Beacon Swift Pair z Windows w wynikach skanu
 

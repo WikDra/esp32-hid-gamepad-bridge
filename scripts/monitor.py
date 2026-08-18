@@ -32,11 +32,28 @@ except Exception as exc:  # noqa: BLE001
 
 print(f"--- reading {port} for {duration:.0f}s (no reset) ---", flush=True)
 end = time.time() + duration
+got_any = False
+warned = False
+started = time.time()
 try:
     while time.time() < end:
         data = ser.read(4096)
         if data:
+            got_any = True
             sys.stdout.buffer.write(data)
             sys.stdout.flush()
+        elif not got_any and not warned and (time.time() - started) > 6.0:
+            # Silence here does not mean the script is broken - it usually means the
+            # board is not printing. Seen on a native-USB board after hours of idling:
+            # the firmware kept running (the pad stayed paired) but the console was mute
+            # until a deliberate reset. Say so, instead of looking like a hung script.
+            warned = True
+            print(f"\n[no data from {port} for 6 s]"
+                  f"\n[the port is open, so this is the board staying quiet, not the script]"
+                  f"\n[if it stays silent, reboot it deliberately:"
+                  f" scripts\\monitor-win.bat {port} {duration:.0f} reset]\n",
+                  flush=True)
 finally:
     ser.close()
+    if not got_any:
+        print(f"\n--- {port}: nothing received in {duration:.0f}s ---", flush=True)
