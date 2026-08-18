@@ -1432,6 +1432,23 @@ C3:  adv from 'AULA-F99Pro' fe:ee:96:4f:6c:4a rssi=-53   ->  43 pakiety ADV na r
 To nie jest kwestia logiki, konfiguracji ani wersji IDF — C6 po prostu słabo słyszy, a
 skoro nie słyszy, to i jego `CONNECT_IND` nie ma jak dolecieć.
 
+> **UWAGA — wniosek jest niedomknięty i ma konkurencyjne wyjaśnienie.** Pomiar `-53 dBm`
+> na C3 padł na klawiaturę w trybie **parowania** (i tam parowanie weszło), a wszystkie
+> pomiary na C6 na klawiaturę w trybie **powrotu do znanego hosta** — po tym, jak sparowała
+> się z C3 na kanale Fn+3. Urządzenia w trybie powrotu zwykle nadają rzadziej, a często
+> także słabiej, żeby oszczędzać baterię, i z definicji nie przyjmą połączenia od hosta,
+> który nie jest tym, którego szukają. To wyjaśnia te same liczby bez żadnej wady radia.
+> Dodatkowa przesłanka za tym tropem: przyłożenie płytki C6 **wprost do klawiatury** dało
+> tylko `-66 dBm` zamiast `-70 dBm`, a zejście z pół metra do zera powinno dać 20–30 dB.
+> Tak mały przyrost mówi albo o stałej stracie w ścieżce radiowej, albo o tym, że mierzymy
+> co innego, niż myślimy.
+>
+> **Rozstrzyga to jeden pomiar:** trzymając C6 jako **jedyną** podłączoną płytkę, wejść na
+> klawiaturze w prawdziwy tryb parowania (przytrzymać Fn+3) i odczytać RSSI z linii
+> `adv from`. Jeśli skoczy w okolice `-50` i połączenie wejdzie, wady radia nie ma i cała
+> ta sekcja opisuje pomiar wykonany w złym stanie urządzenia. Jeśli zostanie przy `-66`
+> i nie wejdzie, deficyt odbioru jest potwierdzony.
+
 Dlaczego mysz działa, a klawiatura nie: mysz czytała się na C6 jako `-62`, klawiatura jako
 `-70`. Osiem decybeli decyduje o tym, po której stronie progu jesteśmy. To typowy obraz
 łącza na granicy — jedno urządzenie przechodzi, drugie nie, choć „oba są w tym samym
