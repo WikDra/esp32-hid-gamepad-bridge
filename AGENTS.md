@@ -1410,89 +1410,89 @@ bez paniki.
 To **dziewiąta** udokumentowana wada `esp_hid` na ścieżce NimBLE (po §4.2, §4.8, §4.11,
 §4.15, §4.23, §4.25, §4.27, §4.29) i pierwsza, która jest zwykłym brakiem `return`.
 
-### 4.35 Klawiatura nie paruje się z C6, a z C3 tak — różnica jest w odbiorze, nie w kodzie
+### 4.35 Klawiatura paruje się z C3, a nie paruje z C6 ani z H2 — różnicą jest kontroler
 
-Objaw: na ESP32-C6 każda próba połączenia z AULA F99 Pro w trybie parowania kończy się
-`Connection failed; status=13` po upływie limitu, i to niezależnie od wszystkiego, co
-próbowaliśmy. Mysz AJAZZ AJ159 Pro na tej samej płytce łączy się w **310 ms**.
+Objaw: na ESP32-C6 i ESP32-H2 każda próba połączenia z AULA F99 Pro w trybie parowania
+kończy się `Connection failed; status=13` po upływie limitu. Mysz AJAZZ AJ159 Pro na tych
+samych płytkach łączy się w **250–310 ms**. Na ESP32-C3 klawiatura łączy się normalnie.
 
-**Rozstrzygający test: ten sam firmware na C3.** Nie inny build, nie inna konfiguracja —
-ten sam commit zbudowany na `esp32c3` i wgrany na drugą płytkę, przy tej samej klawiaturze,
-w tym samym pokoju, w tej samej sesji:
+**Rozstrzygający test: ten sam firmware na trzech płytkach.** Nie inny build, nie inna
+konfiguracja — ten sam commit zbudowany na trzy targety, przy tej samej klawiaturze, w tym
+samym pokoju, w jednej sesji:
+
+| Płytka | Kontroler | RSSI klawiatury | Wynik |
+|---|---|---|---|
+| ESP32-C3 SuperMini | stary (`BT_CTRL_*`) | −53 dBm | **łączy się, przekazuje klawisze** |
+| MuseLab nanoESP32-C6 | nowy (`BT_LE_*`) | −68…−73 dBm (płytka **dotyka** klawiatury) | timeout, zawsze |
+| ESP32-H2-DevKitM-1 | nowy (`BT_LE_*`) | **−52 dBm** | timeout, zawsze |
+
+Dowód z C3:
 
 ```
-C6:  adv from 'AULA-F99Pro' de:cd:0d:26:18:52 rssi=-70   ->  1-3 pakiety ADV na runde, timeout
-C3:  adv from 'AULA-F99Pro' fe:ee:96:4f:6c:4a rssi=-53   ->  43 pakiety ADV na runde
-     inputs 1 (kbd=1 mouse=1)
-     [0] fe:ee:96:4f:6c:4a reports: keyboard mouse inne (mask 0x63)
-     KBD map=0 id=1 len=8 [00 00 07 00 00 00 00 00]      <- realne klawisze
+inputs 1 (kbd=1 mouse=1)
+[0] fe:ee:96:4f:6c:4a reports: keyboard mouse inne (mask 0x63)
+KBD map=0 id=1 len=8 [00 00 07 00 00 00 00 00]      <- realne klawisze
 ```
 
-**17 dB różnicy w RSSI i ponad dziesięciokrotna różnica w liczbie odebranych pakietów.**
-To nie jest kwestia logiki, konfiguracji ani wersji IDF — C6 po prostu słabo słyszy, a
-skoro nie słyszy, to i jego `CONNECT_IND` nie ma jak dolecieć.
+**Siła sygnału nie jest przyczyną.** H2 przy −52 dBm nie łączy się, a C3 przy −53 dBm łączy.
+To jest jeden decybel różnicy w przeciwnym kierunku, niż wymagałaby hipoteza o marginesie
+łącza. Wcześniejsza wersja tej sekcji obwiniała odbiór na C6 i **była błędna** — pomiar na
+H2 ją wyklucza. Zapisuję to, bo pomyłka jest pouczająca: wystarczyło jedno urządzenie
+z dobrym RSSI i tym samym objawem.
 
-> **UWAGA — wniosek jest niedomknięty i ma konkurencyjne wyjaśnienie.** Pomiar `-53 dBm`
-> na C3 padł na klawiaturę w trybie **parowania** (i tam parowanie weszło), a wszystkie
-> pomiary na C6 na klawiaturę w trybie **powrotu do znanego hosta** — po tym, jak sparowała
-> się z C3 na kanale Fn+3. Urządzenia w trybie powrotu zwykle nadają rzadziej, a często
-> także słabiej, żeby oszczędzać baterię, i z definicji nie przyjmą połączenia od hosta,
-> który nie jest tym, którego szukają. To wyjaśnia te same liczby bez żadnej wady radia.
-> Dodatkowa przesłanka za tym tropem: przyłożenie płytki C6 **wprost do klawiatury** dało
-> tylko `-66 dBm` zamiast `-70 dBm`, a zejście z pół metra do zera powinno dać 20–30 dB.
-> Tak mały przyrost mówi albo o stałej stracie w ścieżce radiowej, albo o tym, że mierzymy
-> co innego, niż myślimy.
->
-> **Rozstrzyga to jeden pomiar:** trzymając C6 jako **jedyną** podłączoną płytkę, wejść na
-> klawiaturze w prawdziwy tryb parowania (przytrzymać Fn+3) i odczytać RSSI z linii
-> `adv from`. Jeśli skoczy w okolice `-50` i połączenie wejdzie, wady radia nie ma i cała
-> ta sekcja opisuje pomiar wykonany w złym stanie urządzenia. Jeśli zostanie przy `-66`
-> i nie wejdzie, deficyt odbioru jest potwierdzony.
+**Kontencja radia nie jest przyczyną.** Przebieg na H2 z wyłączoną rolą pada
+(`roles: hid_host=on gamepad=off`), czyli z radiem zajętym wyłącznie skanowaniem
+i inicjowaniem, też kończy się timeoutem — dwa razy w jednym przebiegu.
 
-Dlaczego mysz działa, a klawiatura nie: mysz czytała się na C6 jako `-62`, klawiatura jako
-`-70`. Osiem decybeli decyduje o tym, po której stronie progu jesteśmy. To typowy obraz
-łącza na granicy — jedno urządzenie przechodzi, drugie nie, choć „oba są w tym samym
-pokoju".
+Zostaje jedna cecha wspólna: **C6 i H2 mają ten sam, nowszy kontroler BLE** (przestrzeń
+opcji `BT_LE_*`, biblioteka `controller/esp32c6` i `controller/esp32h2`), a C3 ma starszy
+(`BT_CTRL_*`). Dwie fizycznie różne płytki, jedna chińska i jedna oficjalna od Espressifu,
+o wyraźnie różnej jakości odbioru, zawodzą **identycznie**.
 
-Co zostało **wykluczone osobnym pomiarem**, zanim doszliśmy do anteny (warto zapisać, żeby
-nikt nie wracał do tych tropów):
+Najważniejsza obserwacja diagnostyczna, która wskazuje warstwę: **`status=13` to timeout
+hosta**, czyli kontroler nigdy nie zgłosił zakończenia połączenia. Gdyby wysłał
+`CONNECT_IND` i nie dostał odpowiedzi, dostalibyśmy HCI `0x3E`
+(„Connection Failed to be Established"). Zgodnie ze specyfikacją inicjator raportuje
+`LE Connection Complete` zaraz po **wysłaniu** `CONNECT_IND`, więc brak jakiegokolwiek
+zdarzenia znaczy, że kontroler w stanie inicjowania **nie dopasował ani jednego pakietu ADV**
+tego urządzenia — choć w stanie skanowania odbiera je bez problemu i widzimy je w logu
+razem z pełną treścią.
+
+Czego o tym nie wiem: dlaczego inicjator nie dopasowuje pakietu, który skaner odbiera.
+Podejrzenie, nie dowód: coś w filtrowaniu adresu po stronie kontrolera (urządzenie zmienia
+adres statyczny losowy przy każdym zdarzeniu rozgłoszeniowym, patrz niżej). Rozstrzygnięcie
+wymagałoby sniffera BLE, którego nie mamy.
+
+Co zostało **wykluczone osobnym pomiarem** (warto zapisać, żeby nikt nie wracał do tych
+tropów):
 
 | Podejrzany | Jak wykluczony |
 |---|---|
 | Windows przechwytuje klawiaturę | wpisy AULI usunięte z systemu i potwierdzone jako nieobecne; objaw został |
-| druga płytka konkuruje | C3 był odłączony, jedyny port to COM7 |
+| druga płytka konkuruje | w każdym pomiarze tylko jedna płytka podłączona, sprawdzone listą portów COM |
 | stary bond na kanale Fn+3 | przytrzymanie Fn+3 to pełne parowanie i usuwa poprzedniego hosta |
 | moc nadawania | podniesiona z domyślnych +3 dBm do +20 dBm, potwierdzona odczytem `TX power level: 15` |
-| głodzenie inicjatora przez link pada | cały przebieg z `pad no PC`, radio wolne, sześć prób i tak padło |
+| siła sygnału / margines łącza | H2 przy −52 dBm zawodzi, C3 przy −53 dBm działa |
+| głodzenie inicjatora przez link pada | przebieg z `pad no PC`, a na H2 z całkowicie wyłączoną rolą pada |
 | zwłoka uzbrojenia inicjatora | sonda łącząca się **z callbacku GAP**, mikrosekundy po pakiecie, też `status=13` |
 | filtrowanie po stronie klawiatury | sonda przy braku parowania z Windows również odrzucona |
-
-Metodologicznie najważniejsza linia w tym śledztwie: **`status=13` to timeout hosta**, czyli
-kontroler nigdy nie zgłosił zakończenia połączenia. Gdyby wysłał `CONNECT_IND` i nie dostał
-odpowiedzi, dostalibyśmy HCI `0x3E` („Connection Failed to be Established"). Brak `0x3E`
-mówi wprost, że kontroler **nie usłyszał** urządzenia w trakcie inicjowania — i to był
-pierwszy sygnał, że problem jest po stronie radia, a nie protokołu.
+| tryb powrotu zamiast parowania | pakiety mają `flags=0x05` (limited discoverable), UUID 0x1812, appearance 0x03C1 i beacon Swift Pair — to jest zaproszenie do parowania |
+| `BT_LE_50_FEATURE_SUPPORT` na C6/H2 | opcja ma `depends on !BT_NIMBLE_ENABLED`, więc przy NimBLE jest nieaktywna; `BT_NIMBLE_EXT_ADV` też jest wyłączone, skan idzie ścieżką legacy |
 
 Co z tego wynika praktycznie:
 
-- **Nie chodzi o niewpiętą antenę zewnętrzną.** Sprawdzone u właściciela: moduł na tej
-  płytce ma **antenę zintegrowaną i nie ma gniazda RF** (u.FL/IPEX), więc wariantu `-1U`
-  bez wpiętej anteny — pierwszego podejrzanego, jaki się narzuca przy takim spadku — tu nie
-  ma. Deficyt siedzi zatem w samej ścieżce radiowej płytki albo w jej otoczeniu: antena
-  modułu wymaga strefy wolnej od miedzi i metalu, a płytka w formacie „nano" ma na to mało
-  miejsca. Warte sprawdzenia przy okazji: pozycja i orientacja płytki, sąsiedztwo metalu,
-  hub USB, przedłużacz, obudowa.
-- do czasu wyjaśnienia klawiaturę trzeba trzymać **blisko** płytki; próg jest między
-  −62 dBm (mysz przechodzi) a −70 dBm (klawiatura nie). Tani pomiar kontrolny: przyłożyć
-  klawiaturę do płytki i odczytać RSSI z linii `adv from` — jeśli podskoczy w okolice −50 i
-  parowanie wejdzie, margines łącza jest potwierdzony jako jedyna przyczyna.
-- **port na C6 sam w sobie jest poprawny**: pad działa z XInput (potwierdzone wpisem
-  `_VID&02045E_PID&0B13_REV&0509_404CCA5FC62A` w systemie), mysz łączy się i mapuje, a
-  wejścia dostają nawet 7,5 ms zamiast 15 ms z C3.
+- **C3 zostaje platformą odniesienia** dla pełnego zestawu klawiatura + mysz. Tam wszystko
+  jest potwierdzone logiem.
+- **Port na C6 i H2 jest poprawny wszędzie poza tą jedną ścieżką**: pad działa z XInput
+  (na C6 potwierdzone wpisem `_VID&02045E_PID&0B13_REV&0509_404CCA5FC62A` w systemie), mysz
+  łączy się i mapuje, a wejścia dostają 7,5 ms zamiast 15 ms z C3.
+- H2 buduje się i startuje bez żadnej zmiany w kodzie aplikacji; jedyny nowy plik to
+  `sdkconfig.defaults.esp32h2`. Pamięć: `heap before BLE 212 kB`, po starcie stacku ~162 kB
+  (C3: ~192 kB, C6: ~357 kB), więc jest ciaśniej niż na C6, ale z zapasem.
 
 #### Poprawki, które wyszły przy okazji i zostają
 
-Śledztwo wymusiło kilka zmian wartych zachowania niezależnie od anteny:
+Śledztwo wymusiło kilka zmian wartych zachowania niezależnie od przyczyny:
 
 - **skan pasywny** (`passive = 1`) i okno równe interwałowi. Aktywny skan kazał nam nadawać
   `SCAN_REQ` po każdym pakiecie; po przejściu na pasywny liczba usłyszanych pakietów
@@ -1506,18 +1506,18 @@ Co z tego wynika praktycznie:
   raportująca `0 ADV reports` potrafiła wcześniej wybrać adres sprzed 13 s, a przy dwóch
   adresach tej samej klawiatury w tablicy trafialiśmy w starszy, martwy,
 - **limit próby połączenia 30 s → 6 s** w naszej kopii `esp_hid` i przerwa 15 s → 5 s.
-  Peer, który zamierza odpowiedzieć, odpowiada w 310 ms; jedna długa próba tylko blokuje
+  Peer, który zamierza odpowiedzieć, odpowiada w 250–310 ms; jedna długa próba tylko blokuje
   zadanie skanujące, które w tym czasie nie słyszy nic,
 - **moc nadawania na maksimum** zamiast domyślnych +3 dBm, z odczytem poziomu z powrotem.
 
 #### Nierozstrzygnięte
 
-Klawiatura wysyła jedno zdarzenie rozgłoszeniowe co ~7,6 s i **za każdym razem pod innym
-adresem**, przy czym wszystkie obserwowane adresy mają górne bity `11`, czyli są statyczne
-losowe — a takie zgodnie ze specyfikacją nie powinny zmieniać się w trakcie pracy
-urządzenia. Na C3 to nie przeszkadza, bo przy 43 pakietach na rundę trafiamy w adres, póki
-jest żywy. Nie wiem, czy rzadkość tych zdarzeń jest cechą urządzenia, czy skutkiem słabego
-odbioru na C6 (słyszymy tylko część), i **nie zostało to rozstrzygnięte pomiarem**.
+Klawiatura wysyła jedno zdarzenie rozgłoszeniowe co kilka sekund i **za każdym razem pod
+innym adresem**, przy czym wszystkie obserwowane adresy mają górne bity `11`, czyli są
+statyczne losowe — a takie zgodnie ze specyfikacją nie powinny zmieniać się w trakcie pracy
+urządzenia. Zanotowanych adresów jest kilkanaście i **żaden nie powtórzył się ani raz**.
+Na C3 to nie przeszkadza. Czy właśnie to rozstraja inicjatora nowego kontrolera, nie zostało
+udowodnione — to najbardziej obiecujący trop, gdyby ktoś chciał wrócić do sprawy z snifferem.
 
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 

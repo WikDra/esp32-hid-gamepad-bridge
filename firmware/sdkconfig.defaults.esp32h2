@@ -1,0 +1,25 @@
+# ESP32-H2-DevKitM-1.
+#
+# Why this board is in the picture at all: the MuseLab nanoESP32-C6 hears the AULA F99 Pro
+# roughly 15-20 dB weaker than the C3 SuperMini does, measured with the board physically
+# TOUCHING the keyboard and with the keyboard in genuine pairing mode - so the deficit is
+# not distance and not the device's mode (AGENTS.md 4.35). The pad and the mouse work on
+# that board; only the keyboard, which sits further down the link budget, does not. This is
+# an official Espressif devkit, so its RF layout is a known quantity rather than a guess.
+#
+# The H2 also fits this project better on paper than the C6: it is a BLE-and-802.15.4 part
+# with NO Wi-Fi, so there is no Wi-Fi/BLE coexistence arbitration sharing the radio at all.
+CONFIG_IDF_TARGET="esp32h2"
+
+# Console over native USB (the USB Serial/JTAG peripheral), exactly as on the C3 and C6:
+# one USB-C cable carries power, flashing and the log, and the same peripheral also exposes
+# JTAG, so GDB is available without extra hardware.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# NOTE ON THE CONTROLLER: like the C6, the H2 uses the BT_LE_* controller option namespace
+# rather than the C3's BT_CTRL_*. The AGENTS.md 4.28 fix (arrays in ble_gap.c indexed by
+# conn_handle but dimensioned by the connection count) is host-side, so it applies here
+# unchanged through BT_NIMBLE_MAX_CONNECTIONS in the shared sdkconfig.defaults.
+#
+# The H2 has no Bluetooth Classic at all, which costs us nothing: this project is BLE only.
