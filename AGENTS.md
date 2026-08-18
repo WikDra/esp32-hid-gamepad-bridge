@@ -1254,8 +1254,43 @@ kontroler. Stabilność sprawdzona: 100 s z padem na 7,5 ms, bez rozłączeń, h
 
 Otwarte pytanie (hipoteza właściciela): skoro link do PC pracuje teraz na 7,5 ms, czy
 kontroler nadal odrzuci 7,5 ms dla myszy? Jeśli jego reguła dotyczyła najdłuższego
-interwału w systemie albo wspólnej siatki, to teraz sytuacja jest inna. Drabinka po stronie
-wejść jest w kodzie, więc wystarczy obudzić urządzenia i przeczytać log.
+interwału w systemie albo wspólnej siatki, to teraz sytuacja jest inna.
+
+#### Odpowiedź: nie, i to zawęża podejrzanych
+
+Zmierzone przy padzie pracującym na 7,5 ms:
+
+```
+link do PC: interwal 6 (7.50 ms = 133 Hz)
+link 3: interwal 36 (45 ms), latency=0, timeout nadzoru=256 (2560 ms)
+interwal 6 (7.50 ms) odrzucony: rc=530 (HCI 0x12)
+interwal 8 (10.00 ms) odrzucony: rc=530 (HCI 0x12)
+interwal 10 (12.50 ms) odrzucony: rc=530 (HCI 0x12)
+PRZYJETE: interwal 12 (15.00 ms = 66 Hz)
+```
+
+Hipoteza **odrzucona**: skrócenie linku pada nic nie odblokowało. Ale ten sam log wyklucza
+przy okazji dwie inne rzeczy i zostawia jedną **mocną obserwację**:
+
+- **To nie brak przepustowości radia.** Kontroler w tym samym momencie utrzymuje link
+  7,5 ms w roli peryferiala (pad). Fizycznie 7,5 ms działa.
+- **To nie liczba linków.** Odrzucenie wypadło przy `razem 1/2`, czyli przy **jednym**
+  linku centralnym. Wcześniejsza hipoteza „3 linki × 5 ms = 15 ms" upada.
+- **Asymetria rola-zależna:** kontroler *utrzymuje* 7,5 ms, gdy interwał narzuca peer
+  (my jesteśmy peryferialem), ale *odmawia zainicjowania* czegokolwiek poniżej 15 ms, gdy
+  sam jest centralem. Odmowa jest natychmiastowa i synchroniczna (`rc` z
+  `ble_gap_update_params()`), czyli pochodzi z walidacji komendy HCI, a nie z negocjacji
+  z urządzeniem.
+
+Metodologicznie warto zapamiętać, że pierwszy przebieg tego testu **nic nie sprawdził**:
+domyślne `APP_INPUT_CONN_ITVL` było już ustawione na 12, więc drabinka poprosiła od razu
+o 15 ms i dostała, nie próbując krótszych wartości. Dopiero ustawienie 6 dało odpowiedź.
+
+Ostatni niesprawdzony podejrzany: **skaner**. Przy `1/2` urządzeń mostek dalej skanuje,
+a skan rezerwuje czas radia. Dlatego `scan_task` ponawia teraz próbę raz, po zatrzymaniu
+skanowania (czyli po osiągnięciu limitu urządzeń) — w logu widać to jako
+`skan zatrzymany (limit urzadzen) - ponawiam probe skrocenia interwalu`. **Do zmierzenia:**
+wymaga obu urządzeń podłączonych jednocześnie.
 
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 

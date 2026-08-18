@@ -234,6 +234,22 @@ static esp_hidh_dev_t *device_take_by_addr(const uint8_t *addr_val)
  */
 static esp_hidh_dev_t *s_dead[HID_HOST_MAX_DEVICES];
 
+/* Urzadzenie z danego slotu tablicy albo NULL. Potrzebne do ponowienia proby
+ * skrocenia interwalu, gdy skaner sie zatrzyma. */
+static esp_hidh_dev_t *device_at(int idx)
+{
+    esp_hidh_dev_t *dev = NULL;
+    if (idx < 0 || idx >= HID_HOST_MAX_DEVICES) {
+        return NULL;
+    }
+    taskENTER_CRITICAL(&s_mux);
+    if (s_devs[idx].in_use) {
+        dev = s_devs[idx].dev;
+    }
+    taskEXIT_CRITICAL(&s_mux);
+    return dev;
+}
+
 static void device_mark_dead(esp_hidh_dev_t *dev)
 {
     taskENTER_CRITICAL(&s_mux);
@@ -1219,12 +1235,36 @@ static void scan_task(void *arg)
              (unsigned)(FAST_ITVL_MIN * 125 / 100), (unsigned)(FAST_ITVL_MIN * 125 % 100),
              (unsigned)(1000 * 100 / (FAST_ITVL_MIN * 125)));
 
+    bool retried_without_scan = false;
+
     while (true) {
         reap_dead_devices();
         if (ble_hid_host_device_count() >= HID_HOST_MAX_DEVICES) {
+            /*
+             * Limit urzadzen osiagniety, wiec przestajemy skanowac - a skan rezerwuje
+             * czas radia. To jedyny podejrzany, ktory zostal: kontroler odrzuca
+             * master-initiated interwal ponizej 15 ms, mimo ze rownolegle utrzymuje
+             * link 7,5 ms w roli peryferiala (pad) i mimo ze odrzucal to takze przy
+             * JEDNYM linku centralnym. Jesli przyczyna jest skaner, teraz - z radiem
+             * wolnym od skanowania - krotszy interwal powinien przejsc.
+             *
+             * Proba jednorazowa, zeby nie dobijac sie do kontrolera w petli.
+             */
+            if (!retried_without_scan) {
+                retried_without_scan = true;
+                vTaskDelay(pdMS_TO_TICKS(3000)); /* niech radio sie uspokoi */
+                ESP_LOGI(TAG, "skan zatrzymany (limit urzadzen) - ponawiam probe skrocenia interwalu");
+                for (int i = 0; i < HID_HOST_MAX_DEVICES; i++) {
+                    esp_hidh_dev_t *dev = device_at(i);
+                    if (dev != NULL) {
+                        request_fast_interval(dev);
+                    }
+                }
+            }
             vTaskDelay(pdMS_TO_TICKS(3000));
             continue;
         }
+        retried_without_scan = false;
         scan_round();
         vTaskDelay(pdMS_TO_TICKS(500));
     }
