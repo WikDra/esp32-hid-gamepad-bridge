@@ -1458,12 +1458,17 @@ pierwszy sygnał, że problem jest po stronie radia, a nie protokołu.
 
 Co z tego wynika praktycznie:
 
-- płytka MuseLab nanoESP32-C6 v1.0 wymaga sprawdzenia **anteny**: jeśli moduł jest w wersji
-  z gniazdem u.FL/IPEX (warianty `-1U`), a antena nie jest wpięta, spadek rzędu 15–20 dB
-  jest dokładnie tym, co widzimy. Na wielu płytkach wybór między anteną na PCB a gniazdem
-  robi rezystor 0 Ω albo zwora,
-- do czasu wyjaśnienia anteny klawiaturę trzeba trzymać **blisko** płytki; próg jest między
-  −62 dBm (mysz przechodzi) a −70 dBm (klawiatura nie),
+- **Nie chodzi o niewpiętą antenę zewnętrzną.** Sprawdzone u właściciela: moduł na tej
+  płytce ma **antenę zintegrowaną i nie ma gniazda RF** (u.FL/IPEX), więc wariantu `-1U`
+  bez wpiętej anteny — pierwszego podejrzanego, jaki się narzuca przy takim spadku — tu nie
+  ma. Deficyt siedzi zatem w samej ścieżce radiowej płytki albo w jej otoczeniu: antena
+  modułu wymaga strefy wolnej od miedzi i metalu, a płytka w formacie „nano" ma na to mało
+  miejsca. Warte sprawdzenia przy okazji: pozycja i orientacja płytki, sąsiedztwo metalu,
+  hub USB, przedłużacz, obudowa.
+- do czasu wyjaśnienia klawiaturę trzeba trzymać **blisko** płytki; próg jest między
+  −62 dBm (mysz przechodzi) a −70 dBm (klawiatura nie). Tani pomiar kontrolny: przyłożyć
+  klawiaturę do płytki i odczytać RSSI z linii `adv from` — jeśli podskoczy w okolice −50 i
+  parowanie wejdzie, margines łącza jest potwierdzony jako jedyna przyczyna.
 - **port na C6 sam w sobie jest poprawny**: pad działa z XInput (potwierdzone wpisem
   `_VID&02045E_PID&0B13_REV&0509_404CCA5FC62A` w systemie), mysz łączy się i mapuje, a
   wejścia dostają nawet 7,5 ms zamiast 15 ms z C3.
