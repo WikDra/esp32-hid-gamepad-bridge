@@ -17,7 +17,17 @@
 +++ src/nimble_hidh.c
 --- src/nimble_hidh.c
 +++ src/nimble_hidh.c
-@@ -42,6 +42,14 @@
+@@ -21,6 +21,9 @@
+ #include <string.h>
+ #include <errno.h>
+ #include "nimble/nimble_opt.h"
++/* LOCAL PATCH (AGENTS.md 4.35): ble_hs_id_copy_addr(), used below to find out whether the
++ * application registered a random static address we can initiate from. */
++#include "host/ble_hs_id.h"
+ #include "host/ble_hs.h"
+ #include "host/ble_gap.h"
+ #include "host/ble_hs_adv.h"
+@@ -42,6 +45,14 @@
  
  /* variables used for attribute discovery */
  static int services_discovered;
@@ -32,7 +42,7 @@
  static int chrs_discovered;
  static int dscs_discovered;
  static int status = 0;
-@@ -173,6 +181,13 @@
+@@ -173,6 +184,13 @@
      status = error->status;
      switch (error->status) {
      case 0:
@@ -46,7 +56,7 @@
          memcpy(service_result + services_discovered, service, sizeof(struct ble_gatt_svc));
          services_discovered++;
          uuid16 = ble_uuid_u16(&service->uuid.u);
-@@ -223,6 +238,11 @@
+@@ -223,6 +241,11 @@
      case 0:
          ESP_LOGD(TAG, "Char discovered : def handle : %04x, val_handle : %04x, properties : %02x\n, uuid : %04x",
                   chr->def_handle, chr->val_handle, chr->properties, ble_uuid_u16(&chr->uuid.u));
@@ -58,7 +68,7 @@
          memcpy(chrs + chrs_discovered, chr, sizeof(struct ble_gatt_chr));
          chrs_discovered++;
          break;
-@@ -262,6 +282,11 @@
+@@ -262,6 +285,11 @@
      case 0:
          ESP_LOGD(TAG, "DISC discovered : handle : %04x, uuid : %04x",
                   dsc->handle, ble_uuid_u16(&dsc->uuid.u));
@@ -70,7 +80,7 @@
          memcpy(dscr + dscs_discovered, dsc, sizeof(struct ble_gatt_dsc));
          dscs_discovered++;
          break;
-@@ -301,11 +326,28 @@
+@@ -301,11 +329,28 @@
      esp_hid_report_item_t *r;
      esp_hid_report_map_t *map;
  
@@ -100,7 +110,7 @@
      rc = ble_gattc_disc_all_svcs(dev->ble.conn_id, svc_disced, service_result);
      if (rc != 0) {
          ESP_LOGD(TAG, "Error discovering services : %d", rc);
-@@ -346,7 +388,7 @@
+@@ -346,7 +391,7 @@
                  continue;
              }
  
@@ -109,7 +119,7 @@
              uint16_t ccount = 20;
              rc = ble_gattc_disc_all_chrs(dev->ble.conn_id, service_result[s].start_handle,
                                           service_result[s].end_handle, chr_disced, char_result);
-@@ -454,7 +496,7 @@
+@@ -454,7 +499,7 @@
                              continue;
                          }
                      }
@@ -118,7 +128,7 @@
                      uint16_t dcount = 20;
                      uint16_t chr_end_handle;
                      if (c + 1 < ccount) {
-@@ -590,8 +632,14 @@
+@@ -590,8 +635,14 @@
  
      assert(conn_id == conn_handle);
  
@@ -135,7 +145,7 @@
                  error->status, conn_handle, attr->handle);
      SEND_CB();
  
-@@ -623,11 +671,20 @@
+@@ -623,11 +674,20 @@
      while (report) {
          /* subscribe to notifications */
          if ((report->permissions & BLE_GATT_CHR_PROP_NOTIFY) != 0 && report->protocol_mode == ESP_HID_PROTOCOL_MODE_REPORT) {
@@ -156,7 +166,7 @@
          }
          report = report->next;
      }
-@@ -653,6 +710,28 @@
+@@ -653,6 +713,28 @@
              dev = esp_hidh_dev_get_by_bda(desc.peer_ota_addr.val);
              if (!dev) {
                  ESP_LOGE(TAG, "Connect received for unknown device");
@@ -185,7 +195,7 @@
              }
              dev->status = -1; // set to not found and clear if HID service is found
              dev->ble.conn_id = event->connect.conn_handle;
-@@ -670,6 +749,17 @@
+@@ -670,6 +752,17 @@
          } else {
              MODLOG_DFLT(ERROR, "Error: Connection failed; status=%d\n",
                          event->connect.status);
@@ -203,7 +213,34 @@
              dev->status = event->connect.status; // ESP_GATT_CONN_FAIL_ESTABLISH;
              dev->ble.conn_id = -1;
              SEND_CB(); // return from connection
-@@ -927,11 +1017,38 @@
+@@ -916,6 +1009,26 @@
+     uint8_t own_addr_type;
+ 
+     own_addr_type = 0; // set to public for now
++    /*
++     * LOCAL PATCH (AGENTS.md 4.35): initiate from our RANDOM static address when the
++     * application registered one, instead of always the public address.
++     *
++     * Upstream hardcodes public, with the comment "set to public for now". Windows dials
++     * this keyboard from a private address and succeeds where every attempt of ours times
++     * out, and the initiator's own address type is the last difference left after signal
++     * strength, radio contention, dialling latency and the controller's BLE 5.0 features
++     * were each eliminated by a separate measurement. The pad keeps advertising from the
++     * public address, so its bond with Windows is untouched by this.
++     *
++     * If no random address was registered, ble_hs_id_addr() fails and we behave exactly as
++     * before.
++     */
++    {
++        uint8_t rnd_addr[6];
++        if (ble_hs_id_copy_addr(BLE_ADDR_RANDOM, rnd_addr, NULL) == 0) {
++            own_addr_type = BLE_OWN_ADDR_RANDOM;
++        }
++    }
+     esp_hidh_dev_t *dev = esp_hidh_dev_malloc();
+     if (dev == NULL) {
+         ESP_LOGE(TAG, "malloc esp_hidh_dev_t failed");
+@@ -927,11 +1040,38 @@
      memcpy(dev->addr.bda, bda, sizeof(dev->addr.bda));
      dev->ble.address_type = address_type;
      dev->ble.appearance = ESP_HID_APPEARANCE_GENERIC;

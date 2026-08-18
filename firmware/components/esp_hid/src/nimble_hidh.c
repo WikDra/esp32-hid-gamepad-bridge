@@ -21,6 +21,9 @@
 #include <string.h>
 #include <errno.h>
 #include "nimble/nimble_opt.h"
+/* LOCAL PATCH (AGENTS.md 4.35): ble_hs_id_copy_addr(), used below to find out whether the
+ * application registered a random static address we can initiate from. */
+#include "host/ble_hs_id.h"
 #include "host/ble_hs.h"
 #include "host/ble_gap.h"
 #include "host/ble_hs_adv.h"
@@ -1006,6 +1009,26 @@ esp_hidh_dev_t *esp_ble_hidh_dev_open(uint8_t *bda, uint8_t address_type)
     uint8_t own_addr_type;
 
     own_addr_type = 0; // set to public for now
+    /*
+     * LOCAL PATCH (AGENTS.md 4.35): initiate from our RANDOM static address when the
+     * application registered one, instead of always the public address.
+     *
+     * Upstream hardcodes public, with the comment "set to public for now". Windows dials
+     * this keyboard from a private address and succeeds where every attempt of ours times
+     * out, and the initiator's own address type is the last difference left after signal
+     * strength, radio contention, dialling latency and the controller's BLE 5.0 features
+     * were each eliminated by a separate measurement. The pad keeps advertising from the
+     * public address, so its bond with Windows is untouched by this.
+     *
+     * If no random address was registered, ble_hs_id_addr() fails and we behave exactly as
+     * before.
+     */
+    {
+        uint8_t rnd_addr[6];
+        if (ble_hs_id_copy_addr(BLE_ADDR_RANDOM, rnd_addr, NULL) == 0) {
+            own_addr_type = BLE_OWN_ADDR_RANDOM;
+        }
+    }
     esp_hidh_dev_t *dev = esp_hidh_dev_malloc();
     if (dev == NULL) {
         ESP_LOGE(TAG, "malloc esp_hidh_dev_t failed");

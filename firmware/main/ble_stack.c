@@ -52,6 +52,30 @@ static void on_sync(void)
         ESP_LOGE(TAG, "ble_hs_id_infer_auto: rc=%d, falling back to public address", rc);
         s_own_addr_type = 0;
     }
+    /*
+     * Register a random static address IN ADDITION to the public one.
+     *
+     * It has to happen here, not in the init function: before the host has synced with the
+     * controller every address call returns BLE_HS_ENOTSYNCED (22), which is exactly what
+     * the first version of this did.
+     *
+     * Why at all: the pad keeps advertising from the public address, because Windows holds
+     * it in a bond and changing it would force re-pairing. But for INITIATING there is one
+     * difference left against Windows, which dials this keyboard without trouble - Windows
+     * connects from a private address, we connect from a public one. Registering both lets
+     * our patched esp_hid copy initiate from the random address without touching the pad's
+     * identity (AGENTS.md 4.35).
+     */
+    ble_addr_t rnd;
+    if (ble_hs_id_gen_rnd(0 /* 0 = static random, 1 = non-resolvable private */, &rnd) == 0 &&
+        ble_hs_id_set_rnd(rnd.val) == 0) {
+        ESP_LOGI(TAG, "random static address %02x:%02x:%02x:%02x:%02x:%02x registered"
+                      " (used for initiating only)",
+                 rnd.val[5], rnd.val[4], rnd.val[3], rnd.val[2], rnd.val[1], rnd.val[0]);
+    } else {
+        ESP_LOGW(TAG, "no random static address - initiating will use the public one");
+    }
+
     ESP_LOGI(TAG, "stack ready, own_addr_type=%u", s_own_addr_type);
     xEventGroupSetBits(s_events, EV_SYNCED);
 }

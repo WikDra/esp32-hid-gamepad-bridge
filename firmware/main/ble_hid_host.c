@@ -112,6 +112,14 @@ typedef struct {
      * in the table at once we tried the older, dead one first.
      */
     int64_t last_seen_us;
+    /*
+     * How many advertising packets we received from THIS address in the current scan
+     * round. The round-wide counter cannot answer the question that matters: whether a
+     * device we fail to connect to is advertising rarely, or advertising normally while our
+     * controller drops most of it. Those two have completely different culprits, and the
+     * round total is dominated by whatever beacon happens to be loudest in the room.
+     */
+    uint16_t packets;
 } candidate_t;
 static candidate_t s_cands[CANDIDATES_MAX];
 
@@ -904,6 +912,9 @@ static void candidate_seen(const struct ble_gap_disc_desc *disc, const struct bl
          * so we merge rather than overwrite (AGENTS.md 4.4: filter_duplicates=0). */
         slot->rssi = disc->rssi;
         slot->last_seen_us = esp_timer_get_time();
+        if (slot->packets < UINT16_MAX) {
+            slot->packets++;
+        }
         slot->looks_like_hid = slot->looks_like_hid || looks_like_hid;
         slot->bonded = is_bonded_peer(&disc->addr);
         /* SCAN_RSP nadpisalby typ pakietu glownego, a chcemy wiedziec, czy
@@ -1123,9 +1134,9 @@ static void log_scan_results(void)
         if (!candidate_get(i, &c)) {
             continue;
         }
-        ESP_LOGI(TAG, "  %s " ADDR_FMT " type=%u rssi=%4d %s%s appearance=0x%04x '%s'",
+        ESP_LOGI(TAG, "  %s " ADDR_FMT " type=%u rssi=%4d pkts=%u %s%s appearance=0x%04x '%s'",
                  c.looks_like_hid ? "HID" : "   ", ADDR_ARG(c.addr.val),
-                 c.addr.type, c.rssi,
+                 c.addr.type, c.rssi, c.packets,
                  c.event_type < 5 ? evt[c.event_type] : "?",
                  c.bonded ? " BOND" : "", c.appearance, c.name[0] ? c.name : "?");
         /* With no name and no appearance only the raw ADV is left - without it there is no
