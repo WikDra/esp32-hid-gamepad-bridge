@@ -710,6 +710,28 @@ esp_hidh_gattc_event_handler(struct ble_gap_event *event, void *arg)
             dev = esp_hidh_dev_get_by_bda(desc.peer_ota_addr.val);
             if (!dev) {
                 ESP_LOGE(TAG, "Connect received for unknown device");
+                /*
+                 * LOCAL PATCH (AGENTS.md 4.34): upstream logs the line above and then
+                 * writes through the NULL pointer anyway - `dev->status = -1` two lines
+                 * below - which is a guaranteed Store access fault.
+                 *
+                 * Measured on an ESP32-C6: MCAUSE=0x07 (store access fault) with
+                 * MTVAL=0x44, i.e. exactly the offset of `status` inside esp_hidh_dev_t.
+                 * Deterministic, identical registers on every attempt.
+                 *
+                 * When the lookup fails: the device is looked up by the address seen ON
+                 * AIR, and a not-yet-bonded peer advertises with a random address that
+                 * may change between our scan and the connection. It then connects under
+                 * an address esp_hidh has never registered. A bonded device reconnects
+                 * with a stable identity address, which is why this never fired while
+                 * testing with bonded devices.
+                 *
+                 * SEND_CB() releases the caller blocked in esp_hidh_dev_open(); it then
+                 * sees its own dev->ble.conn_id still < 0 and fails cleanly instead of
+                 * hanging (AGENTS.md 4.23).
+                 */
+                SEND_CB();
+                return 0;
             }
             dev->status = -1; // set to not found and clear if HID service is found
             dev->ble.conn_id = event->connect.conn_handle;
@@ -727,6 +749,17 @@ esp_hidh_gattc_event_handler(struct ble_gap_event *event, void *arg)
         } else {
             MODLOG_DFLT(ERROR, "Error: Connection failed; status=%d\n",
                         event->connect.status);
+            /*
+             * LOCAL PATCH (AGENTS.md 4.34): in this branch upstream never assigns `dev`
+             * at all - the assignment lives in the success branch above - and then writes
+             * dev->status through it. `dev` is initialised to NULL at the top of the
+             * function, so this is the same NULL store, just on the failed-connection
+             * path. Releasing the opener is enough; it will fail on its own conn_id.
+             */
+            if (!dev) {
+                SEND_CB();
+                return 0;
+            }
             dev->status = event->connect.status; // ESP_GATT_CONN_FAIL_ESTABLISH;
             dev->ble.conn_id = -1;
             SEND_CB(); // return from connection

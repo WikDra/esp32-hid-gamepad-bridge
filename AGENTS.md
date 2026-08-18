@@ -1350,6 +1350,65 @@ wyjściowego.
 podłączeniu. Drabinka zostaje w kodzie — kto chce sprawdzić, czy nowsza wersja IDF to
 poluzowała, ustawia 6 i czyta log.
 
+### 4.34 `esp_hidh` zapisuje przez wskaźnik NULL, gdy urządzenie nie jest sparowane
+
+Znalezione przy porcie na ESP32-C6, ale **to nie jest błąd specyficzny dla C6** — ten sam
+kod jest na C3 i tam też wystrzeli, tylko trudniej go trafić.
+
+Objaw: pętla restartów. Za każdym razem, gdy mostek znajdzie **nieparowaną** klawiaturę
+i próbuje ją otworzyć, leci panika z identycznym zestawem rejestrów:
+
+```
+Guru Meditation Error: Core  0 panic'ed (Store access fault)
+MEPC : 0x4200f14e   RA : 0x4200f14a   MCAUSE : 0x00000007   MTVAL : 0x00000044
+rst:0xc (SW_CPU)
+```
+
+`MCAUSE=0x07` to zapis pod niedozwolony adres, a `MTVAL=0x44` mówi wprost, o co chodzi:
+to nie śmieciowy wskaźnik, tylko **NULL plus offset pola**. `addr2line` wskazał
+`nimble_hidh.c:730`, a kod tam wygląda tak:
+
+```c
+dev = esp_hidh_dev_get_by_bda(desc.peer_ota_addr.val);
+if (!dev) {
+    ESP_LOGE(TAG, "Connect received for unknown device");   /* tylko log */
+}
+dev->status = -1;                                 /* <- zapis przez NULL */
+dev->ble.conn_id = event->connect.conn_handle;
+```
+
+Gałąź `if (!dev)` **nie ma `return`**. Kod stwierdza „nieznane urządzenie" i natychmiast
+przez to nieznane urządzenie zapisuje. `0x44` to offset pola `status` w `esp_hidh_dev_t` —
+zgadza się co do bajtu.
+
+**Kiedy wyszukiwanie zawodzi.** `esp_hidh_dev_get_by_bda()` szuka po adresie widzianym
+**w eterze**. Urządzenie, które nie ma jeszcze bondu, rozgłasza się z adresem losowym, a ten
+może się zmienić między naszym skanem a nawiązaniem połączenia — wtedy peer łączy się pod
+adresem, którego `esp_hidh` nigdy nie zarejestrował. Widać to wprost w logu: klawiatura
+w trybie parowania pojawiała się kolejno jako `ee:5a:12:30:0c:aa`, `cf:0c:18:5e:52:94`
+i `db:6a:de:fc:b3:7a`. Urządzenie sparowane wraca ze stabilnym adresem tożsamości, dlatego
+przy testach z gotowymi bondami ten błąd nie wystąpił ani razu.
+
+**To samo w gałęzi obok.** Gdy połączenie się nie uda, `esp_hidh` robi
+`dev->status = event->connect.status`, ale w tej gałęzi `dev` **nigdy nie jest
+przypisywane** — jedyne przypisanie jest w gałęzi sukcesu. Zmienna startuje z `NULL`,
+czyli to ten sam zapis przez NULL, tylko na ścieżce nieudanego połączenia.
+
+**Naprawa w naszej kopii:** w obu gałęziach wychodzimy przez `SEND_CB(); return 0;`.
+`SEND_CB()` jest tu konieczne, bo bez niego wołający zostaje w `WAIT_CB()` na zawsze
+(§4.23); po zwolnieniu semafora `esp_hidh_dev_open()` widzi własne `dev->ble.conn_id < 0`
+i kończy się czystym niepowodzeniem, które nasz kod już obsługuje (cooldown i kolejna
+próba). Gałąź `BLE_GAP_EVENT_DISCONNECT` ma prawidłowy `break` po logu i jest bezpieczna.
+
+Stan weryfikacji: po łatce płytka pracuje bez restartu, ale **sama naprawiona ścieżka
+nie została jeszcze przejechana na sprzęcie** — do tego trzeba nieparowanego urządzenia
+w trybie parowania. Do potwierdzenia: w logu ma się pojawić
+`Connect received for unknown device`, a zaraz po nim `open failed, cooldown 15 s`,
+bez paniki.
+
+To **dziewiąta** udokumentowana wada `esp_hid` na ścieżce NimBLE (po §4.2, §4.8, §4.11,
+§4.15, §4.23, §4.25, §4.27, §4.29) i pierwsza, która jest zwykłym brakiem `return`.
+
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 
 Źródło: lokalny port OpenLary na ESP32-S3, katalog
