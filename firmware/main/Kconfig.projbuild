@@ -70,6 +70,24 @@ menu "Mostek HID (konfiguracja aplikacji)"
             pokazuje ja w ustawieniach Bluetooth, a przy udawaniu urzadzenia nie ma
             powodu, zeby sie roznila.
 
+    config APP_PAD_CONN_ITVL
+        int "Pad: docelowy interwal polaczenia z PC [jednostki 1,25 ms]"
+        depends on APP_ENABLE_GAMEPAD
+        range 6 40
+        default 6
+        help
+            Interwal linku pad -> PC. To NAJWEZSZE OGNIWO calego lancucha: mysz moze
+            raportowac jak czesto chce, ale do gry trafi tylko tyle, ile przejdzie tym
+            linkiem.
+
+            Tego interwalu nie ustalamy sami - na tym linku centralem jest Windows i to
+            on go wybiera (u nas 15 ms). Peryferial moze o zmiane tylko POPROSIC, przez
+            procedure LL Connection Parameters Request albo L2CAP. Windows moze odmowic.
+
+            Domyslne 6 (7,5 ms = 133 Hz) wynika z tego, ze prawdziwy pad Xbox obsluguje
+            po BT 125 Hz - czyli Windows potrafi taki link utrzymac. Firmware schodzi
+            drabinka od tej wartosci i loguje, co udalo sie uzyskac.
+
     config APP_REPORT_RATE_HZ
         int "Pad: czestotliwosc zadania raportujacego [Hz]"
         depends on APP_ENABLE_GAMEPAD

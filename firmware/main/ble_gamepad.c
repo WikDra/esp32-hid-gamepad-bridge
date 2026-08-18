@@ -641,6 +641,20 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         }
         return 0;
 
+    case BLE_GAP_EVENT_CONN_UPDATE: {
+        /* Wynik naszej prosby o krotszy interwal. Na tym linku centralem jest Windows,
+         * wiec my mozemy tylko poprosic - tutaj widac, co przyznal. */
+        struct ble_gap_conn_desc d;
+        if (ble_gap_conn_find(event->conn_update.conn_handle, &d) == 0) {
+            ESP_LOGI(TAG, "link do PC: status=%d itvl=%u (%u.%02u ms = %u Hz) latency=%u timeout=%u",
+                     event->conn_update.status, d.conn_itvl,
+                     (unsigned)(d.conn_itvl * 125 / 100), (unsigned)(d.conn_itvl * 125 % 100),
+                     (unsigned)(1000 * 100 / (d.conn_itvl * 125)),
+                     d.conn_latency, d.supervision_timeout);
+        }
+        return 0;
+    }
+
     case BLE_GAP_EVENT_ENC_CHANGE:
         ESP_LOGI(TAG, "szyfrowanie/parowanie: status=%d", event->enc_change.status);
         return 0;
@@ -840,6 +854,109 @@ static void selftest_step(uint32_t tick)
 }
 #endif
 
+/*
+ * Prosba o krotszy interwal na linku do PC.
+ *
+ * Ten link jest NAJWEZSZYM OGNIWEM calego lancucha: mysz moze raportowac jak czesto
+ * chce, ale do gry trafi tylko tyle, ile przejdzie tedy. A my dotad o nic tu nie
+ * prosilismy - przyjmowalismy, co dal Windows (15 ms).
+ *
+ * Roznica wobec strony centralnej: tutaj centralem jest Windows, wiec nie mozemy
+ * narzucic parametrow. ble_gap_update_params() wysyla wtedy albo LL Connection
+ * Parameters Request, albo - gdy peer tego nie wspiera - prosbe L2CAP. Odpowiedz
+ * przychodzi ASYNCHRONICZNIE jako BLE_GAP_EVENT_CONN_UPDATE, wiec rc == 0 znaczy
+ * tylko "wyslano", a nie "przyjeto". Dlatego po kazdej probie odczytujemy, co
+ * faktycznie zostalo ustawione.
+ *
+ * Punkt wyjscia: prawdziwy pad Xbox obsluguje po BT 125 Hz, czyli Windows potrafi
+ * utrzymac link 7,5 ms z urzadzeniem tej klasy. Sprawdzamy, czy da go nam.
+ */
+static void negotiate_pad_interval(void)
+{
+    struct ble_gap_conn_desc d;
+    if (ble_gap_conn_find(s_conn_handle, &d) != 0) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "link do PC: interwal %u (%u.%02u ms = %u Hz), timeout nadzoru=%u",
+             d.conn_itvl, (unsigned)(d.conn_itvl * 125 / 100),
+             (unsigned)(d.conn_itvl * 125 % 100),
+             (unsigned)(1000 * 100 / (d.conn_itvl * 125)), d.supervision_timeout);
+
+    /*
+     * Windows zaraz po wlaczeniu notyfikacji konczy jeszcze swoje procedury (wymiana
+     * cech, wlasna aktualizacja parametrow). Prosba wyslana w tej chwili wraca ze
+     * statusem HCI 0x2A (Different Transaction Collision) - zmierzone na sprzecie.
+     * Dajemy mu dokonczyc, zanim o cokolwiek poprosimy.
+     */
+    vTaskDelay(pdMS_TO_TICKS(1500));
+
+    const uint16_t ladder[] = {CONFIG_APP_PAD_CONN_ITVL, 8, 10, 12};
+    /* Kolizja procedur jest przejsciowa, wiec kazda wartosc probujemy kilka razy. */
+    const int tries_per_step = 3;
+
+    for (size_t i = 0; i < sizeof(ladder) / sizeof(ladder[0]); i++) {
+        const uint16_t itvl = ladder[i];
+        if (i > 0 && itvl <= CONFIG_APP_PAD_CONN_ITVL) {
+            continue; /* juz probowane jako wartosc z Kconfig */
+        }
+
+        struct ble_gap_conn_desc cur;
+        if (ble_gap_conn_find(s_conn_handle, &cur) != 0) {
+            return; /* link padl */
+        }
+        if (itvl >= cur.conn_itvl) {
+            break; /* dluzszy niz obecny nie ma sensu */
+        }
+
+        for (int t = 0; t < tries_per_step; t++) {
+            const struct ble_gap_upd_params params = {
+                .itvl_min = itvl,
+                .itvl_max = itvl,
+                .latency = 0,
+                .supervision_timeout = cur.supervision_timeout,
+                .min_ce_len = 0,
+                .max_ce_len = 0,
+            };
+            int rc = ble_gap_update_params(s_conn_handle, &params);
+            if (rc != 0) {
+                /* Odmowa NASZEJ strony (host albo kontroler C3), jeszcze przed eterem. */
+                ESP_LOGW(TAG, "  %u.%02u ms: nasza strona nie wyslala prosby, rc=%d (HCI 0x%02x)",
+                         (unsigned)(itvl * 125 / 100), (unsigned)(itvl * 125 % 100),
+                         rc, rc >= 0x200 ? (unsigned)(rc - 0x200) : 0u);
+                break; /* kolejna proba tej samej wartosci nic nie zmieni */
+            }
+
+            ESP_LOGI(TAG, "  %u.%02u ms: prosba %d/%d wyslana, czekam na decyzje Windows",
+                     (unsigned)(itvl * 125 / 100), (unsigned)(itvl * 125 % 100),
+                     t + 1, tries_per_step);
+            vTaskDelay(pdMS_TO_TICKS(2500));
+
+            struct ble_gap_conn_desc now;
+            if (ble_gap_conn_find(s_conn_handle, &now) != 0) {
+                return; /* link padl w trakcie */
+            }
+            if (now.conn_itvl <= itvl) {
+                ESP_LOGI(TAG, "  UZYSKANE: interwal %u (%u.%02u ms = %u Hz)",
+                         now.conn_itvl, (unsigned)(now.conn_itvl * 125 / 100),
+                         (unsigned)(now.conn_itvl * 125 % 100),
+                         (unsigned)(1000 * 100 / (now.conn_itvl * 125)));
+                return;
+            }
+        }
+        ESP_LOGW(TAG, "  %u.%02u ms: Windows nie skrocil interwalu po %d probach",
+                 (unsigned)(itvl * 125 / 100), (unsigned)(itvl * 125 % 100), tries_per_step);
+    }
+
+    struct ble_gap_conn_desc fin;
+    if (ble_gap_conn_find(s_conn_handle, &fin) == 0) {
+        ESP_LOGW(TAG, "  zostaje interwal %u (%u.%02u ms = %u Hz)",
+                 fin.conn_itvl, (unsigned)(fin.conn_itvl * 125 / 100),
+                 (unsigned)(fin.conn_itvl * 125 % 100),
+                 (unsigned)(1000 * 100 / (fin.conn_itvl * 125)));
+    }
+}
+
 static void gamepad_task(void *arg)
 {
     ble_stack_wait_synced(portMAX_DELAY);
@@ -859,9 +976,22 @@ static void gamepad_task(void *arg)
 
     const TickType_t period = pdMS_TO_TICKS(1000 / CONFIG_APP_REPORT_RATE_HZ);
     uint32_t tick = 0;
+    bool itvl_negotiated = false;
     while (true) {
         vTaskDelay(period > 0 ? period : 1);
         tick++;
+
+        /*
+         * Dopiero po wlaczeniu notyfikacji przez PC - wtedy link jest juz zestawiony
+         * i zaszyfrowany, a Windows skonczyl odkrywanie uslug. Raz na polaczenie.
+         */
+        if (ble_gamepad_is_ready() && !itvl_negotiated) {
+            itvl_negotiated = true;
+            negotiate_pad_interval();
+        }
+        if (s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+            itvl_negotiated = false;
+        }
 #if CONFIG_APP_GAMEPAD_SELFTEST
         selftest_step(tick);
 #endif

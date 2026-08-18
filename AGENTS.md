@@ -1222,6 +1222,41 @@ drabinka jest w kodzie na stałe.
 Drabinka zostaje włączona także dlatego, że nie wpisuje wyniku na sztywno: gdyby przyszła
 wersja IDF albo inna liczba linków dopuszczała krótszy interwał, firmware sam go weźmie.
 
+#### Link do PC: 7,5 ms, czyli 133 Hz — i sprostowanie
+
+Napisałem wcześniej, że „prawdziwy pad Xbox po Bluetooth pracuje na tych samych 15 ms".
+**To była ekstrapolacja z naszego linku, nie pomiar, i była błędna.** Właściciel zwrócił
+uwagę, że pad Xbox obsługuje po BT 125 Hz — i miał rację.
+
+Na tym linku centralem jest Windows, więc nie narzucamy parametrów; peryferial może tylko
+poprosić (`ble_gap_update_params()` przechodzi wtedy na LL Connection Parameters Request
+albo na L2CAP). Dorobiona prośba (`negotiate_pad_interval()` w `ble_gamepad.c`) pokazała
+trzy rzeczy:
+
+1. **Windows daje 7,5 ms.** Zmierzone: `link do PC: interwal 6 (7.50 ms = 133 Hz)`.
+   Wcześniej w logach było 15 ms, potem 10 ms — wartość zmieniała się po ponownym
+   sparowaniu, więc nie była żadną stałą, tylko wynikiem negocjacji.
+2. **Odpowiedź jest asynchroniczna.** `rc == 0` z `ble_gap_update_params()` znaczy tylko
+   „wysłano"; wynik przychodzi jako `BLE_GAP_EVENT_CONN_UPDATE` ze statusem. Dlatego po
+   każdej próbie odczytujemy `conn_itvl` i patrzymy, co faktycznie jest.
+3. **Prośba wysłana za wcześnie wraca z kolizją.** Pierwsze podejście, wysłane 10 ms po
+   `PC wlaczyl notyfikacje raportu`, dało `status=554`, czyli HCI `0x2A`
+   (Different Transaction Collision) — Windows kończył jeszcze swoje procedury. Stąd
+   1,5 s odczekania przed pierwszą próbą i po trzy podejścia na każdą wartość.
+
+Ważne rozróżnienie, które log teraz robi wprost: `nasza strona nie wyslala prosby`
+(odmówił nasz host albo kontroler C3, jeszcze przed eterem) kontra
+`Windows nie skrocil interwalu` (prośba poszła, decyzja była po drugiej stronie).
+
+Konsekwencja dla całości: **najwęższym ogniwem nie jest już pad, a wejścia.** Pad idzie
+z PC na 7,5 ms (133 Hz), a klawiatura i mysz na 15 ms (66 Hz), bo tam limit narzuca nasz
+kontroler. Stabilność sprawdzona: 100 s z padem na 7,5 ms, bez rozłączeń, heap bez zmian.
+
+Otwarte pytanie (hipoteza właściciela): skoro link do PC pracuje teraz na 7,5 ms, czy
+kontroler nadal odrzuci 7,5 ms dla myszy? Jeśli jego reguła dotyczyła najdłuższego
+interwału w systemie albo wspólnej siatki, to teraz sytuacja jest inna. Drabinka po stronie
+wejść jest w kodzie, więc wystarczy obudzić urządzenia i przeczytać log.
+
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 
 Źródło: `D:\wysypisko\openlara_esp32\retro-go\openlara\components\OpenLara\src\platform\retrogo\`
