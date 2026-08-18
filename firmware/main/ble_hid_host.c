@@ -1257,11 +1257,32 @@ static void try_connect_candidates(void)
 static void scan_round(void)
 {
     struct ble_gap_disc_params dp = {
+        /*
+         * 100 % duty cycle: window equals interval. We only scan until the devices are
+         * connected, so there is no power argument for listening part-time, and every
+         * missed advertising event can cost seconds.
+         */
         .itvl = 96,   /* 60 ms in units of 0.625 ms */
-        .window = 48, /* 30 ms - a 50 % duty cycle; aggressive, but we only scan until connected */
+        .window = 96, /* 60 ms - listen continuously */
         .filter_policy = 0,
         .limited = 0,
-        .passive = 0,
+        /*
+         * PASSIVE scanning, i.e. we never transmit SCAN_REQ.
+         *
+         * Why this changed: a keyboard advertising at rssi -70 was heard about once per
+         * minute, while a Microsoft beacon at -84 - fourteen decibels weaker - was heard
+         * 20 to 29 times in every six-second round. Signal strength and duty cycle
+         * therefore explain nothing. What differs between those two is that the beacon is
+         * non-connectable and gets no scan request from us, while the keyboard is
+         * connectable and we answered every one of its advertisements with a SCAN_REQ.
+         *
+         * We lose nothing by going quiet: this keyboard already puts everything we need
+         * in the advertising payload itself - flags, UUID 0x1812, appearance 0x03C1 and
+         * the full name in 31 bytes - so there is no information left in a scan response
+         * for it. Devices that do hide their name in a scan response are still recognised
+         * by UUID, appearance, an existing bond or directed advertising.
+         */
+        .passive = 1,
         /* CRITICAL: the keyboard does not put its full name in the first ADV packet,
          * and the duplicate filter used to swallow the later ones (AGENTS.md 4.4). */
         .filter_duplicates = 0,
