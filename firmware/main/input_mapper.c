@@ -1,21 +1,21 @@
 /*
- * Etap 3: mapowanie wejsc na pada.
+ * Maps inputs onto the gamepad.
  *
- * Zadanie budzi sie CONFIG_APP_REPORT_RATE_HZ razy na sekunde, zdejmuje snapshot
- * stanu z ble_hid_host i przelicza go na raport pada. Wysylka i tak idzie tylko
- * przy zmianie stanu - o to dba ble_gamepad_send().
+ * The task wakes CONFIG_APP_REPORT_RATE_HZ times per second, takes a snapshot of the
+ * state from ble_hid_host and turns it into a gamepad report. Sending only happens on
+ * a state change - ble_gamepad_send() takes care of that.
  *
- * Mapowanie (klawisze podane jako USB HID keycodes):
- *   lewy analog   <- WASD
- *   prawy analog  <- ruch myszy (przyrosty, skalowane i przycinane)
- *   krzyzak       <- strzalki (tylko profil Xbox - generyczny nie ma hat switcha)
- *   przycisk 1..3 <- lewy / prawy / srodkowy przycisk myszy
- *   przycisk 4    <- spacja
- *   przycisk 5..6 <- lewy Shift / lewy Ctrl
- *   przycisk 7..12<- E, Q, R, F, Tab, Esc
+ * Mapping (keys given as USB HID keycodes):
+ *   left stick    <- WASD
+ *   right stick   <- mouse motion (deltas, scaled and clamped)
+ *   D-pad         <- arrow keys (Xbox profile only - the generic one has no hat switch)
+ *   button 1..3   <- left / right / middle mouse button
+ *   button 4      <- space
+ *   button 5..6   <- left Shift / left Ctrl
+ *   button 7..12  <- E, Q, R, F, Tab, Esc
  *
- * Numery przyciskow sa umowne: na kontrolki pada Xbox tlumaczy je ble_gamepad.c
- * (tablica s_xbox_ctrl), zeby mapper nie musial wiedziec, jaki profil jest aktywny.
+ * The button numbers are nominal: ble_gamepad.c translates them into Xbox controls
+ * (table s_xbox_ctrl) so that this module does not need to know which profile is active.
  */
 
 #include "input_mapper.h"
@@ -51,12 +51,12 @@ static const char *TAG = "mapper";
 #define KEY_DOWN  0x51
 #define KEY_UP    0x52
 
-/* Bitmapa modyfikatorow z bajtu 0 raportu klawiatury */
+/* Modifier bitmap from byte 0 of the keyboard report */
 #define MOD_LCTRL  0x01
 #define MOD_LSHIFT 0x02
 
-/* Pelne wychylenie osi. Deskryptor deklaruje zakres -127..127, ale trzymamy sie
- * 127 tylko dla kierunkow prostych - patrz stick_from_wasd(). */
+/* Full axis deflection. The descriptor declares -127..127, but 127 is only used for
+ * straight directions - see stick_from_wasd(). */
 #define AXIS_MAX 127
 
 static bool key_down(const hid_input_state_t *st, uint8_t keycode)
@@ -70,10 +70,9 @@ static bool key_down(const hid_input_state_t *st, uint8_t keycode)
 }
 
 /*
- * WASD to wejscie cyfrowe, a os analogowa oczekuje wektora. Przy dwoch klawiszach
- * naraz (np. W+D) proste ustawienie obu osi na maksimum daloby wektor o dlugosci
- * 1,41 - w grach objawia sie to szybszym ruchem na skos. Dlatego skos skalujemy
- * przez ~0,707.
+ * WASD is a digital input while an analog axis expects a vector. With two keys held
+ * (e.g. W+D), simply setting both axes to maximum would produce a vector of length
+ * 1.41 - in games that shows up as moving faster diagonally. Hence the ~0.707 scaling.
  */
 static void stick_from_wasd(const hid_input_state_t *st, int8_t *out_x, int8_t *out_y)
 {
@@ -85,13 +84,13 @@ static void stick_from_wasd(const hid_input_state_t *st, int8_t *out_x, int8_t *
         x += 1;
     }
     if (key_down(st, KEY_W)) {
-        y -= 1; /* w HID os Y rosnie w dol */
+        y -= 1; /* in HID the Y axis grows downwards */
     }
     if (key_down(st, KEY_S)) {
         y += 1;
     }
 
-    int magnitude = (x != 0 && y != 0) ? 90 : AXIS_MAX; /* 90 ~= 127 * 0,707 */
+    int magnitude = (x != 0 && y != 0) ? 90 : AXIS_MAX; /* 90 ~= 127 * 0.707 */
     *out_x = (int8_t)(x * magnitude);
     *out_y = (int8_t)(y * magnitude);
 }
@@ -108,21 +107,21 @@ static int8_t clamp_axis(int32_t v)
 }
 
 /*
- * Mysz podaje przyrosty, a galka analogowa ma polozenie bezwzgledne.
+ * A mouse reports deltas, while an analog stick has an absolute position.
  *
- * Pulapka widoczna w logu z plytki: AJ159 Pro raportuje ~20-25 razy na sekunde,
- * a to zadanie chodzi 100 Hz. Przy prostym przeliczeniu "przyrost z tiku -> os"
- * trzy na cztery tiki widza zero, czyli galka skacze miedzy wychyleniem a srodkiem
- * ~20 razy na sekunde. Poniewaz raport pada idzie tylko na zmianie stanu, PC
- * dostaje wtedy serie naprzemiennych R(0,x) i R(0,0) - w grze to wyglada jak
- * drganie, nie jak ruch.
+ * The trap, visible in the device log: the mouse reports ~20-25 times per second while
+ * this task runs at 100 Hz. With a naive "delta of this tick -> axis" mapping, three
+ * ticks out of four see zero, so the stick jumps between deflected and centred ~20
+ * times a second. Since a pad report only goes out on a state change, the PC then
+ * receives an alternating series of R(0,x) and R(0,0) - which feels like jitter, not
+ * movement.
  *
- * Dlatego liczymy srednia kroczaca (EMA) przyrostu ze stala czasowa ~8 tikow
- * (80 ms). Przy rownym ruchu galka trzyma stabilne wychylenie proporcjonalne do
- * predkosci myszy, a po zatrzymaniu wraca do srodka w ~80 ms.
+ * Hence an exponential moving average of the delta with a time constant of ~8 ticks
+ * (80 ms). Under steady motion the stick holds a stable deflection proportional to
+ * mouse speed, and returns to centre ~80 ms after the mouse stops.
  */
-#define EMA_SHIFT 3   /* stala czasowa w tikach: 1 << 3 = 8 */
-#define EMA_FRAC  256 /* arytmetyka staloprzecinkowa, zeby nie gubic wolnych ruchow */
+#define EMA_SHIFT 3   /* time constant in ticks: 1 << 3 = 8 */
+#define EMA_FRAC  256 /* fixed-point arithmetic, so slow movements are not lost */
 
 static int32_t s_ema_x;
 static int32_t s_ema_y;
@@ -130,9 +129,9 @@ static int32_t s_ema_y;
 static int32_t ema_step(int32_t *ema, int32_t sample)
 {
     *ema += ((sample * EMA_FRAC) - *ema) / (1 << EMA_SHIFT);
-    /* Dzielenie calkowitoliczbowe nigdy nie dojdzie do zera przy malej resztce,
-     * a to zostawiloby galke na trwale poza srodkiem. Ponizej 1 zliczenia na tik
-     * i tak nie ma co przenosic. */
+    /* Integer division never quite reaches zero for a small remainder, which would
+     * leave the stick permanently off-centre. Below 1 count per tick there is nothing
+     * worth carrying over anyway. */
     if (sample == 0 && *ema > -EMA_FRAC && *ema < EMA_FRAC) {
         *ema = 0;
     }
@@ -145,8 +144,9 @@ static void stick_from_mouse(const hid_input_state_t *st, int8_t *out_x, int8_t 
     if (div < 1) {
         div = 1;
     }
-    /* Ile sredniego przyrostu na tik ma dawac pelne wychylenie. Przy div=8 to 32,
-     * co wedlug pomiaru z plytki odpowiada spokojnemu ruchowi na ~1/3 zakresu. */
+    /* Average delta per tick that should produce full deflection. At div=24 that is 96
+     * counts per tick; measurements on the reference mouse showed roughly 79 counts per
+     * tick during brisk movement, so that lands around 80 % of the range. */
     int32_t full_scale = div * 4;
 
     int32_t avg_x = ema_step(&s_ema_x, st->mouse_dx);
@@ -160,7 +160,7 @@ static uint16_t buttons_from_state(const hid_input_state_t *st)
 {
     uint16_t b = 0;
 
-    /* Przyciski myszy: bit 0 lewy, bit 1 prawy, bit 2 srodkowy. */
+    /* Mouse buttons: bit 0 left, bit 1 right, bit 2 middle. */
     if (st->mouse_buttons & 0x01) {
         b |= 1u << 0;
     }
@@ -201,8 +201,8 @@ static uint16_t buttons_from_state(const hid_input_state_t *st)
     return b;
 }
 
-/* Krzyzak z klawiszy strzalek. Skladamy bitmape, a zamiane na wartosc hat switcha
- * robi ble_gamepad.c - tylko on wie, jak wyglada raport aktywnego profilu. */
+/* D-pad from the arrow keys. We build a bitmap here; turning it into a hat switch value
+ * is ble_gamepad.c's job - only it knows the report layout of the active profile. */
 static uint8_t dpad_from_keys(const hid_input_state_t *st)
 {
     uint8_t d = 0;
@@ -232,8 +232,8 @@ static void mapper_task(void *arg)
         vTaskDelayUntil(&last_wake, period > 0 ? period : 1);
 
         hid_input_state_t in;
-        /* Zdjecie stanu zeruje akumulatory myszy, wiec kazdy przyrost trafia
-         * do dokladnie jednego raportu pada. */
+        /* Taking the state clears the mouse accumulators, so every delta ends up in
+         * exactly one gamepad report. */
         ble_hid_host_take_state(&in);
 
         gamepad_state_t out = {0};
@@ -243,14 +243,14 @@ static void mapper_task(void *arg)
         out.dpad = dpad_from_keys(&in);
 
         /*
-         * Otwieranie urzadzenia HID to najciezszy moment dla stacku: jeden link robi
-         * dziesiatki procedur GATT (odkrywanie uslug, odczyt Report Map, subskrypcje),
-         * a pozostale dwa sa aktywne. Oba crashe, ktore widzielismy, wypadly wlasnie
-         * wtedy - i oba w wewnetrznych pulach NimBLE (AGENTS.md 4.21, 4.26). Nie
-         * dokladamy do tego ~16 notyfikacji pada na sekunde.
+         * Opening a HID device is the heaviest moment for the stack: one link runs
+         * dozens of GATT procedures (service discovery, Report Map read, subscriptions)
+         * while the other two are active. Both crashes we ever saw landed exactly then,
+         * and both were inside NimBLE's internal pools (AGENTS.md 4.21, 4.26). We do
+         * not add ~16 pad notifications per second on top of that.
          *
-         * Raz, na wejsciu w ten stan, wysylamy raport zerowy, zeby PC nie zostal
-         * z wychylona galka albo wcisnietym przyciskiem na czas przerwy.
+         * One zero report is sent when entering that window, so the PC is not left with
+         * a deflected stick or a held button for its duration.
          */
         static bool was_opening;
         bool opening = ble_hid_host_is_opening();
@@ -258,20 +258,20 @@ static void mapper_task(void *arg)
             if (!was_opening) {
                 gamepad_state_t neutral = {0};
                 ble_gamepad_send(&neutral);
-                ESP_LOGI(TAG, "otwieranie urzadzenia - wstrzymuje raporty pada");
+                ESP_LOGI(TAG, "device open in progress - suspending pad reports");
             }
             was_opening = true;
             continue;
         }
         if (was_opening) {
-            ESP_LOGI(TAG, "otwieranie zakonczone - wracam do raportowania");
+            ESP_LOGI(TAG, "device open finished - resuming pad reports");
             was_opening = false;
         }
 
         bool sent = ble_gamepad_send(&out);
 
-        /* Log tylko przy realnej zmianie i nie czesciej niz raz na 250 ms -
-         * inaczej ruch myszy zalalby konsole. */
+        /* Log only on a real change and no more than once per 250 ms - otherwise mouse
+         * movement would flood the console. */
         if (sent) {
             int64_t now = esp_timer_get_time();
             bool changed = memcmp(&out, &prev_logged, sizeof(out)) != 0;
@@ -290,7 +290,7 @@ esp_err_t input_mapper_start(void)
     if (xTaskCreate(mapper_task, "mapper", 3072, NULL, 5, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
-    ESP_LOGI(TAG, "mapowanie wejsc na pada wlaczone (%d Hz, dzielnik myszy %d)",
+    ESP_LOGI(TAG, "input mapping enabled (%d Hz, mouse divisor %d)",
              CONFIG_APP_REPORT_RATE_HZ, CONFIG_APP_MOUSE_SCALE_DIV);
     return ESP_OK;
 }
