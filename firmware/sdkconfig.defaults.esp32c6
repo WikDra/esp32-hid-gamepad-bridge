@@ -1,0 +1,20 @@
+# MuseLab nanoESP32-C6 v1.0.
+#
+# Console over native USB (the USB Serial/JTAG peripheral), exactly as on the C3:
+# one USB-C cable carries power, flashing and the log. The same peripheral also
+# exposes JTAG, so GDB is available without extra hardware - which matters for this
+# project, whose two historical crashes lived inside NimBLE's internal structures.
+CONFIG_IDF_TARGET="esp32c6"
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# NOTE ON THE CONTROLLER: the C6 uses a completely different controller Kconfig
+# namespace than the C3. The C3 has BT_CTRL_BLE_MAX_ACT (controller/esp32c3/Kconfig.in),
+# whereas the C6 has BT_LE_* options (controller/esp32c6/Kconfig.in). Crucially,
+# BT_LE_MAX_CONNECTIONS there is declared "depends on !BT_NIMBLE_ENABLED", so with
+# NimBLE enabled it is not the knob that counts - BT_NIMBLE_MAX_CONNECTIONS from the
+# shared sdkconfig.defaults still governs the number of links.
+#
+# That also means the AGENTS.md 4.28 fix (arrays in ble_gap.c indexed by conn_handle
+# but dimensioned by connection count) applies here unchanged, because it is a host-side
+# bug, not a controller one.

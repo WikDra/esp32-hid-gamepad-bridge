@@ -4,3 +4,8 @@
 CONFIG_IDF_TARGET="esp32c3"
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# Controller activity slots. The default of 6 fits 3 connections + scanning +
+# advertising. Set explicitly so it is visible that this is a deliberate value.
+# C3-only option: the C6 controller uses the BT_LE_* namespace instead.
+CONFIG_BT_CTRL_BLE_MAX_ACT=6

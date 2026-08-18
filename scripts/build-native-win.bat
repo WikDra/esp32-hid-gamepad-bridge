@@ -12,20 +12,31 @@ REM so as not to clash with the WSL build: there the absolute paths are /mnt/...
 REM they are Windows paths, and CMake will not tolerate both in one directory.
 REM
 REM Usage:
-REM   scripts\build-native-win.bat              - build
-REM   scripts\build-native-win.bat menuconfig   - configure
-REM   scripts\build-native-win.bat fullclean    - clean
+REM   scripts\build-native-win.bat                      - build for esp32c3
+REM   scripts\build-native-win.bat esp32c6              - build for esp32c6
+REM   scripts\build-native-win.bat esp32c6 menuconfig   - configure that target
+REM   scripts\build-native-win.bat menuconfig           - configure esp32c3
+REM   scripts\build-native-win.bat esp32c3 fullclean    - clean
 
 setlocal
 REM The ESP-IDF path can be overridden with IDF_WIN, e.g.
 REM   set IDF_WIN=D:\esp\v5.5.1\esp-idf
 if "%IDF_WIN%"=="" set IDF_WIN=%USERPROFILE%\esp\v5.5.1\esp-idf
 set IDF_DIR=%IDF_WIN%
+
+REM First argument is the target when it starts with "esp32"; otherwise it is treated
+REM as an idf.py action and the target falls back to esp32c3.
 set TARGET=esp32c3
+set ACTION=%1
+echo %1 | findstr /b /c:"esp32" >nul
+if not errorlevel 1 (
+    set TARGET=%1
+    set ACTION=%2
+)
+if "%ACTION%"=="" set ACTION=build
+
 set BUILD_DIR=build.win.%TARGET%
 set SDKCONFIG=sdkconfig.win.%TARGET%
-set ACTION=%1
-if "%ACTION%"=="" set ACTION=build
 
 if not exist "%IDF_DIR%\export.bat" (
     echo ERROR: no ESP-IDF found in %IDF_DIR%

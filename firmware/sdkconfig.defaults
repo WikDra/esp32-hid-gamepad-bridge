@@ -58,9 +58,8 @@ CONFIG_BT_NIMBLE_MAX_CONNECTIONS=9
 # existing bond, potentially the PC's. The pad then needs re-pairing for no visible
 # reason.
 CONFIG_BT_NIMBLE_MAX_BONDS=5
-# The default is 6, which fits 3 connections + scanning + advertising. Set explicitly
-# so it is visible that this is a deliberate value rather than an accident.
-CONFIG_BT_CTRL_BLE_MAX_ACT=6
+# NOTE: BT_CTRL_BLE_MAX_ACT lives in sdkconfig.defaults.esp32c3, because it is a
+# C3-only controller option - the C6 controller uses the BT_LE_* namespace instead.
 
 # GATT client procedure pool. The default of 4 is sized for a single link, whereas
 # here esp_hidh runs full service discovery on one device while another streams
