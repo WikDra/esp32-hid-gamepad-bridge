@@ -44,8 +44,8 @@ static SemaphoreHandle_t s_ble_hidh_cb_semaphore = NULL;
 static int services_discovered;
 
 /*
- * LOKALNA LATKA: oryginal ma te rozmiary wpisane liczbami w trzech miejscach i nie
- * sprawdza ich przy zapisie. Nazwane stale pozwalaja pilnowac granic w callbackach.
+ * LOCAL PATCH: upstream has these sizes written out as literals in three places and
+ * never checks them on write. Named constants let the callbacks enforce the bounds.
  */
 #define BLE_HIDH_MAX_SERVICES 10
 #define BLE_HIDH_MAX_CHRS     20
@@ -181,11 +181,11 @@ svc_disced(uint16_t conn_handle, const struct ble_gatt_error *error,
     status = error->status;
     switch (error->status) {
     case 0:
-        /* LOKALNA LATKA: bez tego warunku urzadzenie z wieksza liczba uslug niz
-         * rozmiar tablicy nadpisuje stos wolajacego. Oryginal ma tu tylko komentarz
-         * "fatal if services are more than 10" i zaden test. */
+        /* LOCAL PATCH: without this check a device exposing more services than the array
+         * size overwrites the caller's stack. Upstream only has the comment
+         * "fatal if services are more than 10" here and no test at all. */
         if (services_discovered >= BLE_HIDH_MAX_SERVICES) {
-            ESP_LOGE(TAG, "za duzo uslug (>%d), pomijam nadmiar", BLE_HIDH_MAX_SERVICES);
+            ESP_LOGE(TAG, "too many services (>%d), skipping the excess", BLE_HIDH_MAX_SERVICES);
             break;
         }
         memcpy(service_result + services_discovered, service, sizeof(struct ble_gatt_svc));
@@ -238,9 +238,9 @@ chr_disced(uint16_t conn_handle, const struct ble_gatt_error *error,
     case 0:
         ESP_LOGD(TAG, "Char discovered : def handle : %04x, val_handle : %04x, properties : %02x\n, uuid : %04x",
                  chr->def_handle, chr->val_handle, chr->properties, ble_uuid_u16(&chr->uuid.u));
-        /* LOKALNA LATKA: kontrola granicy, oryginal jej nie ma. */
+        /* LOCAL PATCH: bounds check, absent upstream. */
         if (chrs_discovered >= BLE_HIDH_MAX_CHRS) {
-            ESP_LOGE(TAG, "za duzo charakterystyk (>%d), pomijam nadmiar", BLE_HIDH_MAX_CHRS);
+            ESP_LOGE(TAG, "too many characteristics (>%d), skipping the excess", BLE_HIDH_MAX_CHRS);
             break;
         }
         memcpy(chrs + chrs_discovered, chr, sizeof(struct ble_gatt_chr));
@@ -282,9 +282,9 @@ desc_disced(uint16_t conn_handle, const struct ble_gatt_error *error,
     case 0:
         ESP_LOGD(TAG, "DISC discovered : handle : %04x, uuid : %04x",
                  dsc->handle, ble_uuid_u16(&dsc->uuid.u));
-        /* LOKALNA LATKA: kontrola granicy, oryginal jej nie ma. */
+        /* LOCAL PATCH: bounds check, absent upstream. */
         if (dscs_discovered >= BLE_HIDH_MAX_DSCS) {
-            ESP_LOGE(TAG, "za duzo deskryptorow (>%d), pomijam nadmiar", BLE_HIDH_MAX_DSCS);
+            ESP_LOGE(TAG, "too many descriptors (>%d), skipping the excess", BLE_HIDH_MAX_DSCS);
             break;
         }
         memcpy(dscr + dscs_discovered, dsc, sizeof(struct ble_gatt_dsc));
@@ -332,18 +332,18 @@ static void read_device_services(esp_hidh_dev_t *dev)
     int rc;
 
     /*
-     * ==== LOKALNA LATKA (esp32-hid-gamepad-bridge, AGENTS.md 4.27) ====
+     * ==== LOCAL PATCH (esp32-hid-gamepad-bridge, AGENTS.md 4.27) ====
      *
-     * services_discovered jest w tym pliku statyczne i NIE BYLO ZEROWANE NIGDZIE.
-     * chrs_discovered i dscs_discovered sa resetowane (linie 502 i 508 oryginalu),
-     * services_discovered - nie. Licznik rosl wiec przez caly czas zycia firmware'u,
+     * services_discovered is static in this file and WAS NEVER RESET ANYWHERE.
+     * chrs_discovered and dscs_discovered are reset (lines 502 and 508 upstream),
+     * services_discovered is not. The counter therefore grew for the entire lifetime of
      * a svc_disced() pisze pod service_result + services_discovered, gdzie
-     * service_result to tablica 10 elementow NA STOSIE WOLAJACEGO.
+     * service_result is a 10-element array ON THE CALLER'S STACK.
      *
-     * Skutek na sprzecie: dwa pierwsze urzadzenia laczyly sie zawsze, a trzecie
+     * Effect on hardware: the first two devices always connected, and the third open
      * otwarcie (czyli powrot urzadzenia po uspieniu) niszczylo ramke stosu zadania
-     * hid_open. Objawialo sie to jako "Instruction access fault" z MEPC=RA=smiec
-     * i deterministycznym zestawem rejestrow, w ktorych dalo sie rozpoznac wpisy
+     * hid_open. It showed up as an "Instruction access fault" with MEPC=RA=garbage
+     * and a deterministic set of registers in which the entries of
      * struct ble_gatt_svc (UUID 0x1800/0x1801/0x180A/0x180F/0x1812 i zakresy uchwytow).
      */
     services_discovered = 0;
@@ -633,13 +633,13 @@ on_write(uint16_t conn_handle,
     assert(conn_id == conn_handle);
 
     /*
-     * LOKALNA LATKA (diagnostyka): oryginal loguje to na DEBUG, czyli w praktyce
-     * niewidocznie. A to jest WLASCIWY wynik subskrypcji - zapis do CCCD. Widoczne
-     * w logu "Subscribe complete" pochodzi z register_for_notify(), ktore pisze do
-     * uchwytu WARTOSCI charakterystyki, wiec jego ATT 0x03 (Write Not Permitted)
-     * jest normalny i myli przy diagnozie.
+     * LOCAL PATCH (diagnostics): upstream logs this at DEBUG, i.e. invisibly in
+     * practice. Yet this is the REAL subscription result - the CCCD write. The
+     * "Subscribe complete" line visible in the log comes from register_for_notify(),
+     * which writes to the characteristic VALUE handle, so its ATT 0x03 (Write Not
+     * Permitted) is normal there and misleads during diagnosis.
      */
-    MODLOG_DFLT(INFO, "zapis CCCD: status=%d conn_handle=%d attr_handle=%d\n",
+    MODLOG_DFLT(INFO, "CCCD write: status=%d conn_handle=%d attr_handle=%d\n",
                 error->status, conn_handle, attr->handle);
     SEND_CB();
 
@@ -671,10 +671,10 @@ static void attach_report_listeners(esp_hidh_dev_t *dev)
     while (report) {
         /* subscribe to notifications */
         if ((report->permissions & BLE_GATT_CHR_PROP_NOTIFY) != 0 && report->protocol_mode == ESP_HID_PROTOCOL_MODE_REPORT) {
-            /* LOKALNA LATKA (diagnostyka): bez tego nie widac, ktory raport
-             * w ogole dostal uchwyt CCCD. Brak uchwytu = brak notyfikacji,
-             * czyli urzadzenie milczy, mimo ze jest podlaczone. */
-            ESP_LOGI(TAG, "subskrypcja: id=%u typ=%u handle=%u ccc_handle=%u",
+            /* LOCAL PATCH (diagnostics): without this it is invisible which report
+             * even got a CCCD handle. No handle = no notifications, i.e. the device
+             * stays silent even though it is connected. */
+            ESP_LOGI(TAG, "subscribing: id=%u type=%u handle=%u ccc_handle=%u",
                      report->report_id, report->report_type, report->handle,
                      report->ccc_handle);
             register_for_notify(dev->ble.conn_id, report->handle);
@@ -683,7 +683,7 @@ static void attach_report_listeners(esp_hidh_dev_t *dev)
                 write_char_descr(dev->ble.conn_id, report->ccc_handle, 2, (uint8_t *)&ccc_data);
             }
         } else if (report->report_type == ESP_HID_REPORT_TYPE_INPUT) {
-            ESP_LOGW(TAG, "raport INPUT id=%u POMINIETY w subskrypcji (permissions=0x%02x, protocol_mode=%u)",
+            ESP_LOGW(TAG, "INPUT report id=%u SKIPPED for subscription (permissions=0x%02x, protocol_mode=%u)",
                      report->report_id, report->permissions, report->protocol_mode);
         }
         report = report->next;

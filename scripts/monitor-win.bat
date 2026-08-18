@@ -1,10 +1,10 @@
 @echo off
-REM Konsola ESP32 z Windows. Sam znajduje pythona z ESP-IDF, bo systemowy python
-REM zwykle nie ma pyserial.
+REM ESP32 console from Windows. Finds the ESP-IDF Python by itself, because the
+REM system Python usually lacks pyserial.
 REM
-REM   scripts\monitor-win.bat [port COM] [sekundy] [reset]
+REM   scripts\monitor-win.bat [COM port] [seconds] [reset]
 REM   scripts\monitor-win.bat COM6 30
-REM   scripts\monitor-win.bat COM6 30 reset    <- restartuje plytke, log od pierwszej linii
+REM   scripts\monitor-win.bat COM6 30 reset    <- reboots the board, log from line one
 setlocal
 set PORT=%1
 if "%PORT%"=="" set PORT=COM6
@@ -20,8 +20,8 @@ for /d %%D in ("%USERPROFILE%\.espressif\python_env\idf*") do (
     if exist "%%D\Scripts\python.exe" set PY=%%D\Scripts\python.exe
 )
 if "%PY%"=="" (
-    echo Nie znalazlem pythona z ESP-IDF w %USERPROFILE%\.espressif\python_env
-    echo Probuje systemowego - jesli zabraknie pyserial, to jest przyczyna.
+    echo No ESP-IDF Python found in %USERPROFILE%\.espressif\python_env
+    echo Trying the system one - if pyserial is missing, that is why.
     set PY=python
 )
 

@@ -1,130 +1,133 @@
-# Wspolne ustawienia projektu. Kazda pozycja ma uzasadnienie - patrz AGENTS.md.
+# Shared project settings. Every entry has a reason - see AGENTS.md.
 
-# --- Flash / partycje ---
-# 4 MB flash na C3 SuperMini. Bez OTA (PoC), wiec jedna duza partycja aplikacji.
+# --- Flash / partitions ---
+# 4 MB flash on the C3 SuperMini. No OTA, so one large application partition.
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 
-# --- Bluetooth: tylko BLE, stack NimBLE ---
-# NimBLE, nie Bluedroid: C3 nie ma Bluetooth Classic, a NimBLE zjada wyraznie mniej
-# internal SRAM (C3 nie ma PSRAM, wiec nie ma gdzie uciec - AGENTS.md 4.5).
+# --- Bluetooth: BLE only, NimBLE stack ---
+# NimBLE rather than Bluedroid: the C3 has no Bluetooth Classic, and NimBLE uses
+# noticeably less internal SRAM (the C3 has no PSRAM, so there is nowhere to escape
+# to - AGENTS.md 4.5).
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
 
-# Gdy urzadzenie zapomni bondu (np. po sparowaniu z innym hostem), probuje sparowac
-# sie od nowa, mimo ze my wciaz mamy stary klucz. NimBLE zglasza wtedy
-# BLE_GAP_EVENT_REPEAT_PAIRING - ale pyta o decyzje FUNKCJE ZWROTNA POLACZENIA
-# (ble_gap_repeat_pairing_event() wola ble_gap_call_conn_event_cb), a dla linkow
-# centralnych trzyma ja esp_hidh, ktory tego zdarzenia nie obsluguje. Globalny
-# listener tu nie pomoze, bo jego wynik jest ignorowany. Ta opcja kaze wiec stackowi
-# samemu usunac nieaktualny bond i powtorzyc parowanie.
+# When a device forgets its bond (e.g. after pairing with another host) it tries to
+# pair again even though we still hold the old key. NimBLE then raises
+# BLE_GAP_EVENT_REPEAT_PAIRING - but it asks the CONNECTION CALLBACK for a decision
+# (ble_gap_repeat_pairing_event() calls ble_gap_call_conn_event_cb), and for central
+# links that callback belongs to esp_hidh, which does not handle the event. A global
+# listener does not help either, because its return value is ignored. This option
+# therefore tells the stack to delete the stale bond and retry pairing by itself.
 CONFIG_BT_NIMBLE_HANDLE_REPEAT_PAIRING_DELETION=y
 
-# Trzy jednoczesne linki: 2x central (klawiatura, mysz) + 1x peripheral (PC).
+# Three simultaneous links: 2x central (keyboard, mouse) + 1x peripheral (PC).
 #
-# ALE wartosc jest USTAWIONA WYZEJ NIZ 3 CELOWO, i to jest wazne. W ble_gap.c:323
-# NimBLE deklaruje cztery tablice wymiarowane liczba polaczen:
+# BUT the value is SET HIGHER THAN 3 ON PURPOSE, and that matters. In ble_gap.c:323
+# NimBLE declares four arrays dimensioned by the number of connections:
 #
 #   uint16_t g_max_tx_time[MYNEWT_VAL(BLE_MAX_CONNECTIONS) + 1];
 #
-# i indeksuje je... uchwytem polaczenia:
+# and indexes them... by connection handle:
 #
 #   g_max_tx_time[conn_handle] = event.data_len_chg.max_tx_time;   /* ble_gap.c:2963 */
 #
-# conn_handle nadaje kontroler i NIE jest to maly indeks ograniczony liczba polaczen.
-# U nas uchwyty to 1, 3 i 4, a przy limicie 3 tablica ma 4 elementy (indeksy 0-3),
-# wiec zapis dla uchwytu 4 wychodzi dokladnie jeden element za koniec:
+# conn_handle is assigned by the controller and is NOT a small index bounded by the
+# number of connections. Here the handles are 1, 3 and 4, and with a limit of 3 the
+# array has 4 elements (indices 0-3), so the write for handle 4 lands exactly one
+# element past the end:
 #
 #   g_max_tx_time      @ 0x3fc97a24, 4 * 2 B = 8 B  ->  0x3fc97a24..0x3fc97a2b
 #   g_max_tx_time[4]     0x3fc97a24 + 8 = 0x3fc97a2c
-#   ble_gap_update_entries @ 0x3fc97a2c        <- glowa listy GAP, nadpisana
+#   ble_gap_update_entries @ 0x3fc97a2c        <- head of the GAP list, overwritten
 #
-# Wpisywana wartosc to wynegocjowany maksymalny czas TX, czyli 0x848 = 2120 us
-# (maksimum ze specyfikacji) - i dokladnie taki wskaznik-smiec widzielismy
-# w crashu z AGENTS.md 4.21 (MTVAL 0x858 = 0x848 + offset pola exp_os_ticks).
+# The value written is the negotiated maximum TX time, i.e. 0x848 = 2120 us (the
+# spec maximum) - and that is exactly the garbage pointer we saw in the crash in
+# AGENTS.md 4.21 (MTVAL 0x858 = 0x848 + the offset of the exp_os_ticks field).
 #
-# Dlatego padalo tylko wtedy, gdy uchwyt 4 dostawala MYSZ: ona negocjuje LE Data
-# Length Extension, a klawiatura go nie wspiera (hci_err=0x21A), wiec dla niej
-# zdarzenie data_len_chg nie przychodzi i zapisu nie ma.
+# That is why it only crashed when the MOUSE got handle 4: the mouse negotiates LE
+# Data Length Extension while the keyboard does not support it (hci_err=0x21A), so
+# for the keyboard the data_len_chg event never arrives and the write never happens.
 #
-# 9 to maksimum dla C3 (range 1 9), czyli tablice maja 10 elementow i pokrywaja
-# kazdy uchwyt, jaki kontroler z BT_CTRL_BLE_MAX_ACT=6 moze wydac.
+# 9 is the maximum for the C3 (range 1 9), so the arrays hold 10 elements and cover
+# every handle a controller with BT_CTRL_BLE_MAX_ACT=6 can hand out.
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=9
-# Tyle samo bondow, ile polaczen, plus zapas. Na sprzecie widac "bondow w NVS: 3"
-# przy trzech urzadzeniach, czyli limit 3 byl wypelniony co do sztuki - a wtedy
-# kazde nowe parowanie (np. klawiatura wracajaca z nowym adresem tozsamosci)
-# wyrzuca jakis istniejacy bond, potencjalnie bond PC. Wtedy pad trzeba parowac
-# od nowa bez zadnej widocznej przyczyny.
+# As many bonds as connections, plus headroom. On hardware the log showed "bonds in
+# NVS: 3" with three devices, i.e. a limit of 3 was filled exactly - and then every
+# new pairing (e.g. a keyboard returning with a new identity address) evicts some
+# existing bond, potentially the PC's. The pad then needs re-pairing for no visible
+# reason.
 CONFIG_BT_NIMBLE_MAX_BONDS=5
-# Domyslnie 6, czyli 3 polaczenia + skan + advertising sie mieszcza. Ustawione
-# wprost, zeby bylo widoczne, ze to swiadoma wartosc, a nie przypadek.
+# The default is 6, which fits 3 connections + scanning + advertising. Set explicitly
+# so it is visible that this is a deliberate value rather than an accident.
 CONFIG_BT_CTRL_BLE_MAX_ACT=6
 
-# Pula procedur klienta GATT. Domyslne 4 jest wymiarowane pod jeden link, a u nas
-# esp_hidh robi pelne odkrywanie uslug na jednym urzadzeniu, podczas gdy drugie
-# strumieniuje raporty, a pad wysyla notyfikacje do PC. W crashu z 16.08.2026
-# (Instruction access fault, MEPC=0x3fc98678) feralny adres lezal DOKLADNIE
-# wewnatrz ble_gattc_proc_mem, czyli pamieci tej puli - stad podniesienie.
+# GATT client procedure pool. The default of 4 is sized for a single link, whereas
+# here esp_hidh runs full service discovery on one device while another streams
+# reports and the pad notifies the PC. In one crash (Instruction access fault,
+# MEPC=0x3fc98678) the faulting address lay EXACTLY inside ble_gattc_proc_mem, the
+# memory of this pool - hence the increase.
 CONFIG_BT_NIMBLE_GATT_MAX_PROCS=12
 
-# Obie role naraz - to jest caly sens projektu. Domyslnie oba sa y, ale niech
-# bedzie wpisane, bo wylaczenie ktorejkolwiek cicho zabija pol aplikacji.
+# Both roles at once - that is the entire point of the project. Both default to y,
+# but they are spelled out because disabling either one silently kills half the
+# application.
 CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
 
-# Klucze parowania przezywaja restart. Domyslnie jest "n" - bez tego trzeba by
-# parowac klawiature, mysz i PC po kazdym resecie.
+# Pairing keys survive a reboot. The default is "n" - without this the keyboard, the
+# mouse and the PC would all have to be paired again after every reset.
 CONFIG_BT_NIMBLE_NVS_PERSIST=y
 
-# Bez tego AULA F99 Pro nie odda raportow: czytanie charakterystyk konczy sie
-# bledem ATT "insufficient security" (status=14), a NimBLE samo nie parowalo.
-# UWAGA: opcja istnieje dopiero od IDF 5.4.3 (AGENTS.md 4.1).
+# Without this the keyboard will not hand over its reports: reading characteristics
+# ends with the ATT error "insufficient security" (status=14) and NimBLE would not
+# pair on its own.
+# NOTE: this option only exists from IDF 5.4.3 onwards (AGENTS.md 4.1).
 CONFIG_BT_NIMBLE_GATTC_AUTO_PAIR=y
 
-# Just Works w obie strony: klawiatura i mysz nie maja wyswietlacza ani klawiatury
-# numerycznej do potwierdzania kodu, PC tez tego nie wymaga dla pada.
+# Just Works both ways: the keyboard and mouse have neither a display nor a keypad to
+# confirm a passkey, and the PC does not require one for a gamepad either.
 CONFIG_BT_NIMBLE_SECURITY_ENABLE=y
 CONFIG_BT_NIMBLE_SM_LEGACY=y
 CONFIG_BT_NIMBLE_SM_SC=y
 
-# UWAGA, pulapka: ta opcja nazywa sie "HID service" i brzmi jak rzecz wylacznie
-# serwerowa, ale w esp_hid gatuje ONA CALY plik nimble_hidh.c - czyli rowniez
-# strone HOSTA. Bez niej linker konczy sie bledem "undefined reference to
-# esp_ble_hidh_init". Musi byc "y" nawet dla czystego centrala.
-# Wlaczenie samo z siebie NIE rejestruje zadnej uslugi w GATT: ble_svc_hid_init()
-# jest wolane tylko z nimble_hidd.c, ktorego nie uzywamy (AGENTS.md 4.2).
+# WATCH OUT, TRAP: this option is called "HID service" and sounds like a purely
+# server-side thing, but in esp_hid it gates THE WHOLE of nimble_hidh.c - that is,
+# the HOST side as well. Without it the link fails with "undefined reference to
+# esp_ble_hidh_init". It must be "y" even for a pure central.
+# Enabling it does NOT register any GATT service by itself: ble_svc_hid_init() is
+# called only from nimble_hidd.c, which we do not use (AGENTS.md 4.2).
 CONFIG_BT_NIMBLE_HID_SERVICE=y
-# Jedna instancja uslugi i jeden raport wejsciowy - tyle potrzebuje pad. Domyslne
-# 2 i 3 rezerwuja wieksza strukture, a ble_svc_hid_add() bierze ja przez wartosc
-# (czyli na stos wolajacego).
+# One service instance is all the pad needs. The default of 2 reserves a larger
+# structure, and ble_svc_hid_add() takes it by value (i.e. on the caller's stack).
 CONFIG_BT_NIMBLE_SVC_HID_MAX_INSTANCES=1
-# Te dwie opcje wymiaruja strukture ble_svc_hid_params, ktorej JUZ NIE UZYWAMY:
-# usluga HID pada jest napisana wprost na GATT w ble_gamepad.c, bo ble_svc_hid
-# trzyma dlugosc Report Map w polu uint8_t i obcielaby deskryptor pada Xbox
-# (334 B) do 78 B - patrz AGENTS.md 4.30. Zostawiamy najmniejsze wartosci, zeby
-# nie rezerwowac BSS na nieuzywana usluge. Samej opcji BT_NIMBLE_HID_SERVICE
-# wylaczyc nie mozna, bo gatuje ona takze hosta esp_hidh (4.8).
+# These two options size the ble_svc_hid_params structure, which we NO LONGER USE:
+# the pad's HID service is written directly on GATT in ble_gamepad.c, because
+# ble_svc_hid stores the Report Map length in a uint8_t field and would truncate the
+# Xbox pad descriptor (334 B) to 78 B - see AGENTS.md 4.30. The smallest values are
+# kept so that no BSS is reserved for an unused service. The BT_NIMBLE_HID_SERVICE
+# option itself cannot be disabled, because it also gates the esp_hidh host (4.8).
 CONFIG_BT_NIMBLE_SVC_HID_MAX_RPTS=1
 
-# Klawiatury i myszy BLE agresywnie zasypiaja i rozpadaja polaczenie. Ponawianie
-# w stacku oszczedza nam wlasnej logiki reconnect.
+# BLE keyboards and mice sleep aggressively and drop the connection. Reattempting
+# inside the stack saves us writing our own reconnect logic.
 CONFIG_BT_NIMBLE_ENABLE_CONN_REATTEMPT=y
 CONFIG_BT_NIMBLE_MAX_CONN_REATTEMPT=3
 
-# --- Aplikacja ---
-# NimBLE na poziomie INFO drukuje "GATT procedure initiated: notify" przy KAZDEJ
-# notyfikacji. Przy padzie 100 Hz to zalewa konsole i nie da sie znalezc wlasnych
-# linii - w tescie na sprzecie 60 s logu to bylo ~3000 linii szumu. WARNING
-# zostawia bledy i rzeczy, ktore faktycznie chcemy widziec.
+# --- Application ---
+# At INFO level NimBLE prints "GATT procedure initiated: notify" for EVERY
+# notification. With the pad running at 100 Hz that floods the console and makes our
+# own lines impossible to find - in one 60 s hardware test it was ~3000 lines of
+# noise. WARNING keeps errors and the things we actually want to see.
 CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
 
-# ble_svc_hid_add() dostaje strukture przez wartosc (~800 B przy MAX_RPTS=1),
-# a wolamy je z app_main. Domyslne 3584 B jest zbyt ciasne.
+# The HID service definitions are built from app_main, and the GATT registration
+# path is not frugal with stack. The default of 3584 B is too tight.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=5120
 
-# Etap 3: pad chodzi realnym mapowaniem wejsc, nie wzorcem testowym. Wzorzec
-# zostaje jako narzedzie diagnostyczne - wlaczyc, gdy trzeba sprawdzic sam
-# deskryptor HID w joy.cpl bez klawiatury i myszy.
+# The pad runs on real input mapping, not a test pattern. The pattern remains as a
+# diagnostic tool - enable it when the HID descriptor alone needs checking in
+# joy.cpl, without a keyboard and mouse.
 CONFIG_APP_GAMEPAD_SELFTEST=n

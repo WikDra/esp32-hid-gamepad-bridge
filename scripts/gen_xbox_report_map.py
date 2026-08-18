@@ -1,32 +1,32 @@
 #!/usr/bin/env python3
-"""Generuje firmware/main/xbox_report_map.h z deskryptora pada Xbox.
+"""Generates firmware/main/xbox_report_map.h from the Xbox pad descriptor.
 
-Dlaczego skryptem, a nie recznie: Windows dobiera sterownik XInput po tozsamosci
-urzadzenia i deskryptorze raportu, wiec deskryptor musi byc BAJT W BAJT taki, jak
-w prawdziwym padzie. Przepisywanie 300 bajtow z komentarzami reka to gwarantowana
-literowka, ktorej potem szukalibysmy w zachowaniu Windows, a nie w kodzie.
+Why a script rather than by hand: Windows picks the XInput driver based on the device
+identity and the report descriptor, so the descriptor has to be BYTE FOR BYTE what a
+real pad sends. Retyping 300 commented bytes by hand guarantees a typo that would
+then be hunted in the behaviour of Windows rather than in the code.
 
 Zrodlo: https://github.com/Mystfit/ESP32-BLE-CompositeHID (licencja MIT),
 plik XboxDescriptors.h.
 
-Uzycie (repo referencyjne trafia do .ref/, ktory jest gitignorowany):
+Usage (the reference repo goes into .ref/, which is gitignored):
 
     git clone --depth 1 https://github.com/Mystfit/ESP32-BLE-CompositeHID .ref
     python3 scripts/gen_xbox_report_map.py .ref/XboxDescriptors.h [nazwa_tablicy]
 
 Domyslna tablica to XboxOneS_1914_HIDDescriptor (pad Xbox Series X, model 1914,
-PID 0x0B13). WAZNE: to nie jest dowolny wybor. Sterownik XInput dla BLE w Windows
+PID 0x0B13). IMPORTANT: this is not an arbitrary choice. Windows' XInput driver for
 (C:\\Windows\\INF\\xinputhid.inf, sekcja Btle_Bus = "Bluetooth LE XINPUT compatible
-input device") wiaze sie WYLACZNIE z PID z rodziny 0x0Bxx:
+input device") binds ONLY to PIDs from the 0x0Bxx family:
 
     VID&02045e_PID&0b13, 0b20, 0b21, 0b22, 0b23, 0b24, 0b25, 0b26, 0b27
 
-Pada Xbox One S (model 1708, PID 0x02FD) na tej liscie NIE MA - przy tamtej
-tozsamosci Windows podpina generyczny sterownik HID i gry na XInput pada nie widza.
+The Xbox One S pad (model 1708, PID 0x02FD) is NOT on that list - with that identity
+Windows attaches the generic HID driver and XInput games do not see the pad at all.
 Szczegoly: AGENTS.md 4.32.
 
-Wygenerowany naglowek jest commitowany, wiec do zwyklego budowania repo
-referencyjne nie jest potrzebne.
+The generated header is committed, so a normal build does not need the reference
+repository.
 """
 
 import hashlib
@@ -46,13 +46,13 @@ REPORT_IDS = {
 
 
 def extract_bytes(src_text, array):
-    """Wyciaga tablice bajtow deskryptora ze zrodla C."""
+    """Extracts the descriptor byte array from the C source."""
     start = src_text.find(array)
     if start < 0:
-        raise SystemExit(f"nie znalazlem tablicy {array} w pliku zrodlowym")
+        raise SystemExit(f"array {array} not found in the source file")
     brace = src_text.find("{", start)
     if brace < 0:
-        raise SystemExit("nie znalazlem otwierajacego nawiasu tablicy")
+        raise SystemExit("opening brace of the array not found")
 
     depth = 0
     end = None
@@ -65,7 +65,7 @@ def extract_bytes(src_text, array):
                 end = i
                 break
     if end is None:
-        raise SystemExit("nie znalazlem zamykajacego nawiasu tablicy")
+        raise SystemExit("closing brace of the array not found")
 
     body = src_text[brace + 1:end]
     body = re.sub(r"//[^\n]*", "", body)          # komentarze liniowe
@@ -83,24 +83,24 @@ def extract_bytes(src_text, array):
         elif re.fullmatch(r"\d+", tok):
             out.append(int(tok))
         else:
-            raise SystemExit(f"nieznany token w tablicy: {tok!r}")
+            raise SystemExit(f"unknown token in the array: {tok!r}")
 
     for b in out:
         if not 0 <= b <= 0xFF:
-            raise SystemExit(f"bajt poza zakresem: {b}")
+            raise SystemExit(f"byte out of range: {b}")
     return out
 
 
 def parse_reports(data):
     """Przechodzi deskryptor i liczy dlugosc kazdego raportu z sumy bitow pol.
 
-    Dzieki temu dlugosci w kodzie C nie moga sie rozjechac z deskryptorem - a
-    rozjechanie sie akurat tego jest trudne do zauwazenia, bo host po prostu
-    dostaje raport o innej dlugosci niz sie spodziewa.
+    This keeps the lengths in the C code from drifting away from the descriptor - and
+    that particular drift is hard to spot, because the host simply receives a report of
+    a different length than it expects.
 
-    Zwraca liste (report_id, typ, dlugosc_w_bajtach) w kolejnosci wystapienia,
-    gdzie typ to 1 = INPUT, 2 = OUTPUT, 3 = FEATURE (tak jak w deskryptorze
-    Report Reference 0x2908).
+    Returns a list of (report_id, type, length_in_bytes) in order of appearance,
+    where type is 1 = INPUT, 2 = OUTPUT, 3 = FEATURE (as in the
+    Report Reference descriptor 0x2908).
     """
     MAIN_INPUT, MAIN_OUTPUT, MAIN_FEATURE = 0x08, 0x09, 0x0B
     GLOBAL_REPORT_SIZE, GLOBAL_REPORT_ID, GLOBAL_REPORT_COUNT = 0x07, 0x08, 0x09
@@ -147,15 +147,15 @@ def parse_reports(data):
         i += 1 + size
 
     if i != len(data):
-        raise SystemExit(f"deskryptor niespojny: parsowanie skonczylo na {i}, dlugosc {len(data)}")
+        raise SystemExit(f"inconsistent descriptor: parsing ended at {i}, length {len(data)}")
     if depth != 0:
-        raise SystemExit(f"deskryptor niespojny: bilans kolekcji {depth}")
+        raise SystemExit(f"inconsistent descriptor: collection balance {depth}")
 
     out = []
     for key in order:
         nbits = bits[key]
         if nbits % 8:
-            raise SystemExit(f"raport 0x{key[0]:02X} typ {key[1]} ma {nbits} bitow, nie wielokrotnosc 8")
+            raise SystemExit(f"report 0x{key[0]:02X} type {key[1]} has {nbits} bits, not a multiple of 8")
         out.append((key[0], key[1], nbits // 8))
     return out
 
@@ -185,30 +185,30 @@ def main():
     input_len = next((n for r, k, n in reports if k == 1), 0)
 
     header = f"""/*
- * PLIK GENEROWANY - nie edytowac recznie.
+ * GENERATED FILE - do not edit by hand.
  * Zrodlo: scripts/gen_xbox_report_map.py {src.name} {array}
  *
- * Deskryptor raportu HID bezprzewodowego pada Xbox. Pochodzi z projektu
- * Mystfit/ESP32-BLE-CompositeHID na licencji MIT, ktory odczytal go z prawdziwego
- * pada.
+ * HID report descriptor of a wireless Xbox controller. Taken from the project
+ * Mystfit/ESP32-BLE-CompositeHID under the MIT licence, which read it from a real
+ * pad.
  *
- * Windows dobiera sterownik XInput po tozsamosci (PnP ID) I deskryptorze. Kazda
- * zmiana tych bajtow wymaga usuniecia pada z listy urzadzen Bluetooth w Windows
- * i sparowania od nowa (AGENTS.md 4.7).
+ * Windows picks the XInput driver based on the identity (PnP ID) AND the descriptor.
+ * Any change to these bytes requires removing the pad from the Windows Bluetooth
+ * device list and pairing again (AGENTS.md 4.7).
  *
- * Raporty policzone z deskryptora: {rpt_summary}
- * sha256 zawartosci: {digest}
+ * Reports computed from the descriptor: {rpt_summary}
+ * sha256 of the contents: {digest}
  */
 
 #pragma once
 
 #include <stdint.h>
 
-/* Dlugosc raportu wejsciowego pada, policzona z sumy bitow pol w deskryptorze. */
+/* Pad input report length, computed from the sum of field bits in the descriptor. */
 #define XBOX_INPUT_REPORT_LEN {input_len}
 
-/* Raporty zadeklarowane w deskryptorze, w kolejnosci wystapienia.
- * typ: 1 = INPUT, 2 = OUTPUT, 3 = FEATURE (jak w Report Reference 0x2908). */
+/* Reports declared in the descriptor, in order of appearance.
+ * type: 1 = INPUT, 2 = OUTPUT, 3 = FEATURE (as in Report Reference 0x2908). */
 struct xbox_report_info {{
     uint8_t id;
     uint8_t type;
@@ -225,10 +225,10 @@ static const uint8_t xbox_report_map[] = {{
 """
     out = Path(__file__).resolve().parent.parent / "firmware" / "main" / "xbox_report_map.h"
     out.write_text(header, encoding="utf-8")
-    print(f"zapisano {out}")
-    print(f"tablica zrodlowa: {array}")
-    print(f"dlugosc deskryptora: {len(data)} B")
-    print(f"raporty: {rpt_summary}")
+    print(f"written {out}")
+    print(f"source array: {array}")
+    print(f"descriptor length: {len(data)} B")
+    print(f"reports: {rpt_summary}")
     print(f"sha256: {digest}")
 
 

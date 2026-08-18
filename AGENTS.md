@@ -3,6 +3,14 @@
 Notatki projektu i plan pracy dla kolejnego agenta. Stan na 2026-08-15.
 
 Repo: `https://github.com/WikDra/esp32-hid-gamepad-bridge`.
+
+> **Uwaga o cytowanych logach.** Notatki są po polsku, ale **kod, komunikaty logu
+> i opisy opcji w menuconfig zostały przetłumaczone na angielski** przy przygotowaniu
+> repozytorium do upublicznienia. Fragmenty logów w tym pliku są zapisem tego, co
+> faktycznie wyszło z płytki **przed** tym tłumaczeniem, więc brzmienie komunikatów
+> może się różnić od obecnego (np. `wejscia 2` → `inputs 2`,
+> `zapis CCCD` → `CCCD write`). Świadomie ich nie przepisałem: to dowody, a nie
+> dokumentacja. Same liczby, adresy i kody błędów pozostają aktualne.
 Instrukcja dla człowieka: [`README.pl.md`](README.pl.md) (po polsku) albo
 [`README.md`](README.md) (po angielsku, główne). Pochodzenie materiału zewnętrznego
 i licencje: [`THIRD-PARTY.md`](THIRD-PARTY.md). Ustawienia zależne od maszyny:

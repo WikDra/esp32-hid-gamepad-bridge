@@ -1,12 +1,12 @@
-"""Czyta konsole ESP32 przez chwile (strona Windows, bez idf.py).
+"""Reads the ESP32 console for a while (Windows side, without idf.py).
 
-    python scripts\\monitor.py [COM6] [sekundy]
+    python scripts\\monitor.py [COM6] [seconds]
 
-Uwaga: na plytkach z natywnym USB (USB Serial/JTAG) linie DTR/RTS steruja resetem
-i bootloaderem. pyserial domyslnie je aktywuje przy open(), co restartuje uklad -
-a przy diagnozowaniu BLE restart w losowym momencie gubi kontekst (np. rozwala
-trwajace parowanie). Dlatego port otwieramy z DTR/RTS ustawionymi na False.
-Do celowego resetu jest scripts/reset_monitor.py.
+Note: on boards with native USB (USB Serial/JTAG) the DTR/RTS lines drive reset and
+the bootloader. pyserial asserts them on open() by default, which reboots the chip -
+and when debugging BLE a reboot at a random moment loses context (it can tear down
+an in-progress pairing). So the port is opened with DTR/RTS set to False.
+For a deliberate reset there is scripts/reset_monitor.py.
 """
 import sys
 import time
@@ -20,17 +20,17 @@ ser = serial.Serial()
 ser.port = port
 ser.baudrate = 115200
 ser.timeout = 0.5
-# Musi byc ustawione PRZED open(), inaczej sterownik na chwile sciagnie reset.
+# Must be set BEFORE open(), otherwise the driver briefly pulls the reset line.
 ser.dtr = False
 ser.rts = False
 
 try:
     ser.open()
 except Exception as exc:  # noqa: BLE001
-    print(f"ERROR: nie moge otworzyc {port}: {exc}", flush=True)
+    print(f"ERROR: cannot open {port}: {exc}", flush=True)
     sys.exit(1)
 
-print(f"--- czytam {port} przez {duration:.0f}s (bez resetu) ---", flush=True)
+print(f"--- reading {port} for {duration:.0f}s (no reset) ---", flush=True)
 end = time.time() + duration
 try:
     while time.time() < end:

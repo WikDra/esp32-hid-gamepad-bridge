@@ -122,7 +122,7 @@ Kolejność ma znaczenie — najpierw wejścia, potem PC:
 
 Klucze parowania są zapisywane w NVS, więc po restarcie urządzenia łączą się same.
 
-Jeśli w logu pojawi się `esp_hidh_dev_open() nie wrocilo w 45 s`, mostek **restartuje się
+Jeśli w logu pojawi się `esp_hidh_dev_open() did not return within 45 s`, mostek **restartuje się
 sam**. To obejście błędu w ESP-IDF, który przy zerwaniu połączenia w trakcie odczytu usług
 zawiesza wątek na stałe (szczegóły w `AGENTS.md` §4.23). Po restarcie PC wraca po ~2 s,
 a klawiatura i mysz podłączają się same — nie trzeba nic robić.

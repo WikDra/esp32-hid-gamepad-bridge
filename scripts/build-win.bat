@@ -1,7 +1,7 @@
 @echo off
-REM Uruchamia build w WSL z powloki Windows.
+REM Runs the build in WSL from a Windows shell.
 REM
-REM   scripts\build-win.bat [target] [dodatkowe argumenty idf.py]
+REM   scripts\build-win.bat [target] [extra idf.py arguments]
 REM   scripts\build-win.bat esp32c3
 REM   scripts\build-win.bat esp32c3 menuconfig
 setlocal
@@ -15,12 +15,12 @@ set EXTRA=%EXTRA% %1
 shift
 goto collect
 :run
-REM Sciezke do repo wyliczamy z polozenia tego skryptu i tlumaczymy na konwencje WSL
-REM przez wslpath - zeby skrypt dzialal niezaleznie od tego, gdzie repo zostalo
-REM sklonowane i na ktorym dysku.
+REM The repo path is derived from this script's location and translated to the WSL
+REM convention with wslpath - so the script works regardless of where the repo was
+REM cloned and on which drive.
 for /f "usebackq delims=" %%p in (`wsl -e wslpath -a "%~dp0.."`) do set REPO_WSL=%%p
 if "%REPO_WSL%"=="" (
-    echo BLAD: nie moge ustalic sciezki repo w WSL ^(czy WSL dziala?^)
+    echo ERROR: cannot determine the repo path in WSL ^(is WSL running?^)
     exit /b 1
 )
 wsl -e bash -lc "cd '%REPO_WSL%' && ./scripts/build.sh %TARGET%%EXTRA%"

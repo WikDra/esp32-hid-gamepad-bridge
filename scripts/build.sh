@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Build firmware'u w WSL.
+# Firmware build in WSL.
 #
-#   ./scripts/build.sh [target] [dodatkowe argumenty idf.py]
+#   ./scripts/build.sh [target] [extra idf.py arguments]
 #   ./scripts/build.sh esp32c3
 #   ./scripts/build.sh esp32c3 menuconfig
 #
-# Wymaga IDF >= 5.4.3 z powodu CONFIG_BT_NIMBLE_GATTC_AUTO_PAIR (AGENTS.md 4.1).
-# Domyslnie v5.5.1, bo ta sama wersja jest zainstalowana po stronie Windows.
+# Requires IDF >= 5.4.3 because of CONFIG_BT_NIMBLE_GATTC_AUTO_PAIR (AGENTS.md 4.1).
+# Defaults to v5.5.1, the same version installed on the Windows side.
 set -euo pipefail
 
 TARGET="${1:-esp32c3}"
@@ -15,13 +15,13 @@ IDF_DIR="${IDF_DIR:-$HOME/esp/v5.5.1/esp-idf}"
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../firmware" && pwd)"
 
 if [ ! -f "$IDF_DIR/export.sh" ]; then
-    echo "BLAD: nie znalazlem ESP-IDF w $IDF_DIR" >&2
-    echo "      ustaw IDF_DIR=/sciezka/do/esp-idf" >&2
+    echo "ERROR: no ESP-IDF found in $IDF_DIR" >&2
+    echo "       set IDF_DIR=/path/to/esp-idf" >&2
     exit 1
 fi
 
-# ~/.bashrc w tym WSL-u wciaga esp-matter (a z nim IDF v5.4.2). Czyscimy stan,
-# zeby export.sh v5.5.1 nie doklejal sie do cudzego srodowiska.
+# A ~/.bashrc may pull in esp-matter (and with it an older IDF). We clear the state
+# so that export.sh does not append itself to somebody else's environment.
 unset IDF_PATH ESP_MATTER_PATH IDF_PYTHON_ENV_PATH || true
 # shellcheck disable=SC1091
 source "$IDF_DIR/export.sh" >/dev/null
@@ -34,11 +34,11 @@ BUILD_DIR="build.$TARGET"
 SDKCONFIG="sdkconfig.$TARGET"
 DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.$TARGET"
 
-# Lokalne nadpisania - gitignored. Sluzy do wlaczania rzeczy, ktorych nie chcemy
-# w repo, np. diagnostycznego watchpointa (CONFIG_APP_DEBUG_WATCH_ADDR).
+# Local overrides - gitignored. Used to enable things we do not want in the repo,
+# e.g. the diagnostic watchpoint (CONFIG_APP_DEBUG_WATCH_ADDR).
 if [ -f "sdkconfig.local" ]; then
     DEFAULTS="$DEFAULTS;sdkconfig.local"
-    echo "== uzywam nadpisan z sdkconfig.local"
+    echo "== using overrides from sdkconfig.local"
 fi
 
 echo "== target=$TARGET build_dir=$BUILD_DIR"
@@ -49,6 +49,6 @@ if [ "$#" -gt 0 ]; then
 else
     idf.py -B "$BUILD_DIR" -D SDKCONFIG="$SDKCONFIG" -D SDKCONFIG_DEFAULTS="$DEFAULTS" build
     echo
-    echo "== binarki w $PROJECT_DIR/$BUILD_DIR"
-    echo "   wgranie z Windows: scripts\\flash-win.bat COM6 $TARGET"
+    echo "== binaries in $PROJECT_DIR/$BUILD_DIR"
+    echo "   flash from Windows: scripts\\flash-win.bat COM6 $TARGET"
 fi

@@ -1,6 +1,6 @@
-# ESP32-C3 SuperMini: 4 MB flash, brak PSRAM, brak mostka USB-UART.
-# Konsola musi isc przez natywne USB (peryferial USB Serial/JTAG), inaczej
-# w monitorze nie ma nic.
+# ESP32-C3 SuperMini: 4 MB flash, no PSRAM, no USB-UART bridge.
+# The console has to go over native USB (the USB Serial/JTAG peripheral),
+# otherwise the monitor shows nothing.
 CONFIG_IDF_TARGET="esp32c3"
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y

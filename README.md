@@ -143,7 +143,7 @@ Order matters — inputs first, then the PC:
 
 Pairing keys live in NVS, so after a reboot everything reconnects by itself.
 
-If the log shows `esp_hidh_dev_open() nie wrocilo w 45 s`, the bridge **restarts itself**.
+If the log shows `esp_hidh_dev_open() did not return within 45 s`, the bridge **restarts itself**.
 That works around an ESP-IDF bug where a link dropping mid-discovery hangs the calling thread
 forever (`AGENTS.md` §4.23). The PC comes back in ~2 s and the input devices reconnect on
 their own.

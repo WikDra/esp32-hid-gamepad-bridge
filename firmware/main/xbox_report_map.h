@@ -1,28 +1,28 @@
 /*
- * PLIK GENEROWANY - nie edytowac recznie.
+ * GENERATED FILE - do not edit by hand.
  * Zrodlo: scripts/gen_xbox_report_map.py XboxDescriptors.h XboxOneS_1914_HIDDescriptor
  *
- * Deskryptor raportu HID bezprzewodowego pada Xbox. Pochodzi z projektu
- * Mystfit/ESP32-BLE-CompositeHID na licencji MIT, ktory odczytal go z prawdziwego
- * pada.
+ * HID report descriptor of a wireless Xbox controller. Taken from the project
+ * Mystfit/ESP32-BLE-CompositeHID under the MIT licence, which read it from a real
+ * pad.
  *
- * Windows dobiera sterownik XInput po tozsamosci (PnP ID) I deskryptorze. Kazda
- * zmiana tych bajtow wymaga usuniecia pada z listy urzadzen Bluetooth w Windows
- * i sparowania od nowa (AGENTS.md 4.7).
+ * Windows picks the XInput driver based on the identity (PnP ID) AND the descriptor.
+ * Any change to these bytes requires removing the pad from the Windows Bluetooth
+ * device list and pairing again (AGENTS.md 4.7).
  *
- * Raporty policzone z deskryptora: 0x01 INPUT 16 B, 0x03 OUTPUT 8 B
- * sha256 zawartosci: a681e2cb8b5d9466f258e2f07f0fcc518ec438231af1b61b125c213d2c62e165
+ * Reports computed from the descriptor: 0x01 INPUT 16 B, 0x03 OUTPUT 8 B
+ * sha256 of the contents: a681e2cb8b5d9466f258e2f07f0fcc518ec438231af1b61b125c213d2c62e165
  */
 
 #pragma once
 
 #include <stdint.h>
 
-/* Dlugosc raportu wejsciowego pada, policzona z sumy bitow pol w deskryptorze. */
+/* Pad input report length, computed from the sum of field bits in the descriptor. */
 #define XBOX_INPUT_REPORT_LEN 16
 
-/* Raporty zadeklarowane w deskryptorze, w kolejnosci wystapienia.
- * typ: 1 = INPUT, 2 = OUTPUT, 3 = FEATURE (jak w Report Reference 0x2908). */
+/* Reports declared in the descriptor, in order of appearance.
+ * type: 1 = INPUT, 2 = OUTPUT, 3 = FEATURE (as in Report Reference 0x2908). */
 struct xbox_report_info {
     uint8_t id;
     uint8_t type;

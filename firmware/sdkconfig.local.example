@@ -1,16 +1,16 @@
-# Lokalne nadpisania konfiguracji. Skopiuj na sdkconfig.local (plik jest gitignored)
-# i przebuduj: scripts\build-win.bat esp32c3
+# Local configuration overrides. Copy this to sdkconfig.local (that file is gitignored)
+# and rebuild: scripts\build-native-win.bat
 #
-# --- Diagnostyka crashu z AGENTS.md 4.21 ---
-# Sprzetowy watchpoint na zapis do glowy listy wpisow aktualizacji parametrow
-# polaczenia w NimBLE. Crash objawia sie jako odczyt spod adresu-smiecia w
-# ble_gap_update_next_exp(), czyli widac ofiare, a nie sprawce. Watchpoint odwraca
-# sytuacje: panika leci w momencie psucia struktury, z backtrace'em winowajcy.
+# --- Diagnostics for the crash in AGENTS.md 4.21 ---
+# A hardware write watchpoint on the head of NimBLE's connection-parameter update
+# entry list. The crash shows up as a read from a garbage address in
+# ble_gap_update_next_exp(), i.e. the victim is visible but not the culprit. The
+# watchpoint inverts that: the panic fires when the structure is corrupted, with the
 #
-# ADRES TRZEBA ODCZYTAC Z WLASNEGO BUILDA, bo zmienia sie miedzy kompilacjami:
+# THE ADDRESS MUST BE READ FROM YOUR OWN BUILD, because it changes between builds:
 #
 #   wsl riscv32-esp-elf-nm firmware/build.esp32c3/hid_gamepad_bridge.elf \
 #       | grep ble_gap_update_entries
 #
-# Wartosc ponizej jest z builda o rozmiarze 0x92780 (16.08.2026) - sprawdz u siebie.
+# The value below came from one specific build - check it against yours.
 #CONFIG_APP_DEBUG_WATCH_ADDR=0x3fc97a24
