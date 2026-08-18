@@ -114,6 +114,11 @@ Both build paths use **separate build directories** (`build.esp32c3` for WSL,
 `build.win.esp32c3` for Windows), because absolute paths differ between the two and CMake
 will not tolerate them in one directory. `flash-win.bat` finds whichever is present.
 
+To reboot the board without opening a console session:
+
+```bat
+scripts\reboot-win.bat COM6
+```\n
 To wipe the chip completely, including the pairing keys in NVS:
 
 ```bat

@@ -76,6 +76,11 @@ obu w jednym katalogu. `flash-win.bat` sam znajduje ten, który istnieje.
 
 Ścieżkę do ESP-IDF można nadpisać: `set IDF_WIN=D:\esp\v5.5.1\esp-idf`.
 
+Restart płytki bez otwierania konsoli:
+
+```bat
+scripts\reboot-win.bat COM6
+```\n
 Wyczyszczenie całego flasha razem z kluczami parowania w NVS:
 
 ```bat
