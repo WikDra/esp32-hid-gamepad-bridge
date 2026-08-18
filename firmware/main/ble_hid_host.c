@@ -934,10 +934,19 @@ static void handle_adv_report(const struct ble_gap_disc_desc *disc)
     candidate_seen(disc, &f, looks_like_hid, name);
 }
 
+/*
+ * Raw advertising reports received in the current scan round. "scan: N devices" counts
+ * UNIQUE addresses, which hides how much we are hearing at all: a board with a bad
+ * antenna and a quiet room look identical in that line. This counter separates them -
+ * a healthy scan picks up hundreds of reports per round in a populated area.
+ */
+static uint32_t s_adv_reports;
+
 static int gap_event_cb(struct ble_gap_event *event, void *arg)
 {
     switch (event->type) {
     case BLE_GAP_EVENT_DISC:
+        s_adv_reports++;
         handle_adv_report(&event->disc);
         break;
     case BLE_GAP_EVENT_DISC_COMPLETE:
@@ -1005,8 +1014,8 @@ static void log_scan_results(void)
             }
         }
     }
-    ESP_LOGI(TAG, "scan: %d devices, %d of them look like HID (bonds in NVS: %d)",
-             total, hid, s_bonds_len);
+    ESP_LOGI(TAG, "scan: %d devices, %d of them look like HID, %" PRIu32 " ADV reports (bonds in NVS: %d)",
+             total, hid, s_adv_reports, s_bonds_len);
     /* We log everything, not just HID - when a keyboard refuses to connect the first
      * question is "do we hear it at all". */
     static const char *evt[] = {"ADV_IND", "DIR_IND", "SCAN_IND", "NONCONN", "SCAN_RSP"};
@@ -1109,18 +1118,19 @@ static void try_connect_candidates(void)
 static void scan_round(void)
 {
     struct ble_gap_disc_params dp = {
-        .itvl = 96,   /* 60 ms w jednostkach 0,625 ms */
-        .window = 48, /* 30 ms - polowa okna, agresywnie, ale skanujemy tylko do czasu polaczenia */
+        .itvl = 96,   /* 60 ms in units of 0.625 ms */
+        .window = 48, /* 30 ms - a 50 % duty cycle; aggressive, but we only scan until connected */
         .filter_policy = 0,
         .limited = 0,
         .passive = 0,
         /* CRITICAL: the keyboard does not put its full name in the first ADV packet,
-         * a filtr duplikatow ucinal kolejne (AGENTS.md 4.4). */
+         * and the duplicate filter used to swallow the later ones (AGENTS.md 4.4). */
         .filter_duplicates = 0,
     };
 
     candidates_clear_stale();
     refresh_bonded_peers();
+    s_adv_reports = 0;
     xEventGroupClearBits(s_events, EV_DISC_DONE);
 
     int rc = ble_gap_disc(ble_stack_own_addr_type(), SCAN_DURATION_MS, &dp, gap_event_cb, NULL);
