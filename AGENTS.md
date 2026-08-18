@@ -1608,7 +1608,62 @@ Co z tego wynika praktycznie:
   zadanie skanujące, które w tym czasie nie słyszy nic,
 - **moc nadawania na maksimum** zamiast domyślnych +3 dBm, z odczytem poziomu z powrotem.
 
-#### Nierozstrzygnięte
+#### Najlepszy niesprawdzony trop: ESP-IDF 6.0.2
+
+Rozpoznanie zrobione **bez wgrywania czegokolwiek** — same pliki wydania. Wniosek: to jedyna
+pozostała droga, która celuje we właściwy komponent, i przy okazji zdejmuje z nas połowę
+łatki.
+
+**Kontroler jest inny we wszystkich trzech układach.** Biblioteka to submoduł gita, więc jego
+commit jest jedynym sposobem porównania wersji bez pobierania całego wydania
+(`scripts/check_controller_versions.sh` robi to jednym wywołaniem):
+
+| Układ | IDF 5.5.1 | IDF 6.0.2 |
+|---|---|---|
+| ESP32-H2 | `a2ba40fae246` | `b2b8fd009c31` |
+| ESP32-C6 | `3655fcdaadb6` | `e7be018522c8` |
+| ESP32-C3 | `0c68809d62e4` | `0a08c4b32f36` |
+
+To istotne, bo dotychczasowy test „innej wersji kontrolera" zrobiliśmy na IDF **5.4.3**,
+czyli wersji **starszej** niż nasza — obie z linii 5.x i obie zachowują się identycznie.
+6.0.2 to inna generacja i jej kontrolera nie sprawdzaliśmy.
+
+**Cztery z dziewięciu naszych wad `esp_hid` są tam naprawione.** Plik `nimble_hidh.c` urósł
+z 966 do 1281 linii i został przepisany:
+
+| Wada | Stan w 6.0.2 |
+|---|---|
+| §4.27 `services_discovered` nigdy nie zerowane | **naprawione** — jest `services_discovered = 0;` |
+| §4.34 zapis przez NULL przy nieznanym urządzeniu | **naprawione** — komunikat i cała ta gałąź zniknęły |
+| §4.25 `connected` nigdy nie ustawiane na `true` | **naprawione** — jest `dev->connected = true;`, więc `CLOSE_EVENT` zacznie przychodzić |
+| §4.29 brak inicjowania szyfrowania | **naprawione** — jest `ble_gap_security_initiate()` |
+| §4.11 tablice odkrywania na stosie wołającego | zostaje (ale z nazwanymi granicami) |
+| §4.23 `WAIT_CB()` bez timeoutu | zostaje — nadal `portMAX_DELAY` |
+| §4.15 `dev->usage` nigdy nie ustawiane | zostaje — zero trafień |
+| §4.8 cały plik gatowany `BT_NIMBLE_HID_SERVICE` | zostaje |
+| §4.33 `ble_gap_connect(..., 30000, NULL, ...)` | zostaje, w tym `own_addr_type = 0; // set to public for now` |
+
+**Nasze API przeżyło przejście na 6.x** — sprawdzone w nagłówkach wydania:
+`esp_ble_tx_power_set()`/`esp_ble_tx_power_get()` i `ESP_PWR_LVL_P20` są na miejscu (doszły
+warianty `_enhanced` z uchwytem), a w Kconfigu NimBLE nadal jest
+`BT_NIMBLE_GATTC_AUTO_PAIR` (§4.1), `BT_NIMBLE_HANDLE_REPEAT_PAIRING_DELETION` (§4.29) oraz
+`BT_NIMBLE_HID_SERVICE` (§4.8).
+
+Czego to **nie** obiecuje: nikt nie zapowiedział naprawy naszego objawu i nie znaleźliśmy
+zgłoszenia z takim opisem. To trop oparty na tym, że zmienia się dokładnie ten jeden
+komponent, który wskazaliśmy jako różnicę — nie na dowodzie.
+
+Koszt, gdyby ktoś to podjął:
+
+- osobna instalacja IDF 6.0.2 (po stronie Windows jest tylko 5.5.1),
+- **odtworzenie łatki `esp_hid` z nowego pliku** — połowa wpisów staje się zbędna, więc
+  `PATCH.diff` trzeba napisać od nowa, nie przenieść,
+- 6.0 jest wydaniem **z łamiącymi zmianami**; te, które nas dotyczą, sprawdzone powyżej i są
+  bezpieczne, ale reszta drzewa nie była przeglądana,
+- test ma sens wyłącznie na sprzęcie, z klawiaturą w trybie parowania, i rozstrzyga w jednym
+  przebiegu: albo `OPEN … 'AULA-F99Pro'`, albo znowu `Connection failed; status=13`.
+
+
 
 Klawiatura wysyła jedno zdarzenie rozgłoszeniowe co kilka sekund i **za każdym razem pod
 innym adresem**, przy czym wszystkie obserwowane adresy mają górne bity `11`, czyli są
