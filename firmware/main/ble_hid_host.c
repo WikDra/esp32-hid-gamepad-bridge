@@ -934,6 +934,24 @@ static void handle_adv_report(const struct ble_gap_disc_desc *disc)
     candidate_seen(disc, &f, looks_like_hid, name);
 
     /*
+     * DIAGNOSTIC: log every advertising packet that carries a name, with its address.
+     *
+     * The question this answers: how fast does an unbonded device rotate its random
+     * address? A keyboard in pairing mode was seen under a different address on every
+     * scan round, and our connection attempts to it kept ending in a 30 s timeout
+     * (NimBLE "Connection failed; status=13") while a bonded mouse with a stable identity
+     * address connected fine. If the address changes between the advertising packet and
+     * our connect - even though that gap is now only ~200 ms - then we are dialling a
+     * number that no longer exists. Names are rare in advertising data, so this stays
+     * quiet in normal use.
+     */
+    if (name[0] != '\0') {
+        ESP_LOGI(TAG, "  adv from '%s' " ADDR_FMT " type=%u rssi=%d evt=%u",
+                 name, ADDR_ARG(disc->addr.val), disc->addr.type, disc->rssi,
+                 disc->event_type);
+    }
+
+    /*
      * Stop scanning the moment a usable candidate shows up, instead of sitting out the
      * rest of the round.
      *
@@ -1119,12 +1137,27 @@ static void try_connect_candidates(void)
         }
 
         uint8_t mask = device_usage_mask(dev, false);
+        if (mask == 0) {
+            /*
+             * A device with no input reports is useless to us, and registering it would
+             * park it in the table and hold a slot until it disconnects. Seen on hardware
+             * after a connect timeout: esp_hidh returned a device with an empty report
+             * list ("malloc report maps failed"), we registered it, and the log then
+             * showed "inputs 1" with "reports: (mask 0x00)" - a phantom occupying a slot
+             * while the real keyboard could not get in.
+             *
+             * Rather than trust the open, we drop it and give the address a cooldown so
+             * the next round tries something else first.
+             */
+            ESP_LOGW(TAG, "  no input reports (mask 0x00) - discarding this device");
+            device_mark_dead(dev);
+            candidate_set_cooldown(&c.addr);
+            continue;
+        }
+
         device_register(&c.addr, mask, dev);
         ESP_LOGI(TAG, "  connected (usage mask 0x%02x), %d/%d devices total",
                  mask, ble_hid_host_device_count(), HID_HOST_MAX_DEVICES);
-        if (mask == 0) {
-            ESP_LOGW(TAG, "  no input reports - this device is of no use to us");
-        }
 
         request_fast_interval(dev);
 

@@ -1017,6 +1017,19 @@ esp_hidh_dev_t *esp_ble_hidh_dev_open(uint8_t *bda, uint8_t address_type)
     memcpy(dev->addr.bda, bda, sizeof(dev->addr.bda));
     dev->ble.address_type = address_type;
     dev->ble.appearance = ESP_HID_APPEARANCE_GENERIC;
+    /*
+     * LOCAL PATCH (AGENTS.md 4.34): "not connected" has to be the DEFAULT state.
+     *
+     * esp_hidh_dev_malloc() returns a zeroed struct, so conn_id starts at 0 - a value
+     * that passes the "conn_id < 0" check below and makes a FAILED connection look like a
+     * successful one. Upstream never noticed because its failure path writes
+     * conn_id = -1 through a pointer that is NULL in that branch, i.e. it crashed before
+     * it could get here. With that crash fixed, this second half surfaced: after a
+     * connect timeout (NimBLE "Connection failed; status=13") the caller went on to read
+     * services, logged "malloc report maps failed", and returned a device with no reports
+     * at all - which then occupied a slot in our device table forever.
+     */
+    dev->ble.conn_id = -1;
 
     memcpy(addr.val, bda, sizeof(addr.val));
     addr.type = address_type;
