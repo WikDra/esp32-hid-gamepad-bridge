@@ -647,7 +647,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
          * this link, so we can only ask - this shows what it granted. */
         struct ble_gap_conn_desc d;
         if (ble_gap_conn_find(event->conn_update.conn_handle, &d) == 0) {
-            ESP_LOGI(TAG, "link do PC: status=%d itvl=%u (%u.%02u ms = %u Hz) latency=%u timeout=%u",
+            ESP_LOGI(TAG, "link to PC: status=%d itvl=%u (%u.%02u ms = %u Hz) latency=%u timeout=%u",
                      event->conn_update.status, d.conn_itvl,
                      (unsigned)(d.conn_itvl * 125 / 100), (unsigned)(d.conn_itvl * 125 % 100),
                      (unsigned)(1000 * 100 / (d.conn_itvl * 125)),

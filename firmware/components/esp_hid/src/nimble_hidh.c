@@ -1034,7 +1034,21 @@ esp_hidh_dev_t *esp_ble_hidh_dev_open(uint8_t *bda, uint8_t address_type)
     memcpy(addr.val, bda, sizeof(addr.val));
     addr.type = address_type;
 
-    ret = ble_gap_connect(own_addr_type, &addr, 30000, NULL, esp_hidh_gattc_event_handler, NULL);
+    /*
+     * LOCAL PATCH (AGENTS.md 4.35): connection attempt timeout 30 s -> 6 s.
+     *
+     * Upstream gambles everything on a single 30 s attempt. That is a bad trade when the
+     * peer advertises in bursts: if it stops advertising while we are waiting, the whole
+     * 30 s is wasted, and during that time esp_hidh_dev_open() blocks our scanning task,
+     * so the bridge is deaf to everything else. Measured on hardware: a keyboard in
+     * pairing mode produced "Connection failed; status=13" (BLE_HS_ETIMEOUT) after
+     * exactly 30.4 s, three times in a row, while a mouse in the same room answered in
+     * 310 ms - a peer that is going to answer answers immediately.
+     *
+     * Six seconds is far more than any responsive peer needs, and it turns one long
+     * gamble into several short attempts, each aimed at a freshly heard advertisement.
+     */
+    ret = ble_gap_connect(own_addr_type, &addr, 6000, NULL, esp_hidh_gattc_event_handler, NULL);
     if (ret) {
         esp_hidh_dev_free_inner(dev);
         ESP_LOGE(TAG, "esp_ble_gattc_open failed: %d", ret);

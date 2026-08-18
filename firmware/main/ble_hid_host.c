@@ -37,7 +37,14 @@ static const char *TAG = "hid_host";
 #define HID_HOST_MAX_DEVICES 2       /* klawiatura + mysz */
 #define CANDIDATES_MAX       24      /* w bloku mieszkalnym slychac kilkanascie urzadzen BLE */
 #define SCAN_DURATION_MS     6000
-#define RETRY_COOLDOWN_US    (15 * 1000 * 1000) /* do not hammer the same address every round */
+/*
+ * Pause before dialling the same address again. Kept short on purpose: a device in
+ * pairing mode advertises only for a limited time, so every wasted second lowers the
+ * chance of catching it. The connect attempt inside our patched esp_hid copy now gives up
+ * after 6 s, so one attempt plus this pause is an ~11 s cycle - roughly five tries per
+ * minute of the peer's pairing window, against one before.
+ */
+#define RETRY_COOLDOWN_US    (5 * 1000 * 1000)
 #define HID_SERVICE_UUID16   0x1812
 
 #define EV_DISC_DONE   BIT0
@@ -738,7 +745,14 @@ static int gap_disconnect_listener(struct ble_gap_event *event, void *arg)
  * honest way out is a controlled restart - bonds live in NVS, so the PC comes back
  * in ~2 s and the keyboard and mouse reconnect by themselves.
  */
-#define OPEN_TIMEOUT_MS 45000 /* dev_open already has a 30 s timeout on the connect itself */
+/*
+ * Watchdog on the whole open, not just the connect. Our patched esp_hid copy gives the
+ * connect itself 6 s; the rest of the budget covers service discovery, reading the report
+ * map and the CCCD writes, which on a talkative device took ~5.5 s in practice. This
+ * limit exists only to catch esp_hidh_dev_open() hanging forever (AGENTS.md 4.23), so it
+ * stays comfortably above any legitimate open.
+ */
+#define OPEN_TIMEOUT_MS 25000
 
 typedef struct {
     ble_addr_t addr;
@@ -934,35 +948,49 @@ static void handle_adv_report(const struct ble_gap_disc_desc *disc)
     candidate_seen(disc, &f, looks_like_hid, name);
 
     /*
-     * DIAGNOSTIC: log every advertising packet that carries a name, with its address.
+     * DIAGNOSTIC: for every advertising packet that carries a name, log the discovery
+     * flags, whether the HID service UUID is advertised, and the raw payload.
      *
-     * The question this answers: how fast does an unbonded device rotate its random
-     * address? A keyboard in pairing mode was seen under a different address on every
-     * scan round, and our connection attempts to it kept ending in a 30 s timeout
-     * (NimBLE "Connection failed; status=13") while a bonded mouse with a stable identity
-     * address connected fine. If the address changes between the advertising packet and
-     * our connect - even though that gap is now only ~200 ms - then we are dialling a
-     * number that no longer exists. Names are rare in advertising data, so this stays
-     * quiet in normal use.
+     * The question this answers: is the device asking to be PAIRED, or is it looking for
+     * a host it is already bonded to? The AD flags byte says it outright - bit 0 is LE
+     * Limited Discoverable, bit 1 is LE General Discoverable. A device with NEITHER bit
+     * set is not offering itself for pairing at all; it is advertising to be found again
+     * by a host that already holds its key, and such devices commonly filter incoming
+     * connection requests through their accept list. That would explain a keyboard that
+     * advertises ADV_IND continuously, is clearly audible (rssi -70), and yet never
+     * answers our connection request - our attempts end in the 30 s timeout inside
+     * ble_gap_connect() ("Connection failed; status=13") while a mouse in the same room
+     * answers in 310 ms.
+     *
+     * Names are rare in advertising data, so this stays quiet in normal use.
      */
     if (name[0] != '\0') {
+        char hex[3 * 31 + 1];
+        int pos = 0;
+        for (int i = 0; i < disc->length_data && pos < (int)sizeof(hex) - 3; i++) {
+            pos += snprintf(hex + pos, sizeof(hex) - pos, "%02x ", disc->data[i]);
+        }
         ESP_LOGI(TAG, "  adv from '%s' " ADDR_FMT " type=%u rssi=%d evt=%u",
                  name, ADDR_ARG(disc->addr.val), disc->addr.type, disc->rssi,
                  disc->event_type);
+        ESP_LOGI(TAG, "    flags=0x%02x (%s%s%s) hid_uuid=%s appearance=0x%04x",
+                 f.flags,
+                 (f.flags & BLE_HS_ADV_F_DISC_LTD) ? "limited-disc " : "",
+                 (f.flags & BLE_HS_ADV_F_DISC_GEN) ? "general-disc " : "",
+                 (f.flags & (BLE_HS_ADV_F_DISC_LTD | BLE_HS_ADV_F_DISC_GEN))
+                     ? "" : "NOT-DISCOVERABLE",
+                 has_hid_uuid ? "yes" : "no",
+                 f.appearance_is_present ? f.appearance : 0);
+        ESP_LOGI(TAG, "    raw len=%u [%s]", disc->length_data, hex);
     }
 
     /*
      * Stop scanning the moment a usable candidate shows up, instead of sitting out the
      * rest of the round.
      *
-     * WHY THIS MATTERS - measured, not theoretical: a device in pairing mode advertises
-     * with a random address that it rotates quickly. We used to see the candidate at the
-     * start of a 6 s round and only attempt the connection after the round finished, by
-     * which time the address was already stale - so ble_gap_connect() aimed at an address
-     * nobody answers on, and the caller sat in esp_hidh_dev_open() until its 30 s
-     * internal timeout. In the log that looked like "device open in progress" followed by
-     * nothing at all. A bonded device reconnects under a stable identity address, which
-     * is why this only ever bit unbonded, freshly-pairing devices.
+     * WHY THIS MATTERS - measured, not theoretical: we used to see the candidate at the
+     * start of a 6 s round and only attempt the connection after the round finished, so
+     * up to 6 s passed between spotting a device and dialling it. Now it is ~200 ms.
      *
      * Cancelling discovery from inside the GAP callback is the pattern NimBLE's own
      * blecent example uses. BLE_GAP_EVENT_DISC_COMPLETE arrives right after, which
