@@ -920,7 +920,7 @@ static void negotiate_pad_interval(void)
             };
             int rc = ble_gap_update_params(s_conn_handle, &params);
             if (rc != 0) {
-                /* Odmowa NASZEJ strony (host albo kontroler C3), jeszcze przed eterem. */
+                /* Refused by OUR side (host or the C3 controller), before the air. */
                 ESP_LOGW(TAG, "  %u.%02u ms: our side did not send the request, rc=%d (HCI 0x%02x)",
                          (unsigned)(itvl * 125 / 100), (unsigned)(itvl * 125 % 100),
                          rc, rc >= 0x200 ? (unsigned)(rc - 0x200) : 0u);
