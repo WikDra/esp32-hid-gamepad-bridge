@@ -25,15 +25,15 @@ static const char *TAG = "gamepad";
 
 #if CONFIG_APP_GAMEPAD_PROFILE_XBOX
 
-/* ------------------------------------------------- profil: pad Xbox One S */
+/* ------------------------------------------------ profile: Xbox controller */
 
 #define GAMEPAD_REPORT_ID  0x01
 #define GAMEPAD_REPORT_LEN XBOX_INPUT_REPORT_LEN
 
 /*
- * Maski przyciskow z prawdziwego pada Xbox. Deskryptor deklaruje 15 przyciskow
- * (Button 1..15), ale pad uzywa ich z dziurami - bity 2, 5, 8 i 9 zostaja puste.
- * Nie wygladzamy tego, bo celem jest zgodnosc z oryginalem.
+ * Button masks from a real Xbox pad. The descriptor declares 15 buttons
+ * (Button 1..15), but the pad uses them with gaps - bits 2, 5, 8 and 9 stay empty.
+ * We do not tidy that up, because the goal is compatibility with the original.
  */
 #define XBOX_BTN_A     0x0001
 #define XBOX_BTN_B     0x0002
@@ -47,48 +47,48 @@ static const char *TAG = "gamepad";
 #define XBOX_BTN_LS    0x2000
 #define XBOX_BTN_RS    0x4000
 
-#define XBOX_TRIGGER_MAX 1023  /* spusty sa 10-bitowe */
+#define XBOX_TRIGGER_MAX 1023  /* triggers are 10-bit */
 
 /*
- * Tozsamosc urzadzenia. To ona decyduje, czy Windows zaladuje sterownik XInput -
- * deskryptor sam nie wystarcza.
+ * Device identity. This is what decides whether Windows loads the XInput driver -
+ * the report descriptor alone is not enough.
  *
- * PnP ID (charakterystyka 0x2A50) ma 7 bajtow: zrodlo VID, VID, PID, wersja.
- * Zrodlo 0x02 znaczy "rejestr USB Implementers Forum" i tak wlasnie jest
- * w padzie, bo VID 0x045E to numer USB Microsoftu.
+ * PnP ID (characteristic 0x2A50) is 7 bytes: VID source, VID, PID, version.
+ * Source 0x02 means "USB Implementers Forum registry", which is what a real pad
+ * uses, because VID 0x045E is Microsoft's USB vendor number.
  *
- * PID NIE JEST DOWOLNY. Sterownik XInput dla BLE w Windows (xinputhid.inf, sekcja
- * Btle_Bus = "Bluetooth LE XINPUT compatible input device") wiaze sie wylacznie
- * z PID 0x0B13 oraz 0x0B20..0x0B27. Pada Xbox One S (model 1708, PID 0x02FD) na
- * tej liscie NIE MA - sprawdzone na tej maszynie i opisane w AGENTS.md 4.32.
- * Dlatego udajemy pada Xbox Series X (model 1914, PID 0x0B13).
+ * THE PID IS NOT ARBITRARY. Windows' XInput driver for BLE (xinputhid.inf, section
+ * Btle_Bus = "Bluetooth LE XINPUT compatible input device") binds only to PIDs
+ * 0x0B13 and 0x0B20..0x0B27. The Xbox One S pad (model 1708, PID 0x02FD) is NOT on
+ * that list - verified on this machine and written up in AGENTS.md 4.32. Hence we
+ * impersonate an Xbox Series X pad (model 1914, PID 0x0B13).
  *
- * DLACZEGO WLASNA USLUGA, A NIE ble_svc_dis Z NimBLE: tamta implementacja
- * wpisuje pierwszy bajt na sztywno jako 0x01 (zrodlo = Bluetooth SIG) i dokleja
- * do niego nasza wartosc jako string, a jej domyslna wartosc to szesc znakow
- * ASCII "000000". Nie da sie przez nia ustawic zrodla 0x02 - patrz AGENTS.md 4.30.
+ * WHY OUR OWN SERVICE RATHER THAN NimBLE's ble_svc_dis: that implementation hardcodes
+ * the first byte as 0x01 (source = Bluetooth SIG) and appends our value as a string,
+ * its own default being the six ASCII characters "000000". There is no way to set
+ * source 0x02 through it - see AGENTS.md 4.30.
  */
 #define DIS_UUID16              0x180A
 #define DIS_CHR_UUID16_PNP_ID   0x2A50
 #define DIS_CHR_UUID16_MANUF    0x2A29
 
 static const uint8_t s_pnp_id[7] = {
-    0x02,        /* Vendor ID Source: USB Implementers Forum   */
-    0x5E, 0x04,  /* Vendor ID: 0x045E Microsoft                */
-    0x13, 0x0B,  /* Product ID: 0x0B13 pad Xbox Series X (1914) */
-    0x09, 0x05,  /* Product Version: 0x0509                    */
+    0x02,        /* Vendor ID Source: USB Implementers Forum      */
+    0x5E, 0x04,  /* Vendor ID: 0x045E Microsoft                   */
+    0x13, 0x0B,  /* Product ID: 0x0B13 Xbox Series X pad (1914)   */
+    0x09, 0x05,  /* Product Version: 0x0509                       */
 };
 
 static const char s_manufacturer[] = "Microsoft";
 
 /*
- * Mapowanie NASZYCH przyciskow 1..12 (te z tabeli w README) na kontrolki pada
- * Xbox. Wejscia zostaja bez zmian, tlumaczenie jest tutaj, zeby input_mapper
- * nie musial wiedziec, jaki profil jest aktywny.
+ * Mapping of OUR buttons 1..12 (the ones in the README table) onto Xbox controls.
+ * The inputs stay as they are; the translation lives here so that input_mapper does
+ * not need to know which profile is active.
  *
- * Wybor jest moj i da sie go zmienic w jednym miejscu. Kierowalem sie tym, jak
- * te klawisze dzialaja w grach: lewy przycisk myszy to strzal (prawy spust),
- * prawy to celowanie (lewy spust), Shift to sprint (klik lewej galki).
+ * The choice is a judgement call and can be changed in this one place. It follows how
+ * those keys behave in games: left mouse button is fire (right trigger), right mouse
+ * button is aim (left trigger), Shift is sprint (left stick click).
  */
 enum xbox_ctrl_kind {
     XBOX_CTRL_BUTTON,
@@ -98,15 +98,15 @@ enum xbox_ctrl_kind {
 
 struct xbox_ctrl {
     enum xbox_ctrl_kind kind;
-    uint16_t mask;                  /* uzywane tylko dla XBOX_CTRL_BUTTON */
-    const char *name;               /* tylko do logu przy starcie */
+    uint16_t mask;                  /* used only for XBOX_CTRL_BUTTON */
+    const char *name;               /* startup log only */
 };
 
 static const struct xbox_ctrl s_xbox_ctrl[12] = {
-    /*  1 mysz lewy    */ { XBOX_CTRL_TRIGGER_R, 0,              "RT" },
-    /*  2 mysz prawy   */ { XBOX_CTRL_TRIGGER_L, 0,              "LT" },
-    /*  3 mysz srodk.  */ { XBOX_CTRL_BUTTON,    XBOX_BTN_RS,    "RS" },
-    /*  4 Spacja       */ { XBOX_CTRL_BUTTON,    XBOX_BTN_A,     "A" },
+    /*  1 mouse left   */ { XBOX_CTRL_TRIGGER_R, 0,              "RT" },
+    /*  2 mouse right  */ { XBOX_CTRL_TRIGGER_L, 0,              "LT" },
+    /*  3 mouse middle */ { XBOX_CTRL_BUTTON,    XBOX_BTN_RS,    "RS" },
+    /*  4 Space        */ { XBOX_CTRL_BUTTON,    XBOX_BTN_A,     "A" },
     /*  5 LShift       */ { XBOX_CTRL_BUTTON,    XBOX_BTN_LS,    "LS" },
     /*  6 LCtrl        */ { XBOX_CTRL_BUTTON,    XBOX_BTN_B,     "B" },
     /*  7 E            */ { XBOX_CTRL_BUTTON,    XBOX_BTN_X,     "X" },
@@ -122,20 +122,21 @@ static const struct xbox_ctrl s_xbox_ctrl[12] = {
 
 #else /* CONFIG_APP_GAMEPAD_PROFILE_GENERIC */
 
-/* --------------------------------------- profil: generyczny pad DirectInput */
+/* -------------------------------------- profile: generic DirectInput gamepad */
 
 #define GAMEPAD_REPORT_ID  1
 #define GAMEPAD_REPORT_LEN 6
 
 /*
- * Deskryptor raportu HID pada: 4 osie 8-bitowe ze znakiem + 12 przyciskow.
+ * HID report descriptor for the generic pad: 4 signed 8-bit axes + 12 buttons.
  *
- * Osie X/Y (lewy analog) i Z/Rz (prawy analog) - taki uklad uzywaja typowe pady
- * DirectInput, wiec joy.cpl pokaze krzyzyk (X/Y) oraz suwaki "os Z" i "obrot Z".
+ * Axes X/Y (left stick) and Z/Rz (right stick) - the layout typical DirectInput pads
+ * use, so games recognise it. joy.cpl draws the crosshair from the first pair (X/Y)
+ * and shows Z and Rz as two separate sliders.
  *
- * UWAGA: kazda zmiana tej tablicy wymaga usuniecia pada z listy urzadzen
- * Bluetooth w Windows i sparowania na nowo - Windows cache'uje Report Map
- * per bond (AGENTS.md 4.7).
+ * NOTE: any change to this table requires removing the pad from the Windows Bluetooth
+ * device list and pairing again - Windows caches the Report Map per bond
+ * (AGENTS.md 4.7).
  */
 static const uint8_t s_report_map[] = {
     0x05, 0x01,       /* Usage Page (Generic Desktop)      */
@@ -168,7 +169,7 @@ static const uint8_t s_report_map[] = {
 
     0x75, 0x01,       /*   Report Size (1)                 */
     0x95, 0x04,       /*   Report Count (4)                */
-    0x81, 0x03,       /*   Input (Const, Var, Abs) - dopelnienie do 6 bajtow */
+    0x81, 0x03,       /*   Input (Const, Var, Abs) - padding to 6 bytes */
     0xC0              /* End Collection                    */
 };
 
@@ -186,12 +187,12 @@ static bool s_have_last;
 
 #if CONFIG_APP_GAMEPAD_PROFILE_XBOX
 /*
- * Wlasna usluga Device Information (0x180A) z PnP ID. Nie uzywamy ble_svc_dis
- * z NimBLE, bo ta nie potrafi ustawic zrodla VID na 0x02 (AGENTS.md 4.30).
+ * Our own Device Information service (0x180A) with the PnP ID. NimBLE's ble_svc_dis is
+ * not used because it cannot set the VID source to 0x02 (AGENTS.md 4.30).
  *
- * Usluga z NimBLE nie jest w naszym buildzie zarejestrowana - ble_svc_dis_init()
- * wola wylacznie nimble_hidd.c, ktorego nie uzywamy - wiec nie ma ryzyka, ze
- * powstana dwie uslugi 0x180A.
+ * NimBLE's own service is not registered in this build - ble_svc_dis_init() is called
+ * only from nimble_hidd.c, which we do not use - so there is no risk of ending up with
+ * two 0x180A services.
  */
 static int dis_access(uint16_t conn_handle, uint16_t attr_handle,
                       struct ble_gatt_access_ctxt *ctxt, void *arg)
@@ -233,12 +234,12 @@ static const struct ble_gatt_svc_def s_dis_defs[] = {
                 .access_cb = dis_access,
                 .flags = BLE_GATT_CHR_F_READ,
             }, {
-                0, /* koniec listy charakterystyk */
+                0, /* end of characteristic list */
             },
         },
     },
     {
-        0, /* koniec listy uslug */
+        0, /* end of service list */
     },
 };
 
@@ -254,7 +255,7 @@ static esp_err_t register_dis_service(void)
         ESP_LOGE(TAG, "ble_gatts_add_svcs (DIS): rc=%d", rc);
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "PnP ID: zrodlo=0x%02x VID=0x%04x PID=0x%04x wersja=0x%04x",
+    ESP_LOGI(TAG, "PnP ID: source=0x%02x VID=0x%04x PID=0x%04x version=0x%04x",
              s_pnp_id[0],
              (unsigned)(s_pnp_id[1] | (s_pnp_id[2] << 8)),
              (unsigned)(s_pnp_id[3] | (s_pnp_id[4] << 8)),
@@ -263,25 +264,25 @@ static esp_err_t register_dis_service(void)
 }
 #endif /* CONFIG_APP_GAMEPAD_PROFILE_XBOX */
 
-/* ------------------------------------------------------- wlasna usluga HID */
+/* ---------------------------------------------------------- own HID service */
 
 /*
- * DLACZEGO NIE ble_svc_hid Z NimBLE, ktorej uzywalismy do Etapu 3:
+ * WHY NOT NimBLE's ble_svc_hid, which this project used up to the generic-pad stage:
  *
- * struct ble_svc_hid_params trzyma dlugosc Report Map w polu uint8_t, mimo ze sam
- * bufor ma 512 B - i dokladnie tym polem karmi hosta:
+ * struct ble_svc_hid_params stores the Report Map length in a uint8_t field even though
+ * the buffer itself is 512 B - and that is exactly the field it feeds to the host:
  *
  *   os_mbuf_append(ctxt->om, &hid_instances[i].report_map,
  *                  hid_instances[i].report_map_len);      <- uint8_t
  *
- * Deskryptor pada Xbox ma 334 B, wiec Windows dostalby 78 B (334 modulo 256),
- * czyli obcieta, bezsensowna Report Map. Kompilator zlapal to jako
- * "conversion ... changes value from '334' to '78'". Komponentu bt nie da sie
- * sforkowac tak jak esp_hid (sa w nim prekompilowane biblioteki kontrolera),
- * dlatego usluga jest tu napisana wprost na GATT - AGENTS.md 4.30.
+ * The Xbox pad descriptor is 334 B, so Windows would receive 78 B (334 modulo 256):
+ * a truncated, meaningless Report Map. The compiler caught it as
+ * "conversion ... changes value from '334' to '78'". The bt component cannot be forked
+ * the way esp_hid was (it ships precompiled controller libraries), so the service is
+ * written directly on GATT here - AGENTS.md 4.30.
  *
- * Efekt uboczny na plus: uchwyty charakterystyk dostajemy wprost przez val_handle,
- * bez zgadywania, ktora z kilku charakterystyk o UUID 0x2A4D jest nasza.
+ * Welcome side effect: characteristic handles arrive directly through val_handle, with
+ * no guessing which of several characteristics with UUID 0x2A4D is ours.
  */
 #define HID_UUID16                 0x1812
 #define HID_CHR_UUID16_HID_INFO    0x2A4A
@@ -294,18 +295,18 @@ static esp_err_t register_dis_service(void)
 #define HID_RPT_TYPE_INPUT   0x01
 #define HID_RPT_TYPE_OUTPUT  0x02
 
-/* HID Information: bcdHID=0x0111, kraj=0, flagi=0x02 (NormallyConnectable).
- * Na drucie little-endian, czyli dokladnie te bajty. */
+/* HID Information: bcdHID=0x0111, country=0, flags=0x02 (NormallyConnectable).
+ * Little-endian on the wire, i.e. exactly these bytes. */
 static const uint8_t s_hid_info[4] = {0x11, 0x01, 0x00, 0x02};
 
-/* Protocol Mode: 1 = Report (a nie Boot). Windows moze to nadpisac. */
+/* Protocol Mode: 1 = Report (not Boot). Windows may overwrite it. */
 static uint8_t s_proto_mode = 0x01;
 
 #define HID_RPT_MAX_LEN 16
 
 /*
- * Jeden wpis na kazda charakterystyke Report. Trzymamy tu ostatnia wartosc, bo
- * host ma prawo odczytac raport, a nie tylko dostawac notyfikacje.
+ * One entry per Report characteristic. The last value is kept here because the host
+ * is allowed to read a report, not just receive notifications.
  */
 struct hid_report_def {
     uint8_t id;
@@ -322,10 +323,11 @@ static struct hid_report_def s_rpt_input = {
 
 #if CONFIG_APP_GAMEPAD_PROFILE_XBOX
 /*
- * Ten deskryptor deklaruje dwa raporty: wejsciowy pada i wyjsciowy z wibracjami.
- * Identyfikatory i dlugosci NIE sa tu wpisane liczbami - wypelniamy je w
- * register_hid_service() z tablicy xbox_reports[], ktora generator policzyl
- * wprost z deskryptora. Inaczej dalo by sie po cichu rozjechac z Report Map.
+ * This descriptor declares two reports: the pad input report and the rumble output
+ * report. The IDs and lengths are NOT written out as numbers here - they are filled in
+ * by register_hid_service() from the xbox_reports[] table, which the generator computed
+ * straight from the descriptor. Otherwise the code could silently drift from the
+ * Report Map.
  */
 static struct hid_report_def s_rpt_rumble;
 #endif
@@ -342,7 +344,7 @@ static int hid_access(uint16_t conn_handle, uint16_t attr_handle,
         if (ctxt->op != BLE_GATT_ACCESS_OP_READ_CHR) {
             return BLE_ATT_ERR_UNLIKELY;
         }
-        /* Tu jest cala rzecz, ktorej nie dawala usluga z NimBLE: pelna dlugosc. */
+        /* This is the whole point NimBLE's service could not deliver: the full length. */
         return os_mbuf_append(ctxt->om, s_report_map, REPORT_MAP_BYTES) == 0
                    ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
 
@@ -361,7 +363,7 @@ static int hid_access(uint16_t conn_handle, uint16_t attr_handle,
         if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
             if (ble_hs_mbuf_to_flat(ctxt->om, &buf, 1, &got) == 0 && got == 1) {
                 s_proto_mode = buf;
-                ESP_LOGI(TAG, "PC ustawil Protocol Mode = %u (1 = Report)", buf);
+                ESP_LOGI(TAG, "PC set Protocol Mode = %u (1 = Report)", buf);
             }
             return 0;
         }
@@ -372,7 +374,7 @@ static int hid_access(uint16_t conn_handle, uint16_t attr_handle,
             return BLE_ATT_ERR_UNLIKELY;
         }
         if (ble_hs_mbuf_to_flat(ctxt->om, &buf, 1, &got) == 0 && got == 1) {
-            ESP_LOGI(TAG, "HID Control Point: %u (0 = suspend, 1 = wyjscie z suspend)", buf);
+            ESP_LOGI(TAG, "HID Control Point: %u (0 = suspend, 1 = exit suspend)", buf);
         }
         return 0;
 
@@ -388,12 +390,11 @@ static int hid_access(uint16_t conn_handle, uint16_t attr_handle,
             got = 0;
             ble_hs_mbuf_to_flat(ctxt->om, rpt->data, rpt->len, &got);
             /*
-             * Raport wyjsciowy to u pada Xbox polecenie wibracji. Silnikow nie
-             * mamy, ale ten log jest cenny sam w sobie: jesli Windows tu pisze,
-             * to znaczy, ze obsluguje nas swoim sterownikiem pada, a nie jako
-             * zwykle HID.
+             * On an Xbox pad the output report is a rumble command. We have no motors,
+             * but this log is valuable in itself: if Windows writes here, it is
+             * handling us with its own pad driver rather than as a plain HID device.
              */
-            ESP_LOGI(TAG, "raport wyjsciowy id=%u (%u B): %02x %02x %02x %02x %02x %02x %02x %02x",
+            ESP_LOGI(TAG, "output report id=%u (%u B): %02x %02x %02x %02x %02x %02x %02x %02x",
                      rpt->id, got, rpt->data[0], rpt->data[1], rpt->data[2], rpt->data[3],
                      rpt->data[4], rpt->data[5], rpt->data[6], rpt->data[7]);
             return 0;
@@ -405,8 +406,8 @@ static int hid_access(uint16_t conn_handle, uint16_t attr_handle,
     }
 }
 
-/* Report Reference (0x2908): dwa bajty - identyfikator raportu i jego typ.
- * Bez tego host nie wie, ktora charakterystyka odpowiada ktoremu Report ID. */
+/* Report Reference (0x2908): two bytes - the report ID and its type.
+ * Without it the host cannot tell which characteristic maps to which Report ID. */
 static int hid_rpt_ref_access(uint16_t conn_handle, uint16_t attr_handle,
                               struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
@@ -420,8 +421,8 @@ static int hid_rpt_ref_access(uint16_t conn_handle, uint16_t attr_handle,
                ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
 }
 
-/* Profil HOGP wymaga szyfrowania na charakterystykach HID. Windows i tak szyfruje
- * link, ale deklarujemy to jawnie, bo tak robi prawdziwe urzadzenie. */
+/* The HOGP profile requires encryption on the HID characteristics. Windows encrypts
+ * the link anyway, but we declare it explicitly because a real device does. */
 #define HID_RPT_REF_DSC(rptdef)                                    \
     (struct ble_gatt_dsc_def[])                                    \
     {                                                              \
@@ -459,7 +460,7 @@ static const struct ble_gatt_svc_def s_hid_defs[] = {
                 .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE_NO_RSP |
                          BLE_GATT_CHR_F_READ_ENC | BLE_GATT_CHR_F_WRITE_ENC,
             }, {
-                /* Raport wejsciowy pada - ten notyfikujemy. */
+                /* The pad input report - this is the one we notify. */
                 .uuid = BLE_UUID16_DECLARE(HID_CHR_UUID16_REPORT),
                 .access_cb = hid_access,
                 .arg = (void *)&s_rpt_input,
@@ -481,12 +482,12 @@ static const struct ble_gatt_svc_def s_hid_defs[] = {
             },
 #endif
             {
-                0, /* koniec listy charakterystyk */
+                0, /* end of characteristic list */
             },
         },
     },
     {
-        0, /* koniec listy uslug */
+        0, /* end of service list */
     },
 };
 
@@ -494,20 +495,20 @@ static esp_err_t register_hid_service(void)
 {
 #if CONFIG_APP_GAMEPAD_PROFILE_XBOX
     /*
-     * Identyfikatory i dlugosci raportow bierzemy z tablicy policzonej przez
-     * generator wprost z deskryptora, zeby kod nie mogl sie z nim rozjechac.
-     * Jesli deskryptor kiedys zadeklaruje inny zestaw raportow, chcemy o tym
-     * wiedziec od razu przy starcie, a nie z zachowania Windows.
+     * Report IDs and lengths come from the table the generator computed straight from
+     * the descriptor, so the code cannot drift away from it. If the descriptor ever
+     * declares a different set of reports we want to know at startup, not from the
+     * way Windows behaves.
      */
     const size_t nrpts = sizeof(xbox_reports) / sizeof(xbox_reports[0]);
     if (nrpts != 2 || xbox_reports[0].type != HID_RPT_TYPE_INPUT ||
         xbox_reports[1].type != HID_RPT_TYPE_OUTPUT) {
-        ESP_LOGE(TAG, "deskryptor deklaruje %u raportow w nieoczekiwanym ukladzie",
+        ESP_LOGE(TAG, "descriptor declares %u reports in an unexpected layout",
                  (unsigned)nrpts);
         return ESP_ERR_INVALID_STATE;
     }
     if (xbox_reports[0].len > HID_RPT_MAX_LEN || xbox_reports[1].len > HID_RPT_MAX_LEN) {
-        ESP_LOGE(TAG, "raport dluzszy niz bufor %d B", HID_RPT_MAX_LEN);
+        ESP_LOGE(TAG, "report longer than the %d B buffer", HID_RPT_MAX_LEN);
         return ESP_ERR_INVALID_SIZE;
     }
 
@@ -532,11 +533,11 @@ static esp_err_t register_hid_service(void)
     }
 
 #if CONFIG_APP_GAMEPAD_PROFILE_XBOX
-    ESP_LOGI(TAG, "usluga HID: Report Map %u B, raporty 0x%02x INPUT %u B + 0x%02x OUTPUT %u B",
+    ESP_LOGI(TAG, "HID service: Report Map %u B, reports 0x%02x INPUT %u B + 0x%02x OUTPUT %u B",
              (unsigned)REPORT_MAP_BYTES, s_rpt_input.id, s_rpt_input.len,
              s_rpt_rumble.id, s_rpt_rumble.len);
 #else
-    ESP_LOGI(TAG, "usluga HID: Report Map %u B, raport wejsciowy 0x%02x %u B",
+    ESP_LOGI(TAG, "HID service: Report Map %u B, input report 0x%02x %u B",
              (unsigned)REPORT_MAP_BYTES, s_rpt_input.id, s_rpt_input.len);
 #endif
     return ESP_OK;
@@ -549,10 +550,10 @@ static int gap_event(struct ble_gap_event *event, void *arg);
 static esp_err_t start_advertising(void)
 {
     /*
-     * Rozdzielenie na ADV i SCAN_RSP: w 31 bajtach ADV nie ma pewnosci, ze zmiesci
-     * sie nazwa razem z flagami, UUID i appearance (a dlugosc nazwy jest z Kconfig).
-     * Nazwa idzie wiec w odpowiedzi na skan - Windows skanuje aktywnie i tak ja
-     * przeczyta.
+     * Split between ADV and SCAN_RSP: 31 bytes of ADV cannot be guaranteed to hold the
+     * name together with flags, UUID and appearance (and the name length comes from
+     * Kconfig). The name therefore goes into the scan response - Windows scans actively
+     * and will read it anyway.
      */
     struct ble_hs_adv_fields adv = {0};
     ble_uuid16_t hid_uuid = BLE_UUID16_INIT(HID_UUID16);
@@ -591,7 +592,7 @@ static esp_err_t start_advertising(void)
         ESP_LOGE(TAG, "ble_gap_adv_start: rc=%d", rc);
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "rozglaszam jako '%s' (appearance 0x%04x)", name, APPEARANCE_GAMEPAD);
+    ESP_LOGI(TAG, "advertising as '%s' (appearance 0x%04x)", name, APPEARANCE_GAMEPAD);
     return ESP_OK;
 }
 
@@ -600,7 +601,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     switch (event->type) {
     case BLE_GAP_EVENT_CONNECT: {
         if (event->connect.status != 0) {
-            ESP_LOGW(TAG, "polaczenie nieudane, status=%d - wracam do rozglaszania",
+            ESP_LOGW(TAG, "connection failed, status=%d - back to advertising",
                      event->connect.status);
             start_advertising();
             return 0;
@@ -610,23 +611,23 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             return 0;
         }
         /*
-         * Sprawdzenie, ktorego brakuje w nimble_hidd.c (AGENTS.md 4.2). Ten callback
-         * jest przypiazany do naszego advertisingu, wiec rola i tak powinna byc SLAVE,
-         * ale jesli kiedys zostanie podpiety globalnie, to zabezpieczenie zostaje.
+         * The check that nimble_hidd.c is missing (AGENTS.md 4.2). This callback is tied
+         * to our own advertising, so the role should be SLAVE anyway, but the guard stays
+         * in case it is ever registered globally.
          */
         if (desc.role != BLE_GAP_ROLE_SLAVE) {
-            ESP_LOGW(TAG, "ignoruje polaczenie w roli %d (to nie PC)", desc.role);
+            ESP_LOGW(TAG, "ignoring connection in role %d (not the PC)", desc.role);
             return 0;
         }
         s_conn_handle = event->connect.conn_handle;
         s_subscribed = false;
         s_have_last = false;
-        ESP_LOGI(TAG, "PC podlaczony, conn_handle=%u", s_conn_handle);
+        ESP_LOGI(TAG, "PC connected, conn_handle=%u", s_conn_handle);
         return 0;
     }
 
     case BLE_GAP_EVENT_DISCONNECT:
-        ESP_LOGW(TAG, "PC rozlaczony, reason=%d", event->disconnect.reason);
+        ESP_LOGW(TAG, "PC disconnected, reason=%d", event->disconnect.reason);
         s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
         s_subscribed = false;
         s_have_last = false;
@@ -636,14 +637,14 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_SUBSCRIBE:
         if (event->subscribe.attr_handle == s_report_handle) {
             s_subscribed = event->subscribe.cur_notify;
-            ESP_LOGI(TAG, "PC %s notyfikacje raportu",
-                     s_subscribed ? "wlaczyl" : "wylaczyl");
+            ESP_LOGI(TAG, "PC %s report notifications",
+                     s_subscribed ? "enabled" : "disabled");
         }
         return 0;
 
     case BLE_GAP_EVENT_CONN_UPDATE: {
-        /* Wynik naszej prosby o krotszy interwal. Na tym linku centralem jest Windows,
-         * wiec my mozemy tylko poprosic - tutaj widac, co przyznal. */
+        /* The outcome of our request for a shorter interval. Windows is the central on
+         * this link, so we can only ask - this shows what it granted. */
         struct ble_gap_conn_desc d;
         if (ble_gap_conn_find(event->conn_update.conn_handle, &d) == 0) {
             ESP_LOGI(TAG, "link do PC: status=%d itvl=%u (%u.%02u ms = %u Hz) latency=%u timeout=%u",
@@ -656,7 +657,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     }
 
     case BLE_GAP_EVENT_ENC_CHANGE:
-        ESP_LOGI(TAG, "szyfrowanie/parowanie: status=%d", event->enc_change.status);
+        ESP_LOGI(TAG, "encryption/pairing: status=%d", event->enc_change.status);
         return 0;
 
     case BLE_GAP_EVENT_MTU:
@@ -677,9 +678,9 @@ bool ble_gamepad_is_ready(void)
 
 #if CONFIG_APP_GAMEPAD_PROFILE_XBOX
 
-/* Osie pada Xbox sa 16-bitowe BEZ znaku (deskryptor: logical 0..65535).
- * Skalowanie z naszego zakresu -127..127; dodane 127 zaokragla tak, ze zero
- * wypada dokladnie na 32768, a konce zakresu na 0 i 65535. */
+/* Xbox pad axes are UNSIGNED 16-bit (descriptor: logical 0..65535). Scaled from our
+ * -127..127 range; the added 127 rounds so that zero lands exactly on 32768 and the
+ * range ends on 0 and 65535. */
 static uint16_t axis_to_u16(int8_t v)
 {
     int32_t t = (int32_t)v + 127;   /* 0..254 */
@@ -687,34 +688,34 @@ static uint16_t axis_to_u16(int8_t v)
 }
 
 /*
- * Hat switch pada Xbox: 0 = wysrodkowany, dalej 1..8 zgodnie z ruchem wskazowek
- * zegara od gory (N, NE, E, SE, S, SW, W, NW). Deskryptor deklaruje go jako pole
- * 4-bitowe z Null State, wiec 0 znaczy "brak kierunku".
+ * Xbox pad hat switch: 0 = centred, then 1..8 clockwise from the top
+ * (N, NE, E, SE, S, SW, W, NW). The descriptor declares it as a 4-bit field with a
+ * Null State, so 0 means "no direction".
  *
- * Tablica zamiast lancucha warunkow, bo trzeba rozstrzygnac osiem kombinacji plus
- * przypadki, w ktorych wcisniete sa przeciwne kierunki. Te znosza sie - inaczej
- * wynik zalezalby od kolejnosci sprawdzania. Indeks: bit0 gora, bit1 prawo,
- * bit2 dol, bit3 lewo.
+ * A table rather than a chain of conditions, because there are eight combinations plus
+ * the cases where opposite directions are held. Those cancel out - otherwise the result
+ * would depend on the order the conditions are checked in. Index: bit0 up, bit1 right,
+ * bit2 down, bit3 left.
  */
 static uint8_t hat_from_dpad(uint8_t dpad)
 {
     static const uint8_t hat[16] = {
-        0, /* ----  brak          */
-        1, /* U     gora          */
-        3, /* R     prawo         */
-        2, /* UR    gora-prawo    */
-        5, /* D     dol           */
-        0, /* UD    znosza sie    */
-        4, /* RD    dol-prawo     */
-        3, /* URD   zostaje prawo */
-        7, /* L     lewo          */
-        8, /* UL    gora-lewo     */
-        0, /* RL    znosza sie    */
-        1, /* URL   zostaje gora  */
-        6, /* DL    dol-lewo      */
-        7, /* UDL   zostaje lewo  */
-        5, /* RDL   zostaje dol   */
-        0, /* URDL  znosza sie    */
+        0, /* ----  none          */
+        1, /* U     up            */
+        3, /* R     right         */
+        2, /* UR    up-right      */
+        5, /* D     down          */
+        0, /* UD    cancel out    */
+        4, /* RD    down-right    */
+        3, /* URD   right wins    */
+        7, /* L     left          */
+        8, /* UL    up-left       */
+        0, /* RL    cancel out    */
+        1, /* URL   up wins       */
+        6, /* DL    down-left     */
+        7, /* UDL   left wins     */
+        5, /* RDL   down wins     */
+        0, /* URDL  cancel out    */
     };
     return hat[dpad & 0x0F];
 }
@@ -758,10 +759,10 @@ static void build_report(const gamepad_state_t *state, uint8_t *rpt)
     rpt[6]  = (uint8_t)(rz & 0xFF);
     rpt[7]  = (uint8_t)(rz >> 8);
     rpt[8]  = (uint8_t)(trigger_l & 0xFF);
-    rpt[9]  = (uint8_t)(trigger_l >> 8);   /* gorne 6 bitow to dopelnienie */
+    rpt[9]  = (uint8_t)(trigger_l >> 8);   /* the top 6 bits are padding */
     rpt[10] = (uint8_t)(trigger_r & 0xFF);
     rpt[11] = (uint8_t)(trigger_r >> 8);
-    rpt[12] = hat_from_dpad(state->dpad);   /* krzyzak, 0 = wysrodkowany */
+    rpt[12] = hat_from_dpad(state->dpad);   /* D-pad, 0 = centred */
     rpt[13] = (uint8_t)(buttons & 0xFF);
     rpt[14] = (uint8_t)((buttons >> 8) & 0x7F);
     rpt[15] = 0;                            /* przycisk Share */
@@ -789,18 +790,18 @@ bool ble_gamepad_send(const gamepad_state_t *state)
     if (!ble_gamepad_is_ready()) {
         return false;
     }
-    /* Tylko na zmianie stanu - inaczej przy 100 Hz zasypywalibysmy link
-     * identycznymi raportami. */
+    /* Only on a state change - at 100 Hz we would otherwise flood the link with
+     * identical reports. */
     if (s_have_last && memcmp(rpt, s_last_report, sizeof(rpt)) == 0) {
         return false;
     }
 
 #if CONFIG_APP_GAMEPAD_PROFILE_XBOX
     /*
-     * Logujemy tylko czesc "cyfrowa" raportu - spusty, hat i przyciski (bajty 8..15).
-     * Osi nie, bo przy ruchu myszy zmieniaja sie kilkanascie razy na sekunde i zalalyby
-     * konsole. Dzieki temu widac wprost, czy klik myszy wyszedl jako spust: w joy.cpl
-     * spusty NIE sa przyciskami, wiec inaczej trzeba by to zgadywac.
+     * Log only the "digital" part of the report - triggers, hat and buttons (bytes 8..15).
+     * Not the axes: during mouse movement they change a dozen times a second and would
+     * flood the console. This makes it directly visible whether a mouse click went out as
+     * a trigger: in joy.cpl triggers are NOT buttons, so otherwise it would be guesswork.
      */
     if (!s_have_last || memcmp(rpt + 8, s_last_report + 8, GAMEPAD_REPORT_LEN - 8) != 0) {
         ESP_LOGI(TAG, "xbox: LT=%u RT=%u hat=%u btn=0x%04x share=%u",
@@ -814,62 +815,61 @@ bool ble_gamepad_send(const gamepad_state_t *state)
 
     struct os_mbuf *om = ble_hs_mbuf_from_flat(rpt, sizeof(rpt));
     if (om == NULL) {
-        ESP_LOGW(TAG, "brak mbuf na raport");
+        ESP_LOGW(TAG, "no mbuf available for the report");
         return false;
     }
     int rc = ble_gatts_notify_custom(s_conn_handle, s_report_handle, om);
     if (rc != 0) {
-        /* mbuf jest zwalniany przez stack niezaleznie od wyniku */
+        /* the stack frees the mbuf regardless of the result */
         ESP_LOGW(TAG, "ble_gatts_notify_custom: rc=%d", rc);
         return false;
     }
 
     memcpy(s_last_report, rpt, sizeof(rpt));
     s_have_last = true;
-    /* Host ma prawo odczytac raport, nie tylko dostawac notyfikacje - trzymamy
-     * wiec ostatnia wartosc pod charakterystyka. */
+    /* The host may read the report, not just receive notifications - so the last value
+     * is kept behind the characteristic. */
     memcpy(s_rpt_input.data, rpt, sizeof(rpt));
     return true;
 }
 
-/* ------------------------------------------------------------- test wlasny */
+/* ---------------------------------------------------------------- selftest */
 
 #if CONFIG_APP_GAMEPAD_SELFTEST
-/* Osiem krokow po okregu o promieniu 100 - wystarcza, zeby w joy.cpl bylo widac
- * ruch, i nie wymaga arytmetyki zmiennoprzecinkowej. */
+/* Eight steps around a circle of radius 100 - enough to see movement in joy.cpl, and
+ * it needs no floating-point arithmetic. */
 static const int8_t s_circle_x[8] = {100, 71, 0, -71, -100, -71, 0, 71};
 static const int8_t s_circle_y[8] = {0, 71, 100, 71, 0, -71, -100, -71};
 
 static void selftest_step(uint32_t tick)
 {
     gamepad_state_t st = {0};
-    uint32_t phase = (tick / 6) % 8;   /* pelny okrag w ~0,5 s przy 100 Hz */
+    uint32_t phase = (tick / 6) % 8;   /* full circle in ~0.5 s at 100 Hz */
     st.lx = s_circle_x[phase];
     st.ly = s_circle_y[phase];
     st.rx = s_circle_x[(phase + 2) % 8];
     st.ry = s_circle_y[(phase + 2) % 8];
-    /* Po kolei jeden przycisk, zmiana raz na sekunde. */
+    /* One button at a time, changing once per second. */
     st.buttons = (uint16_t)(1u << ((tick / CONFIG_APP_REPORT_RATE_HZ) % 12));
     ble_gamepad_send(&st);
 }
 #endif
 
 /*
- * Prosba o krotszy interwal na linku do PC.
+ * Request a shorter connection interval on the link to the PC.
  *
- * Ten link jest NAJWEZSZYM OGNIWEM calego lancucha: mysz moze raportowac jak czesto
- * chce, ale do gry trafi tylko tyle, ile przejdzie tedy. A my dotad o nic tu nie
- * prosilismy - przyjmowalismy, co dal Windows (15 ms).
+ * This link is the NARROWEST POINT of the whole chain: the mouse can report as often as
+ * it likes, but only what fits through here reaches the game. And until now we never
+ * asked for anything on it - we simply accepted whatever Windows chose.
  *
- * Roznica wobec strony centralnej: tutaj centralem jest Windows, wiec nie mozemy
- * narzucic parametrow. ble_gap_update_params() wysyla wtedy albo LL Connection
- * Parameters Request, albo - gdy peer tego nie wspiera - prosbe L2CAP. Odpowiedz
- * przychodzi ASYNCHRONICZNIE jako BLE_GAP_EVENT_CONN_UPDATE, wiec rc == 0 znaczy
- * tylko "wyslano", a nie "przyjeto". Dlatego po kazdej probie odczytujemy, co
- * faktycznie zostalo ustawione.
+ * Difference from the central side: here Windows is the central, so we cannot dictate
+ * parameters. ble_gap_update_params() then sends either an LL Connection Parameters
+ * Request or - if the peer does not support that - an L2CAP request. The answer arrives
+ * ASYNCHRONOUSLY as BLE_GAP_EVENT_CONN_UPDATE, so rc == 0 only means "sent", not
+ * "accepted". That is why we read back what was actually applied after every attempt.
  *
- * Punkt wyjscia: prawdziwy pad Xbox obsluguje po BT 125 Hz, czyli Windows potrafi
- * utrzymac link 7,5 ms z urzadzeniem tej klasy. Sprawdzamy, czy da go nam.
+ * Starting point: a real Xbox pad does 125 Hz over BT, so Windows is capable of holding
+ * a 7.5 ms link with a device of this class. We check whether it will grant us one.
  */
 static void negotiate_pad_interval(void)
 {
@@ -878,35 +878,35 @@ static void negotiate_pad_interval(void)
         return;
     }
 
-    ESP_LOGI(TAG, "link do PC: interwal %u (%u.%02u ms = %u Hz), timeout nadzoru=%u",
+    ESP_LOGI(TAG, "link to PC: interval %u (%u.%02u ms = %u Hz), supervision timeout=%u",
              d.conn_itvl, (unsigned)(d.conn_itvl * 125 / 100),
              (unsigned)(d.conn_itvl * 125 % 100),
              (unsigned)(1000 * 100 / (d.conn_itvl * 125)), d.supervision_timeout);
 
     /*
-     * Windows zaraz po wlaczeniu notyfikacji konczy jeszcze swoje procedury (wymiana
-     * cech, wlasna aktualizacja parametrow). Prosba wyslana w tej chwili wraca ze
-     * statusem HCI 0x2A (Different Transaction Collision) - zmierzone na sprzecie.
-     * Dajemy mu dokonczyc, zanim o cokolwiek poprosimy.
+     * Right after enabling notifications Windows is still finishing its own procedures
+     * (feature exchange, its own parameter update). A request sent at that moment comes
+     * back with HCI status 0x2A (Different Transaction Collision) - measured on hardware.
+     * So we let it finish before asking for anything.
      */
     vTaskDelay(pdMS_TO_TICKS(1500));
 
     const uint16_t ladder[] = {CONFIG_APP_PAD_CONN_ITVL, 8, 10, 12};
-    /* Kolizja procedur jest przejsciowa, wiec kazda wartosc probujemy kilka razy. */
+    /* A procedure collision is transient, so each value is tried a few times. */
     const int tries_per_step = 3;
 
     for (size_t i = 0; i < sizeof(ladder) / sizeof(ladder[0]); i++) {
         const uint16_t itvl = ladder[i];
         if (i > 0 && itvl <= CONFIG_APP_PAD_CONN_ITVL) {
-            continue; /* juz probowane jako wartosc z Kconfig */
+            continue; /* already tried as the Kconfig value */
         }
 
         struct ble_gap_conn_desc cur;
         if (ble_gap_conn_find(s_conn_handle, &cur) != 0) {
-            return; /* link padl */
+            return; /* link dropped */
         }
         if (itvl >= cur.conn_itvl) {
-            break; /* dluzszy niz obecny nie ma sensu */
+            break; /* longer than the current one makes no sense */
         }
 
         for (int t = 0; t < tries_per_step; t++) {
@@ -921,13 +921,13 @@ static void negotiate_pad_interval(void)
             int rc = ble_gap_update_params(s_conn_handle, &params);
             if (rc != 0) {
                 /* Odmowa NASZEJ strony (host albo kontroler C3), jeszcze przed eterem. */
-                ESP_LOGW(TAG, "  %u.%02u ms: nasza strona nie wyslala prosby, rc=%d (HCI 0x%02x)",
+                ESP_LOGW(TAG, "  %u.%02u ms: our side did not send the request, rc=%d (HCI 0x%02x)",
                          (unsigned)(itvl * 125 / 100), (unsigned)(itvl * 125 % 100),
                          rc, rc >= 0x200 ? (unsigned)(rc - 0x200) : 0u);
-                break; /* kolejna proba tej samej wartosci nic nie zmieni */
+                break; /* retrying the same value would change nothing */
             }
 
-            ESP_LOGI(TAG, "  %u.%02u ms: prosba %d/%d wyslana, czekam na decyzje Windows",
+            ESP_LOGI(TAG, "  %u.%02u ms: request %d/%d sent, waiting for Windows to decide",
                      (unsigned)(itvl * 125 / 100), (unsigned)(itvl * 125 % 100),
                      t + 1, tries_per_step);
             vTaskDelay(pdMS_TO_TICKS(2500));
@@ -944,13 +944,13 @@ static void negotiate_pad_interval(void)
                 return;
             }
         }
-        ESP_LOGW(TAG, "  %u.%02u ms: Windows nie skrocil interwalu po %d probach",
+        ESP_LOGW(TAG, "  %u.%02u ms: Windows did not shorten the interval after %d attempts",
                  (unsigned)(itvl * 125 / 100), (unsigned)(itvl * 125 % 100), tries_per_step);
     }
 
     struct ble_gap_conn_desc fin;
     if (ble_gap_conn_find(s_conn_handle, &fin) == 0) {
-        ESP_LOGW(TAG, "  zostaje interwal %u (%u.%02u ms = %u Hz)",
+        ESP_LOGW(TAG, "  keeping interval %u (%u.%02u ms = %u Hz)",
                  fin.conn_itvl, (unsigned)(fin.conn_itvl * 125 / 100),
                  (unsigned)(fin.conn_itvl * 125 % 100),
                  (unsigned)(1000 * 100 / (fin.conn_itvl * 125)));
@@ -962,16 +962,16 @@ static void gamepad_task(void *arg)
     ble_stack_wait_synced(portMAX_DELAY);
 
     /*
-     * Uchwyt wypelnia NimBLE przez wskaznik val_handle w chwili startu GATT,
-     * czyli po synchronizacji stacku. Nie musimy go szukac (tak bylo, gdy usluge
-     * dawal ble_svc_hid) - wystarczy sprawdzic, ze jest.
+     * NimBLE fills the handle in through the val_handle pointer when GATT starts, i.e.
+     * after the stack has synced. There is no need to search for it (which was the case
+     * when ble_svc_hid provided the service) - checking that it exists is enough.
      */
     if (s_report_handle == 0) {
-        ESP_LOGE(TAG, "raport nie dostal uchwytu - pad nie ma sensu, koncze zadanie");
+        ESP_LOGE(TAG, "the report got no handle - the pad is pointless, ending the task");
         vTaskDelete(NULL);
         return;
     }
-    ESP_LOGI(TAG, "charakterystyka Report ma handle %u", s_report_handle);
+    ESP_LOGI(TAG, "Report characteristic has handle %u", s_report_handle);
     start_advertising();
 
     const TickType_t period = pdMS_TO_TICKS(1000 / CONFIG_APP_REPORT_RATE_HZ);
@@ -982,8 +982,8 @@ static void gamepad_task(void *arg)
         tick++;
 
         /*
-         * Dopiero po wlaczeniu notyfikacji przez PC - wtedy link jest juz zestawiony
-         * i zaszyfrowany, a Windows skonczyl odkrywanie uslug. Raz na polaczenie.
+         * Only after the PC enables notifications - by then the link is established and
+         * encrypted, and Windows has finished service discovery. Once per connection.
          */
         if (ble_gamepad_is_ready() && !itvl_negotiated) {
             itvl_negotiated = true;
@@ -1024,17 +1024,17 @@ esp_err_t ble_gamepad_start(void)
     }
 
 #if CONFIG_APP_GAMEPAD_PROFILE_XBOX
-    ESP_LOGI(TAG, "profil: pad Xbox Series X (XInput), PID 0x%02x%02x",
+    ESP_LOGI(TAG, "profile: Xbox Series X pad (XInput), PID 0x%02x%02x",
              s_pnp_id[4], s_pnp_id[3]);
-    /* Mapowanie w logu, bo inaczej trzeba je zgadywac z kodu przy kazdym tescie. */
-    ESP_LOGI(TAG, "przyciski -> Xbox: 1=%s 2=%s 3=%s 4=%s 5=%s 6=%s",
+    /* The mapping goes into the log, otherwise every test means digging through code. */
+    ESP_LOGI(TAG, "buttons -> Xbox: 1=%s 2=%s 3=%s 4=%s 5=%s 6=%s",
              s_xbox_ctrl[0].name, s_xbox_ctrl[1].name, s_xbox_ctrl[2].name,
              s_xbox_ctrl[3].name, s_xbox_ctrl[4].name, s_xbox_ctrl[5].name);
     ESP_LOGI(TAG, "               7=%s 8=%s 9=%s 10=%s 11=%s 12=%s",
              s_xbox_ctrl[6].name, s_xbox_ctrl[7].name, s_xbox_ctrl[8].name,
              s_xbox_ctrl[9].name, s_xbox_ctrl[10].name, s_xbox_ctrl[11].name);
 #else
-    ESP_LOGI(TAG, "profil: generyczny pad HID (DirectInput)");
+    ESP_LOGI(TAG, "profile: generic HID pad (DirectInput)");
 #endif
     return ESP_OK;
 }
