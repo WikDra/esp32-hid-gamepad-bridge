@@ -932,6 +932,31 @@ static void handle_adv_report(const struct ble_gap_disc_desc *disc)
                           is_bonded_peer(&disc->addr) ||
                           disc->event_type == BLE_HCI_ADV_RPT_EVTYPE_DIR_IND;
     candidate_seen(disc, &f, looks_like_hid, name);
+
+    /*
+     * Stop scanning the moment a usable candidate shows up, instead of sitting out the
+     * rest of the round.
+     *
+     * WHY THIS MATTERS - measured, not theoretical: a device in pairing mode advertises
+     * with a random address that it rotates quickly. We used to see the candidate at the
+     * start of a 6 s round and only attempt the connection after the round finished, by
+     * which time the address was already stale - so ble_gap_connect() aimed at an address
+     * nobody answers on, and the caller sat in esp_hidh_dev_open() until its 30 s
+     * internal timeout. In the log that looked like "device open in progress" followed by
+     * nothing at all. A bonded device reconnects under a stable identity address, which
+     * is why this only ever bit unbonded, freshly-pairing devices.
+     *
+     * Cancelling discovery from inside the GAP callback is the pattern NimBLE's own
+     * blecent example uses. BLE_GAP_EVENT_DISC_COMPLETE arrives right after, which
+     * releases scan_round() and gets us to the connection attempt in milliseconds.
+     */
+    if (looks_like_hid && !s_opening &&
+        ble_hid_host_device_count() < HID_HOST_MAX_DEVICES) {
+        int rc = ble_gap_disc_cancel();
+        if (rc != 0 && rc != BLE_HS_EALREADY) {
+            ESP_LOGD(TAG, "ble_gap_disc_cancel: rc=%d", rc);
+        }
+    }
 }
 
 /*
