@@ -1459,9 +1459,53 @@ tego urządzenia — choć w stanie skanowania odbiera je bez problemu i widzimy
 razem z pełną treścią.
 
 Czego o tym nie wiem: dlaczego inicjator nie dopasowuje pakietu, który skaner odbiera.
-Podejrzenie, nie dowód: coś w filtrowaniu adresu po stronie kontrolera (urządzenie zmienia
-adres statyczny losowy przy każdym zdarzeniu rozgłoszeniowym, patrz niżej). Rozstrzygnięcie
-wymagałoby sniffera BLE, którego nie mamy.
+Rozstrzygnięcie wymagałoby sniffera BLE, którego nie mamy.
+
+#### Rozstrzygający pomiar: jeden usłyszany pakiet wystarcza — ale tylko na C3
+
+Dołożony licznik pakietów **per adres** (`pkts=` w linii skanu) odpowiada na pytanie, którego
+licznik zbiorczy nie rozstrzygał: czy urządzenie rozgłasza się rzadko, czy rozgłasza się
+normalnie, a kontroler gubi jego pakiety. Wynik jest ten sam na obu płytkach i **nie o to
+chodzi**:
+
+```
+C3:  HID e9:1d:c9:51:8f:fd rssi=-46 pkts=1 ADV_IND 'AULA-F99Pro'
+     encryption: conn_handle=3 status=0 | enc=1 bond=1
+     OPEN e9:1d:c9:51:8f:fd 'AULA-F99Pro 5.0 ' vid=0x3554 pid=0xfa07
+     inputs 1 (kbd=1 mouse=1)
+
+H2:  HID ed:27:ea:0d:d2:e5 rssi=-58 pkts=1 ADV_IND 'AULA-F99Pro'
+     Connection failed; status=13
+```
+
+**C3 łączy się z pakietu usłyszanego dokładnie raz.** Upada więc hipoteza, którą wcześniej
+tu zapisałem — że adres nie powtarza się nigdy, więc inicjator nie ma czego dopasować.
+Do połączenia wystarczy jeden pakiet, jeśli tylko kontroler potrafi go użyć. Dla porównania
+beacon Windows daje w tej samej rundzie `pkts=49` na C3 i `pkts=51` na H2, czyli oba skanery
+odbierają porównywalnie dobrze.
+
+Zostaje więc czysty wniosek: **przy tym samym firmware, tym samym urządzeniu i porównywalnym
+sygnale kontroler C3 potrafi zainicjować to połączenie, a kontroler C6/H2 nie.**
+
+#### Ślepa uliczka warta zapisania: inicjowanie z adresu losowego
+
+`esp_hidh` inicjuje na sztywno z adresu **publicznego** (`own_addr_type = 0; // set to public
+for now`), a Windows łączy się z tą klawiaturą z adresu prywatnego — to była ostatnia
+nietknięta różnica po stronie inicjowania. Sprawdzone: rejestracja losowego adresu
+statycznego obok publicznego i inicjowanie z niego **nic nie zmieniło** dla tej klawiatury
+(nadal `status=13` przy −53 dBm) i **zepsuło powrót urządzeń już sparowanych**.
+
+Dlaczego psuje: sparowany peer wraca rozgłoszeniem **kierunkowym**, a `ADV_DIRECT_IND` nosi
+w sobie adres inicjatora. Urządzenie, które sparowało się z naszym adresem publicznym,
+celuje w ten adres — więc inicjator używający innego adresu własnego nie ma prawa
+odpowiedzieć i nie odpowiada. Na sprzęcie wyglądało to tak, że klawiatura nadawała `DIR_IND`
+co 500 ms ze stabilnego adresu tożsamości przy −42 dBm, a nasza próba i tak kończyła się
+timeoutem. Zmiana została wycofana, a w kodzie został komentarz, żeby nikt tego nie powtórzył.
+
+Dwie pułapki z tej próby, obie warte pamięci: `ble_hs_id_gen_rnd()` wołane przed
+synchronizacją hosta zwraca `rc=22` (`BLE_HS_ENOTSYNCED`) — adresy można ustawiać dopiero
+w `on_sync()`. Oraz `ble_hs_id_addr()` jest wewnętrzne (`ble_hs_priv.h`), a publiczne API to
+`ble_hs_id_copy_addr()` z `host/ble_hs_id.h`.
 
 Co zostało **wykluczone osobnym pomiarem** (warto zapisać, żeby nikt nie wracał do tych
 tropów):
@@ -1475,6 +1519,8 @@ tropów):
 | siła sygnału / margines łącza | H2 przy −52 dBm zawodzi, C3 przy −53 dBm działa |
 | głodzenie inicjatora przez link pada | przebieg z `pad no PC`, a na H2 z całkowicie wyłączoną rolą pada |
 | zwłoka uzbrojenia inicjatora | sonda łącząca się **z callbacku GAP**, mikrosekundy po pakiecie, też `status=13` |
+| własny adres inicjatora (publiczny kontra losowy) | sprawdzone oba; przy losowym nadal `status=13`, a dodatkowo psuje się powrót sparowanych urządzeń (`DIR_IND`) |
+| „adres nie powtarza się, więc nie ma czego dopasować" | C3 łączy się z pakietu o `pkts=1`, czyli jedno usłyszenie wystarcza |
 | filtrowanie po stronie klawiatury | sonda przy braku parowania z Windows również odrzucona |
 | tryb powrotu zamiast parowania | pakiety mają `flags=0x05` (limited discoverable), UUID 0x1812, appearance 0x03C1 i beacon Swift Pair — to jest zaproszenie do parowania |
 | `BT_LE_50_FEATURE_SUPPORT` na C6/H2 | opcja ma `depends on !BT_NIMBLE_ENABLED`, więc przy NimBLE jest nieaktywna; `BT_NIMBLE_EXT_ADV` też jest wyłączone, skan idzie ścieżką legacy |

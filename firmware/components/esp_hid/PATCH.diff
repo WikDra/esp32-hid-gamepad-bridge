@@ -213,34 +213,31 @@
              dev->status = event->connect.status; // ESP_GATT_CONN_FAIL_ESTABLISH;
              dev->ble.conn_id = -1;
              SEND_CB(); // return from connection
-@@ -916,6 +1009,26 @@
+@@ -916,6 +1009,23 @@
      uint8_t own_addr_type;
  
      own_addr_type = 0; // set to public for now
 +    /*
-+     * LOCAL PATCH (AGENTS.md 4.35): initiate from our RANDOM static address when the
-+     * application registered one, instead of always the public address.
++     * LOCAL PATCH NOTE (AGENTS.md 4.35): initiating from a RANDOM address was tried here
++     * and it is WRONG. Keeping the note so nobody repeats it.
 +     *
-+     * Upstream hardcodes public, with the comment "set to public for now". Windows dials
-+     * this keyboard from a private address and succeeds where every attempt of ours times
-+     * out, and the initiator's own address type is the last difference left after signal
-+     * strength, radio contention, dialling latency and the controller's BLE 5.0 features
-+     * were each eliminated by a separate measurement. The pad keeps advertising from the
-+     * public address, so its bond with Windows is untouched by this.
++     * The idea was reasonable: esp_hidh hardcodes the public address, Windows dials the
++     * troublesome keyboard from a private address and succeeds, and the initiator's own
++     * address type was the last untested difference. Implemented, it changed nothing for
++     * that keyboard (still "Connection failed; status=13" at rssi -53, as good a signal as
++     * the board that works) - and it BROKE reconnection of already-bonded devices.
 +     *
-+     * If no random address was registered, ble_hs_id_addr() fails and we behave exactly as
-+     * before.
++     * Why it breaks them: a bonded peer comes back with DIRECTED advertising, and ADV_DIRECT_IND
++     * carries the initiator's address in the packet. A device that bonded with our public
++     * address directs its advertisements at that address, so an initiator using a different
++     * own address must not - and does not - answer them. On hardware this showed up as a
++     * keyboard advertising DIR_IND every 500 ms from a stable identity address at -42 dBm,
++     * with our connection attempt timing out anyway.
 +     */
-+    {
-+        uint8_t rnd_addr[6];
-+        if (ble_hs_id_copy_addr(BLE_ADDR_RANDOM, rnd_addr, NULL) == 0) {
-+            own_addr_type = BLE_OWN_ADDR_RANDOM;
-+        }
-+    }
      esp_hidh_dev_t *dev = esp_hidh_dev_malloc();
      if (dev == NULL) {
          ESP_LOGE(TAG, "malloc esp_hidh_dev_t failed");
-@@ -927,11 +1040,38 @@
+@@ -927,11 +1037,38 @@
      memcpy(dev->addr.bda, bda, sizeof(dev->addr.bda));
      dev->ble.address_type = address_type;
      dev->ble.appearance = ESP_HID_APPEARANCE_GENERIC;
