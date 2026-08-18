@@ -981,7 +981,7 @@ static void handle_adv_report(const struct ble_gap_disc_desc *disc)
      *
      * Names are rare in advertising data, so this stays quiet in normal use.
      */
-    if (name[0] != '\0') {
+    if (looks_like_hid || name[0] != '\0') {
         char hex[3 * 31 + 1];
         int pos = 0;
         for (int i = 0; i < disc->length_data && pos < (int)sizeof(hex) - 3; i++) {
@@ -1016,7 +1016,19 @@ static void handle_adv_report(const struct ble_gap_disc_desc *disc)
     if (looks_like_hid && !s_opening &&
         ble_hid_host_device_count() < HID_HOST_MAX_DEVICES) {
         int rc = ble_gap_disc_cancel();
-        if (rc != 0 && rc != BLE_HS_EALREADY) {
+        if (rc == 0) {
+            /*
+             * CAREFUL: ble_gap_disc_cancel() does NOT deliver BLE_GAP_EVENT_DISC_COMPLETE.
+             * That event only arrives when discovery ends on its own, at the end of its
+             * duration. Cancelling and then waiting for it - which is what this code did
+             * at first - means scan_round() blocks for the rest of the 6 s window with
+             * the scanner already stopped: deaf and idle at the same time. It showed up
+             * in a log as an advertisement heard at 28.0 s and the connection attempt
+             * starting at 34.3 s, six seconds too late for an address that no longer
+             * existed. So we release the round ourselves.
+             */
+            xEventGroupSetBits(s_events, EV_DISC_DONE);
+        } else if (rc != BLE_HS_EALREADY) {
             ESP_LOGD(TAG, "ble_gap_disc_cancel: rc=%d", rc);
         }
     }
@@ -1188,9 +1200,15 @@ static void try_connect_candidates(void)
                  ADDR_ARG(c.addr.val), c.addr.type, c.name[0] ? c.name : "?",
                  c.appearance, c.rssi);
 
-        /* Scanning and initiating a connection cannot happen at the same time. */
+        /*
+         * Scanning and initiating a connection cannot happen at the same time, so the
+         * scan is stopped first. The pause only lets that take effect - it is kept short
+         * because the address we are about to dial may have a short life: a peer in
+         * pairing mode can pick a new random address between advertising events, and the
+         * initiator can only send CONNECT_IND if it hears the SAME address again.
+         */
         ble_gap_disc_cancel();
-        vTaskDelay(pdMS_TO_TICKS(200));
+        vTaskDelay(pdMS_TO_TICKS(50));
 
         esp_hidh_dev_t *dev = open_device_guarded(&c.addr);
         if (dev == NULL) {
