@@ -1,10 +1,10 @@
 /*
- * Rola central: odbior raportow HID z klawiatury i myszy BLE (profil HOGP).
+ * Central role: receives HID reports from a BLE keyboard and mouse (HOGP profile).
  *
- * Modul startuje stack NimBLE, skanuje w petli i podlacza sie do KAZDEGO
- * znalezionego urzadzenia HID, az uzbiera zalozony limit. Wbrew wzorcowi
- * z OpenLary nie ma tu jednej flagi "polaczono" - potrzebujemy klawiatury
- * i myszy naraz (AGENTS.md 4.3).
+ * The module starts the NimBLE stack, scans in a loop and connects to EVERY HID
+ * device it finds until it reaches the configured limit. Unlike the pattern in the
+ * reference project there is no single "connected" flag here - we need the keyboard
+ * and the mouse at the same time (AGENTS.md 4.3).
  */
 #pragma once
 
@@ -17,19 +17,19 @@
 extern "C" {
 #endif
 
-/* Boot protocol klawiatury USB HID: 6 jednoczesnie wcisnietych klawiszy. */
+/* USB HID keyboard boot protocol: up to 6 keys held simultaneously. */
 #define HID_KEYS_MAX 6
 
 typedef struct {
-    /* Klawiatura: bitmapa modyfikatorow (bit0 LCtrl ... bit7 RGui) i keycody USB HID. */
+    /* Keyboard: modifier bitmap (bit0 LCtrl ... bit7 RGui) and USB HID keycodes. */
     uint8_t modifiers;
     uint8_t keys[HID_KEYS_MAX];
 
-    /* Mysz: bitmapa przyciskow (bit0 lewy, bit1 prawy, bit2 srodkowy). */
+    /* Mouse: button bitmap (bit0 left, bit1 right, bit2 middle). */
     uint8_t mouse_buttons;
 
-    /* Mysz: ruch zakumulowany od poprzedniego odczytu stanu. Mysz raportuje
-     * przyrosty, a zadanie pada chodzi z inna czestotliwoscia, wiec sumujemy. */
+    /* Mouse: motion accumulated since the previous state read. The mouse reports
+     * deltas and the pad task runs at a different rate, so we sum them up. */
     int32_t mouse_dx;
     int32_t mouse_dy;
     int32_t mouse_wheel;
@@ -38,25 +38,25 @@ typedef struct {
     bool mouse_connected;
 } hid_input_state_t;
 
-/* Startuje NimBLE, esp_hidh i zadanie skanujace. Wolac raz, z app_main. */
+/* Starts NimBLE, esp_hidh and the scanning task. Call once, from app_main. */
 esp_err_t ble_hid_host_start(void);
 
-/* Snapshot stanu wejsc. Akumulatory ruchu myszy sa przy tym zerowane, wiec
- * kazdy przyrost trafia do dokladnie jednego raportu pada. */
+/* Snapshot of the input state. The mouse motion accumulators are cleared in the
+ * process, so every delta ends up in exactly one gamepad report. */
 void ble_hid_host_take_state(hid_input_state_t *out);
 
-/* Liczba aktualnie otwartych urzadzen HID (0..HID_HOST_MAX_DEVICES). */
+/* Number of currently open HID devices (0..HID_HOST_MAX_DEVICES). */
 int ble_hid_host_device_count(void);
 
 /*
- * Czy trwa wlasnie otwieranie urzadzenia (polaczenie + pelne odkrywanie uslug GATT).
- * To najciezszy moment dla stacku: jeden link robi dziesiatki procedur GATT, a
- * pozostale dwa sa aktywne. Zadanie mapujace wstrzymuje wtedy notyfikacje pada,
- * zeby nie dokladac obciazenia - patrz AGENTS.md 4.26.
+ * Whether a device open is in progress (connection + full GATT service discovery).
+ * That is the heaviest moment for the stack: one link runs dozens of GATT procedures
+ * while the other two are active. The mapping task suspends pad notifications during
+ * that window so as not to add load - see AGENTS.md 4.26.
  */
 bool ble_hid_host_is_opening(void);
 
-/* Wypisuje na konsole liste podlaczonych urzadzen - do diagnostyki. */
+/* Prints the list of connected devices to the console - for diagnostics. */
 void ble_hid_host_log_devices(void);
 
 #ifdef __cplusplus

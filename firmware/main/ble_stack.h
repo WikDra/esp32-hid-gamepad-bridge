@@ -1,17 +1,17 @@
 /*
- * Wspolna inicjalizacja stacku NimBLE dla obu rol (central + peripheral).
+ * Shared NimBLE stack setup for both roles (central + peripheral).
  *
- * Po co osobny modul: ble_hs_cfg jest globalne i pojedyncze. W IDF wlasnie na tym
- * wykladaja sie esp_hidd i esp_hidh, gdy sa uzyte razem - kazde nadpisuje sync_cb
- * i reset_cb drugiego (AGENTS.md 4.2). Zeby nie powtorzyc tego bledu u siebie,
- * caly ble_hs_cfg ustawiamy w JEDNYM miejscu, a kolejnosc wzgledem esp_hidh_init()
- * jest wymuszona przez API: init -> (role sie rejestruja) -> start.
+ * Why a separate module: ble_hs_cfg is global and singular. That is exactly where
+ * ESP-IDF's esp_hidd and esp_hidh fall over when used together - each overwrites the
+ * other's sync_cb and reset_cb (AGENTS.md 4.2). To avoid repeating that mistake here,
+ * the whole of ble_hs_cfg is configured in ONE place, and the ordering relative to
+ * esp_hidh_init() is enforced by the API: init -> (roles register) -> start.
  *
- * Kolejnosc uzycia:
- *   ble_stack_init();          // nimble_port_init + bezpieczenstwo + magazyn kluczy
- *   ble_hid_host_start();      // wola esp_hidh_init(), ktore psuje sync_cb
- *   ble_gamepad_start();       // rejestruje usluge HID w GATT
- *   ble_stack_start();         // przywraca nasze callbacki i odpala watek hosta
+ * Call order:
+ *   ble_stack_init();          // nimble_port_init + security + key store
+ *   ble_hid_host_start();      // calls esp_hidh_init(), which clobbers sync_cb
+ *   ble_gamepad_start();       // registers the HID service in GATT
+ *   ble_stack_start();         // restores our callbacks and starts the host task
  */
 #pragma once
 
@@ -24,17 +24,17 @@
 extern "C" {
 #endif
 
-/* nimble_port_init() + konfiguracja ble_hs_cfg. Nie startuje jeszcze radia. */
+/* nimble_port_init() + ble_hs_cfg setup. Does not bring up the radio yet. */
 esp_err_t ble_stack_init(void);
 
-/* Przywraca nasze sync_cb/reset_cb (bo esp_hidh_init je nadpisuje) i uruchamia
- * watek hosta NimBLE. Wolac jako ostatnie, po zarejestrowaniu wszystkich rol. */
+/* Restores our sync_cb/reset_cb (esp_hidh_init overwrites them) and starts the
+ * NimBLE host task. Call last, once every role has registered. */
 esp_err_t ble_stack_start(void);
 
-/* Blokuje do momentu, w ktorym stack jest gotowy do pracy (BLE_GAP synced). */
+/* Blocks until the stack is ready for use (BLE_GAP synced). */
 bool ble_stack_wait_synced(uint32_t timeout_ms);
 
-/* Typ wlasnego adresu wyliczony przez ble_hs_id_infer_auto(). */
+/* Own address type as inferred by ble_hs_id_infer_auto(). */
 uint8_t ble_stack_own_addr_type(void);
 
 #ifdef __cplusplus

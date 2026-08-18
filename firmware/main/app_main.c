@@ -1,10 +1,9 @@
 /*
- * Mostek BLE HID: klawiatura + mysz -> pad, na ESP32-C3 SuperMini.
+ * BLE HID bridge: keyboard + mouse -> gamepad, on an ESP32-C3 SuperMini.
  *
- * Stan: Etap 1 - rola central (odbior raportow z klawiatury i myszy).
- * Kolejne etapy (patrz AGENTS.md, sekcja 5) dodaja tutaj:
- *   Etap 2 - ble_gamepad_start()   (rola peripheral, wlasny serwer GATT)
- *   Etap 3 - zadanie mapujace wejscia na raport pada
+ * Both roles run at once: two central links (keyboard, mouse) and one peripheral link
+ * (the pad presented to the PC). Roles are Kconfig switches so each side can be tested
+ * on its own. See AGENTS.md for the engineering notes behind every design decision.
  */
 
 #include <inttypes.h>
@@ -46,18 +45,18 @@ static void log_boot_banner(void)
     }
 
     ESP_LOGI(TAG, "=== esp32-hid-gamepad-bridge ===");
-    ESP_LOGI(TAG, "IDF %s, target %s rev v%d.%d, %d rdzen(i)",
+    ESP_LOGI(TAG, "IDF %s, target %s rev v%d.%d, %d core(s)",
              esp_get_idf_version(), CONFIG_IDF_TARGET,
              chip.revision / 100, chip.revision % 100, chip.cores);
     ESP_LOGI(TAG, "flash %" PRIu32 " kB, PSRAM %s",
              flash_size / 1024,
-             (chip.features & CHIP_FEATURE_EMB_PSRAM) ? "jest" : "brak");
-    ESP_LOGI(TAG, "heap przed BLE: free %" PRIu32 " B, najwiekszy blok %" PRIu32 " B",
+             (chip.features & CHIP_FEATURE_EMB_PSRAM) ? "present" : "none");
+    ESP_LOGI(TAG, "heap before BLE: free %" PRIu32 " B, largest block %" PRIu32 " B",
              (uint32_t)esp_get_free_heap_size(),
              (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
 
-    /* Role sa przelacznikami z menuconfig, zeby dalo sie testowac etapy osobno. */
-    ESP_LOGI(TAG, "role: hid_host=%s gamepad=%s selftest=%s",
+    /* Roles are menuconfig switches so that each side can be tested separately. */
+    ESP_LOGI(TAG, "roles: hid_host=%s gamepad=%s selftest=%s",
 #if CONFIG_APP_ENABLE_HID_HOST
              "on",
 #else
@@ -80,7 +79,7 @@ void app_main(void)
 {
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "NVS wymaga wyczyszczenia (%s), kasuje partycje", esp_err_to_name(err));
+        ESP_LOGW(TAG, "NVS needs erasing (%s), wiping the partition", esp_err_to_name(err));
         ESP_ERROR_CHECK(nvs_flash_erase());
         err = nvs_flash_init();
     }
@@ -89,8 +88,8 @@ void app_main(void)
     log_boot_banner();
 
     /*
-     * Kolejnosc jest wymuszona przez to, ze ble_hs_cfg jest globalne i esp_hidh_init()
-     * je nadpisuje. ble_stack_start() ustawia nasze callbacki na koniec (AGENTS.md 4.2).
+     * The order is forced by ble_hs_cfg being global and esp_hidh_init() overwriting it.
+     * ble_stack_start() restores our callbacks at the very end (AGENTS.md 4.2).
      */
     ESP_ERROR_CHECK(ble_stack_init());
 
@@ -102,59 +101,59 @@ void app_main(void)
 #endif
 
 #if CONFIG_APP_ENABLE_HID_HOST && CONFIG_APP_ENABLE_GAMEPAD && !CONFIG_APP_GAMEPAD_SELFTEST
-    /* Etap 3: klej miedzy rolami. Przy wlaczonym selfteScie pad chodzi wzorcem
-     * testowym, wiec mapowanie by z nim walczylo o ten sam raport. */
+    /* The glue between the roles. With the selftest enabled the pad drives a test
+     * pattern, so the mapper would fight it over the same report. */
     ESP_ERROR_CHECK(input_mapper_start());
 #elif CONFIG_APP_GAMEPAD_SELFTEST
-    ESP_LOGW(TAG, "selftest pada wlaczony - mapowanie wejsc NIEaktywne");
+    ESP_LOGW(TAG, "pad selftest enabled - input mapping is INACTIVE");
 #endif
 
     ESP_ERROR_CHECK(ble_stack_start());
 
 #if CONFIG_APP_DEBUG_WATCH_ADDR
     /*
-     * Diagnostyka crashu z AGENTS.md 4.21. Crash objawia sie jako odczyt spod
-     * adresu-smiecia w ble_gap_update_next_exp(), czyli OFIARA jest widoczna,
-     * a sprawca nie. Watchpoint na zapis odwraca sytuacje: panika leci w momencie
-     * psucia struktury, z backtrace'em winowajcy.
+     * Diagnostic tool for the crash in AGENTS.md 4.21. That crash shows up as a read
+     * from a garbage address inside ble_gap_update_next_exp(), i.e. we see the VICTIM
+     * but not the culprit. A write watchpoint inverts that: the panic fires at the
+     * moment the structure is corrupted, with the culprit's backtrace.
      *
-     * UZBRAJAMY PO SYNCHRONIZACJI STACKU. Wczesniej lapalo to legalny zapis
-     * z ble_gap_init() (ble_gap.c:9113, SLIST_INIT), co dawalo petle restartow
-     * juz przy starcie.
+     * ARM IT AFTER THE STACK HAS SYNCED. Earlier it caught the legitimate write from
+     * ble_gap_init() (ble_gap.c:9113, SLIST_INIT), which produced a reboot loop right
+     * at startup.
      */
     ble_stack_wait_synced(5000);
     {
         void *addr = (void *)(uintptr_t)CONFIG_APP_DEBUG_WATCH_ADDR;
         esp_err_t werr = esp_cpu_set_watchpoint(0, addr, 4, ESP_CPU_WATCHPOINT_STORE);
-        ESP_LOGW(TAG, "watchpoint na zapis pod %p: %s", addr, esp_err_to_name(werr));
+        ESP_LOGW(TAG, "write watchpoint at %p: %s", addr, esp_err_to_name(werr));
     }
 #endif
 
-    /* Heartbeat: odroznia "firmware stoi i czeka" od "firmware sie wysypal".
-     * Przy okazji pokazuje pamiec, co jest kluczowe na C3 bez PSRAM. */
+    /* Heartbeat: tells "the firmware is idle and waiting" apart from "the firmware
+     * died". It also reports memory, which matters on a C3 without PSRAM. */
     uint32_t tick = 0;
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(5000));
         tick += 5;
 
 #if CONFIG_APP_ENABLE_GAMEPAD
-        const char *pad = ble_gamepad_is_ready() ? "gotowy" : "brak PC";
+        const char *pad = ble_gamepad_is_ready() ? "ready" : "no PC";
 #else
-        const char *pad = "wyl.";
+        const char *pad = "off";
 #endif
 
 #if CONFIG_APP_ENABLE_HID_HOST
         hid_input_state_t st;
         ble_hid_host_take_state(&st);
-        ESP_LOGI(TAG, "alive %" PRIu32 " s | heap %" PRIu32 " B (min %" PRIu32 " B) | wejscia %d (kbd=%d mouse=%d) | pad %s",
+        ESP_LOGI(TAG, "alive %" PRIu32 " s | heap %" PRIu32 " B (min %" PRIu32 " B) | inputs %d (kbd=%d mouse=%d) | pad %s",
                  tick, (uint32_t)esp_get_free_heap_size(), (uint32_t)esp_get_minimum_free_heap_size(),
                  ble_hid_host_device_count(), st.keyboard_connected, st.mouse_connected, pad);
         if (st.mouse_dx || st.mouse_dy || st.mouse_wheel) {
-            ESP_LOGI(TAG, "  ruch myszy od ostatniego odczytu: dx=%" PRId32 " dy=%" PRId32 " wheel=%" PRId32,
+            ESP_LOGI(TAG, "  mouse motion since last read: dx=%" PRId32 " dy=%" PRId32 " wheel=%" PRId32,
                      st.mouse_dx, st.mouse_dy, st.mouse_wheel);
         }
         if (st.modifiers || st.keys[0]) {
-            ESP_LOGI(TAG, "  klawiatura: mod=0x%02x keys=%02x %02x %02x %02x %02x %02x",
+            ESP_LOGI(TAG, "  keyboard: mod=0x%02x keys=%02x %02x %02x %02x %02x %02x",
                      st.modifiers, st.keys[0], st.keys[1], st.keys[2], st.keys[3], st.keys[4], st.keys[5]);
         }
         if (ble_hid_host_device_count() > 0) {

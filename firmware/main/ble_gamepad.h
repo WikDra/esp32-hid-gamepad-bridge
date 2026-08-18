@@ -1,9 +1,11 @@
 /*
- * Rola peripheral: pad HID widziany przez PC.
+ * Peripheral role: the HID gamepad the PC sees.
  *
- * Usluga GATT 0x1812 pochodzi z NimBLE (ble_svc_hid) - patrz AGENTS.md 4.9.
- * Tutaj jest tylko deskryptor raportu, advertising, obsluga jednego polaczenia
- * (z jawnym sprawdzeniem roli, czego brakuje w esp_hidd) i wysylka notyfikacji.
+ * The HID service (0x1812) and the Device Information service (0x180A) are written
+ * directly on GATT here rather than taken from NimBLE - both bundled services turned
+ * out to be unusable for impersonating an Xbox pad (AGENTS.md 4.30). This module owns
+ * the report descriptor, advertising, a single connection (with an explicit role check,
+ * which esp_hidd lacks) and notification delivery.
  */
 #pragma once
 
@@ -16,18 +18,18 @@
 extern "C" {
 #endif
 
-/* Krzyzak (hat switch). Bitmapa, bo klawisze strzalek sa niezalezne; przeciwne
- * kierunki wcisniete naraz znosza sie w ble_gamepad.c.
+/* D-pad (hat switch). A bitmap, because the arrow keys are independent; opposite
+ * directions pressed together cancel out in ble_gamepad.c.
  *
- * UWAGA: krzyzak dziala tylko w profilu Xbox. Deskryptor pada generycznego nie ma
- * hat switcha, a dodanie go wymagaloby re-parowania tamtego profilu w Windows. */
+ * NOTE: the D-pad only works in the Xbox profile. The generic pad descriptor has no
+ * hat switch, and adding one would require re-pairing that profile in Windows. */
 #define GAMEPAD_DPAD_UP    0x01
 #define GAMEPAD_DPAD_RIGHT 0x02
 #define GAMEPAD_DPAD_DOWN  0x04
 #define GAMEPAD_DPAD_LEFT  0x08
 
-/* Osie sa 8-bitowe ze znakiem, zakres -127..127, srodek 0.
- * Przyciski: bit 0 = przycisk 1, ..., bit 11 = przycisk 12. */
+/* Axes are signed 8-bit, range -127..127, centred on 0.
+ * Buttons: bit 0 = button 1, ..., bit 11 = button 12. */
 typedef struct {
     int8_t lx;
     int8_t ly;
@@ -37,15 +39,15 @@ typedef struct {
     uint8_t dpad;
 } gamepad_state_t;
 
-/* Rejestruje usluge HID w GATT i uruchamia zadanie rozglaszajace.
- * Wolac po ble_stack_init(), a przed ble_stack_start(). */
+/* Registers the HID service in GATT and starts the advertising task.
+ * Call after ble_stack_init() and before ble_stack_start(). */
 esp_err_t ble_gamepad_start(void);
 
-/* Czy PC jest podlaczony i zapisany na notyfikacje raportu. */
+/* Whether the PC is connected and subscribed to report notifications. */
 bool ble_gamepad_is_ready(void);
 
-/* Wysyla raport, ale tylko gdy stan rozni sie od poprzednio wyslanego.
- * Zwraca true, jesli notyfikacja poszla. */
+/* Sends a report, but only when the state differs from the previously sent one.
+ * Returns true if a notification went out. */
 bool ble_gamepad_send(const gamepad_state_t *state);
 
 #ifdef __cplusplus
