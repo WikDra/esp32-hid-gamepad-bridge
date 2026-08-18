@@ -1068,6 +1068,24 @@ esp_hidh_dev_t *esp_ble_hidh_dev_open(uint8_t *bda, uint8_t address_type)
      * Six seconds is far more than any responsive peer needs, and it turns one long
      * gamble into several short attempts, each aimed at a freshly heard advertisement.
      */
+    /*
+     * LOCAL PATCH NOTE (AGENTS.md 4.35): explicit connection parameters were tried here and
+     * changed nothing, so we are back to NULL (NimBLE's defaults: 30-50 ms interval, 2560 ms
+     * supervision timeout).
+     *
+     * The idea had a mechanism behind it. The troublesome keyboard fails at the FIRST
+     * connection event, and its behaviour says our CONNECT_IND does arrive: the moment we
+     * dial it, it leaves pairing mode within two seconds and goes looking for its previously
+     * bonded host, which only happens if it accepted a connection request. The interval and
+     * window carried in CONNECT_IND shape that first meeting, so stating them explicitly
+     * was worth a try. Tried 15 ms fixed (min == max) with a 4 s supervision timeout:
+     * still "Connection failed; status=13".
+     *
+     * Reverted rather than kept, because it changes the first seconds of every connection
+     * for devices that DO work and there was no hardware here to confirm the mouse is
+     * unaffected. If anyone revisits this, verify the mouse as well - it negotiates 7.5 ms
+     * on its own once connected.
+     */
     ret = ble_gap_connect(own_addr_type, &addr, 6000, NULL, esp_hidh_gattc_event_handler, NULL);
     if (ret) {
         esp_hidh_dev_free_inner(dev);

@@ -1487,7 +1487,59 @@ odbierają porównywalnie dobrze.
 Zostaje więc czysty wniosek: **przy tym samym firmware, tym samym urządzeniu i porównywalnym
 sygnale kontroler C3 potrafi zainicjować to połączenie, a kontroler C6/H2 nie.**
 
-#### Ślepa uliczka warta zapisania: inicjowanie z adresu losowego
+#### To nie regresja w jednej wersji IDF — starszy kontroler zachowuje się tak samo
+
+Kontroler jest w ESP-IDF prekompilowaną biblioteką, więc jedyną nietkniętą zmienną po
+wyczerpaniu wszystkiego po stronie hosta była **jego wersja**. Bloby faktycznie się różnią:
+`libble_app.a` dla H2 ma 4 602 484 B w IDF 5.4.3 i 3 786 294 B w 5.5.1, inne sumy MD5.
+
+Zbudowane więc to samo drzewo na IDF 5.4.3 (osobny katalog `build.h2.idf543`, żeby nie
+mieszać wersji) i wgrane na H2. Nasza łatana kopia `esp_hid` skompilowała się pod 5.4.3 bez
+zmian. Wynik:
+
+```
+BLE_INIT: ble controller commit:[390a8ef]        <- 5.5.1 ma [898f73c]
+HID d5:9d:64:ab:ea:2f rssi=-45 pkts=1 ADV_IND 'AULA-F99Pro'
+Connection failed; status=13
+```
+
+**Ten sam objaw, i to przy −45 dBm** — najlepszym sygnale zanotowanym w całym śledztwie,
+lepszym niż na C3 w chwili udanego parowania. Hipoteza „regresja w 5.5.1" upada; zachowanie
+jest cechą rodziny kontrolerów C6/H2, nie jednej wersji IDF.
+
+Uwaga praktyczna dla kogoś, kto powtórzy ten test: `scripts/build.sh` przyjmuje `IDF_DIR`,
+ale katalog build wylicza z targetu, więc przy dwóch wersjach IDF trzeba wołać `idf.py`
+wprost z osobnym `-B` i `-D SDKCONFIG=`. Do wgrania obrazu z takiego katalogu skrypty się
+nie nadają (szukają `build.<t>` i `build.win.<t>`) — offsety bierze się z
+`flasher_args.json` i podaje `esptool` ręcznie.
+
+#### Gdzie dokładnie zawodzi: `CONNECT_IND` dociera, pierwsze zdarzenie połączenia nie
+
+Obserwacja właściciela, która przesunęła diagnozę o warstwę: **w chwili gdy w logu pojawia
+się wykrycie AULI, klawiatura wychodzi z trybu parowania** — po maksymalnie dwóch sekundach —
+i zaczyna szukać poprzednio sparowanego hosta. Urządzenie robi tak tylko wtedy, gdy
+**przyjęło żądanie połączenia**. Czyli nasz `CONNECT_IND` do niej dociera i z jej punktu
+widzenia link powstaje; nasz kontroler po prostu nigdy tego nie kończy.
+
+Zgadza się z tym rytm w logu: ten sam adres `d1:be:9b:7c:63:44` widzieliśmy o 9,6 s i znowu
+o 22,5 s, a dokładnie pomiędzy — w naszym oknie inicjowania — klawiatura milczała.
+Wygląda to na cykl „przyjęła połączenie, przestała rozgłaszać, po swoim timeoucie wróciła".
+
+Adres nie jest więc problemem, bo żyje kilkanaście sekund. Problemem jest **pierwsze
+zdarzenie połączenia**, czyli moment, w którym obie strony mają się spotkać po raz pierwszy.
+To już warstwa kontrolera i z hosta sterują tym tylko parametry w `CONNECT_IND` — sprawdzone,
+patrz tabela.
+
+Co sprawdzone i **nieskuteczne** na tej warstwie, każde osobnym przebiegiem na H2:
+
+| Zmiana | Mechanizm, dla którego warto było spróbować | Wynik |
+|---|---|---|
+| `BT_LE_LL_SCA` 60 → 500 ppm | SCA mastera jedzie w `CONNECT_IND` i peryferial wymiaruje po nim okno odbioru; zbyt optymistyczna wartość = zbyt wąskie okno | `status=13` przy −44 dBm |
+| `BT_LE_SCAN_DUPL` wyłączone | kontroler C6/H2 ma własny filtr duplikatów po adresie, którego C3 nie ma w tej postaci — mógł ukrywać pakiety (`pkts=1` przy stałym adresie, a `pkts=51` przy beaconie rotującym adres) | `pkts=1` bez zmian, `status=13` |
+| jawne parametry w `CONNECT_IND` | 15 ms na sztywno (`min == max`) i timeout nadzoru 4 s zamiast domyślnych 30–50 ms i 2560 ms — inne okno pierwszego spotkania | `status=13` |
+| IDF 5.4.3 zamiast 5.5.1 | inny blob kontrolera (4 602 484 B wobec 3 786 294 B) | `status=13` przy −45 dBm |
+
+
 
 `esp_hidh` inicjuje na sztywno z adresu **publicznego** (`own_addr_type = 0; // set to public
 for now`), a Windows łączy się z tą klawiaturą z adresu prywatnego — to była ostatnia
