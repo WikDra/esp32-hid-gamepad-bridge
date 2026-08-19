@@ -1,0 +1,24 @@
+# ESP32-S3 on an official ESP Thread Border Router board (rev 1.2).
+#
+# Why this target exists at all: it is the second data point for the OLD BLE controller
+# family. The S3 shares BOTH the controller library and its Kconfig with the C3 -
+# components/bt/controller/esp32s3/Kconfig.in is a single line that sources the C3's file,
+# and components/bt/CMakeLists.txt links esp32s3 from lib_esp32c3_family. So if the AULA
+# F99 Pro pairs here as it does on the C3, then "the old controller family works and the new
+# C6/H2 one does not" stops being an observation about one board and becomes a statement
+# about the controller (AGENTS.md 4.35).
+#
+# Note on the board: rev 1.2 exposes a separate USB port for each chip, so the S3 and the H2
+# can be flashed and monitored independently - no going through the RCP path.
+#
+# WARNING: flashing this overwrites the Thread Border Router firmware on the S3. Restore it
+# from espressif/esp-thread-br if the board is needed for Thread again.
+CONFIG_IDF_TARGET="esp32s3"
+
+# Console over native USB (the USB Serial/JTAG peripheral), as on the C3 and C6.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# Controller activity slots: 3 connections + scanning + advertising. Same option name as the
+# C3, because it is literally the same Kconfig file.
+CONFIG_BT_CTRL_BLE_MAX_ACT=6

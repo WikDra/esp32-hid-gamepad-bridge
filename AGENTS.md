@@ -1416,15 +1416,16 @@ Objaw: na ESP32-C6 i ESP32-H2 każda próba połączenia z AULA F99 Pro w trybie
 kończy się `Connection failed; status=13` po upływie limitu. Mysz AJAZZ AJ159 Pro na tych
 samych płytkach łączy się w **250–310 ms**. Na ESP32-C3 klawiatura łączy się normalnie.
 
-**Rozstrzygający test: ten sam firmware na trzech płytkach.** Nie inny build, nie inna
-konfiguracja — ten sam commit zbudowany na trzy targety, przy tej samej klawiaturze, w tym
-samym pokoju, w jednej sesji:
+**Rozstrzygający test: ten sam firmware na czterech płytkach.** Nie inny build, nie inna
+konfiguracja — ten sam commit zbudowany na cztery targety, przy tej samej klawiaturze, w tym
+samym pokoju:
 
 | Płytka | Kontroler | RSSI klawiatury | Wynik |
 |---|---|---|---|
-| ESP32-C3 SuperMini | stary (`BT_CTRL_*`) | −53 dBm | **łączy się, przekazuje klawisze** |
+| ESP32-C3 SuperMini | **stary** (`lib_esp32c3_family`) | −46 … −53 dBm | **łączy się, przekazuje klawisze** |
+| ESP32-S3 (ESP Thread BR 1.2) | **stary** (`lib_esp32c3_family`) | **−79 dBm** | **łączy się, przekazuje klawisze** |
 | MuseLab nanoESP32-C6 | nowy (`BT_LE_*`) | −68…−73 dBm (płytka **dotyka** klawiatury) | timeout, zawsze |
-| ESP32-H2-DevKitM-1 | nowy (`BT_LE_*`) | **−52 dBm** | timeout, zawsze |
+| ESP32-H2-DevKitM-1 | nowy (`BT_LE_*`) | **−37 … −58 dBm** | timeout, zawsze |
 
 Dowód z C3:
 
@@ -1434,11 +1435,30 @@ inputs 1 (kbd=1 mouse=1)
 KBD map=0 id=1 len=8 [00 00 07 00 00 00 00 00]      <- realne klawisze
 ```
 
-**Siła sygnału nie jest przyczyną.** H2 przy −52 dBm nie łączy się, a C3 przy −53 dBm łączy.
-To jest jeden decybel różnicy w przeciwnym kierunku, niż wymagałaby hipoteza o marginesie
-łącza. Wcześniejsza wersja tej sekcji obwiniała odbiór na C6 i **była błędna** — pomiar na
-H2 ją wyklucza. Zapisuję to, bo pomyłka jest pouczająca: wystarczyło jedno urządzenie
-z dobrym RSSI i tym samym objawem.
+Dowód z S3, przy sygnale **o 42 dB słabszym** niż ten, przy którym H2 zawodzi:
+
+```
+HID f4:51:67:91:13:c3 rssi=-79 pkts=1 ADV_IND 'AULA-F99Pro'
+encryption: conn_handle=3 status=0 | enc=1 auth=0 bond=1
+OPEN f4:51:67:91:13:c3 'AULA-F99Pro 5.0 ' vid=0x3554 pid=0xfa07
+inputs 1 (kbd=1 mouse=1)
+KBD map=0 id=1 len=8 [00 00 2c 00 00 00 00 00]      <- Spacja
+```
+
+**Dlaczego S3 jest drugim punktem pomiarowym starej rodziny, a nie powtórką C3:** to inny
+układ, dwurdzeniowy, z inną anteną i na innej płytce, ale
+`components/bt/controller/esp32s3/Kconfig.in` to **jedna linia**, która `source`-uje plik C3,
+a `components/bt/CMakeLists.txt` linkuje `esp32s3` z `lib_esp32c3_family`. Wspólna jest więc
+i biblioteka kontrolera, i przestrzeń opcji. Kontroler przedstawia się tam starym formatem
+(`BT controller compile version [2edb0b0]`, `Feature Config, ADV:1, BLE_50:1, …`), tak jak
+na C3, a nie `ble controller commit:[…]` jak na C6/H2.
+
+**Siła sygnału jest tym wykluczona ponad wszelką wątpliwość.** Stara rodzina łączy się przy
+**−79 dBm**, nowa zawodzi przy **−37 dBm**. To 42 dB w kierunku przeciwnym do tego, którego
+wymagałaby jakakolwiek hipoteza o marginesie łącza. Wcześniejsza wersja tej sekcji obwiniała
+odbiór na C6 i **była błędna**; zapisuję to, bo pomyłka jest pouczająca — wystarczyło jedno
+urządzenie z dobrym RSSI i tym samym objawem, żeby ją zburzyć, a potem jedno ze złym RSSI
+i przeciwnym wynikiem, żeby zamknąć temat.
 
 **Kontencja radia nie jest przyczyną.** Przebieg na H2 z wyłączoną rolą pada
 (`roles: hid_host=on gamepad=off`), czyli z radiem zajętym wyłącznie skanowaniem
