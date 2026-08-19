@@ -1608,15 +1608,66 @@ Co z tego wynika praktycznie:
   zadanie skanujące, które w tym czasie nie słyszy nic,
 - **moc nadawania na maksimum** zamiast domyślnych +3 dBm, z odczytem poziomu z powrotem.
 
-#### Najlepszy niesprawdzony trop: ESP-IDF 6.0.2
+#### Sprawdzone: ESP-IDF 6.0.2 tego nie naprawia
 
-Rozpoznanie zrobione **bez wgrywania czegokolwiek** — same pliki wydania. Wniosek: to jedyna
-pozostała droga, która celuje we właściwy komponent, i przy okazji zdejmuje z nas połowę
-łatki.
+Rozpoznanie mówiło, że to najlepszy pozostały trop, bo zmienia dokładnie ten jeden komponent,
+który wskazaliśmy jako różnicę. **Sprawdzone na sprzęcie i trop jest zamknięty.**
 
-**Kontroler jest inny we wszystkich trzech układach.** Biblioteka to submoduł gita, więc jego
-commit jest jedynym sposobem porównania wersji bez pobierania całego wydania
-(`scripts/check_controller_versions.sh` robi to jednym wywołaniem):
+Instalacja i build przeszły bez oporu: klon płaski IDF 6.0.2 zajmuje 695 MB, `install.sh`
+dla `esp32h2,esp32c6,esp32c3` bez uwag, a projekt zbudował się **bez ani jednej zmiany
+w kodzie** — nawet nasza łatana kopia `esp_hid`, przypięta do 5.5.1, skompilowała się pod
+6.0.2 bez błędu. Dla tego testu została właśnie taka, bo to wariant najbardziej porównywalny:
+różni się tylko kontroler i host NimBLE.
+
+Firmware wstaje i kontroler jest wyraźnie nowszy:
+
+```
+ESP-IDF: v6.0.2
+ble controller commit:[4adb29e,7f63735]     <- 5.5.1 ma [898f73c], 5.4.3 [390a8ef]
+heap before BLE 226 728 B, po starcie stacku 170 984 B   <- na 5.5.1 bylo 212 kB i 162 kB
+```
+
+Wynik testu klawiatury, przy niej w prawdziwym trybie parowania (`ADV_IND`,
+`appearance=0x03c1`) i przy **−37…−38 dBm**, czyli najlepszym sygnale zanotowanym w całym
+śledztwie:
+
+```
+candidate cc:85:1b:b1:aa:05 ... rssi=-38
+Connection failed; status=13        <- piec razy w 60 s
+```
+
+Trzy wersje kontrolera, trzy takie same wyniki: **5.4.3, 5.5.1 i 6.0.2 zachowują się
+identycznie**. Hipoteza „to kwestia wersji kontrolera" upada w całości — to nie regresja
+i nie brak poprawki, tylko trwała cecha rodziny C6/H2 wobec tej klawiatury.
+
+Rzeczy warte zapisania z tego przebiegu:
+
+- **cztery nasze wady `esp_hid` są w 6.0.2 naprawione** (§4.27, §4.34, §4.25, §4.29), a pięć
+  zostaje (§4.8, §4.11, §4.15, §4.23, §4.33) — więc gdyby projekt kiedyś przechodził na 6.x,
+  `PATCH.diff` trzeba **napisać od nowa**, nie przenieść; szczegóły w tabeli wyżej,
+- **nasze API przeżyło przejście na 6.x**: `esp_ble_tx_power_set/get`, `ESP_PWR_LVL_P20`,
+  `BT_NIMBLE_GATTC_AUTO_PAIR`, `BT_NIMBLE_HANDLE_REPEAT_PAIRING_DELETION`,
+  `BT_NIMBLE_HID_SERVICE` — wszystko na miejscu,
+- pod 6.0.2 zdarzyło się, że `esp_hidh_dev_open()` **nie wróciło** w limicie i zadziałał nasz
+  watchdog z §4.23 (`restarting the chip - bonds live in NVS`). Objaw znany, obsługa
+  zadziałała, ale to znaczy, że §4.23 jest tam nadal realnym problemem — zgodne z tym, że
+  `WAIT_CB()` w 6.0.2 wciąż czeka `portMAX_DELAY`,
+- **pułapka z konsolą, która kosztowała rundę diagnozy**: ten devkit ma dwa gniazda USB-C,
+  jedno przez mostek CH343 (`VID_1A86`), drugie wprost do układu (`VID_303A&PID_1001`).
+  Firmware logujący tylko przez USB Serial/JTAG milczy na tym pierwszym, a objaw jest
+  zwodniczy — widać paplaninę ROM-u, bo ROM pisze po UART0 niezależnie od konfiguracji,
+  i potem nic, dokładnie jak przy martwym firmware. Dlatego `sdkconfig.defaults.esp32h2`
+  ustawia teraz UART jako konsolę główną i USB Serial/JTAG jako zapasową.
+
+Jak to powtórzyć: `build.sh` przyjmuje `IDF_DIR` i `BUILD_SUFFIX`, więc
+`IDF_DIR=~/esp/v6.0.2/esp-idf BUILD_SUFFIX=.idf602 ./scripts/build.sh esp32h2` daje osobny
+katalog build i osobny `sdkconfig`, nie ruszając zwykłego builda. Wgranie obrazu z takiego
+katalogu trzeba zrobić `esptool` ręcznie, bo `flash-win.bat` szuka `build.<t>`
+i `build.win.<t>`; offsety są w `flasher_args.json`.
+`scripts/check_controller_versions.sh` porównuje commity submodułu kontrolera między
+wydaniami bez pobierania czegokolwiek.
+
+
 
 | Układ | IDF 5.5.1 | IDF 6.0.2 |
 |---|---|---|
