@@ -30,8 +30,17 @@ IDF_VER="$(idf.py --version 2>/dev/null | tail -n1)"
 echo "== IDF: $IDF_VER  ($IDF_PATH)"
 
 cd "$PROJECT_DIR"
-BUILD_DIR="build.$TARGET"
-SDKCONFIG="sdkconfig.$TARGET"
+# BUILD_SUFFIX lets several ESP-IDF versions coexist. Absolute paths and the IDF version are
+# baked into a build directory, so two versions cannot share one - and comparing versions is
+# exactly how this project established that a keyboard which pairs on the C3 controller does
+# not pair on the C6/H2 one (AGENTS.md 4.35). Example:
+#
+#   IDF_DIR=~/esp/v6.0.2/esp-idf BUILD_SUFFIX=.idf602 ./scripts/build.sh esp32h2
+#
+# gives build.esp32h2.idf602 and sdkconfig.esp32h2.idf602, leaving the normal build alone.
+BUILD_SUFFIX="${BUILD_SUFFIX:-}"
+BUILD_DIR="build.$TARGET$BUILD_SUFFIX"
+SDKCONFIG="sdkconfig.$TARGET$BUILD_SUFFIX"
 DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.$TARGET"
 
 # Local overrides - gitignored. Used to enable things we do not want in the repo,

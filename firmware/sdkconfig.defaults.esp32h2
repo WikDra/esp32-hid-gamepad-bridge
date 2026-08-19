@@ -11,11 +11,15 @@
 # with NO Wi-Fi, so there is no Wi-Fi/BLE coexistence arbitration sharing the radio at all.
 CONFIG_IDF_TARGET="esp32h2"
 
-# Console over native USB (the USB Serial/JTAG peripheral), exactly as on the C3 and C6:
-# one USB-C cable carries power, flashing and the log, and the same peripheral also exposes
-# JTAG, so GDB is available without extra hardware.
-CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
-CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+# Console on BOTH ports. Unlike the C3 SuperMini and the nanoESP32-C6, this devkit exposes
+# two USB-C sockets - one through a USB-to-UART bridge (a CH343 here) and one straight to the
+# chip's own USB peripheral. Which one you plug into decides where the log goes, and getting
+# it wrong looks exactly like a dead firmware: the ROM chatter appears (the ROM writes to
+# UART0 regardless) and then nothing, because the app is talking to the other socket. That
+# cost a debugging round, so the log now goes to UART as primary with USB Serial/JTAG as
+# secondary, and either cable shows it.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
 
 # NOTE ON THE CONTROLLER: like the C6, the H2 uses the BT_LE_* controller option namespace
 # rather than the C3's BT_CTRL_*. The AGENTS.md 4.28 fix (arrays in ble_gap.c indexed by

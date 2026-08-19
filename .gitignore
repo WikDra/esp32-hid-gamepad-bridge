@@ -24,3 +24,4 @@ firmware/sdkconfig.win.*
 # Ustawienia lokalne (sciezki, port COM, wlasny sprzet) - wzor w AGENTS.local.example.md
 AGENTS.local.md
 sdkconfig.h2.idf543
+sdkconfig.*.idf*
