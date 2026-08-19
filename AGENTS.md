@@ -1628,7 +1628,51 @@ Co z tego wynika praktycznie:
   zadanie skanujące, które w tym czasie nie słyszy nic,
 - **moc nadawania na maksimum** zamiast domyślnych +3 dBm, z odczytem poziomu z powrotem.
 
-#### Sprawdzone: ESP-IDF 6.0.2 tego nie naprawia
+#### Niezależny przegląd świeżym okiem: co zamknął, a co dołożył
+
+Zlecony przegląd problemu bez dostępu do naszego kontekstu (dwa równoległe zadania: kopanie
+w źródłach zewnętrznych oraz audyt naszego rozumowania). Warto zapisać jedno i drugie, bo
+**część twierdzeń nie przetrwała weryfikacji w drzewie IDF** — a to samo w sobie jest
+lekcją: podpowiedź trzeba sprawdzić w źródle, nie przyjąć.
+
+Zamknięte, każde weryfikacją w plikach, nie rozumowaniem:
+
+| Hipoteza z przeglądu | Weryfikacja |
+|---|---|
+| NimBLE idzie na C6/H2 ścieżką `LE_Extended_Create_Connection`, bo kontroler wspiera BLE 5.0 | **zamknięte** — `CONFIG_BT_NIMBLE_EXT_ADV` nie jest ustawione ani w `sdkconfig`, ani w rozwiązanym `sdkconfig.h`; inicjowanie idzie legacy |
+| `BT_LE_TX_CCA_ENABLED` blokuje nam nadawanie (ocena zajętości kanału) | **zamknięte** — brak w rozwiązanym `sdkconfig.h`, czyli wyłączone; to samo `BT_LE_CTRL_CHAN_ASS_EN` |
+| errata układu opisuje coś o BLE | **zamknięte** — errata C6 i H2 nie mają **ani jednego** wpisu o BLE |
+| ktoś to już zgłosił | **zamknięte** — brak zgłoszenia w `espressif/esp-idf`, `espressif/esp-nimble` i na esp32.com; problem wygląda na niezgłoszony |
+| `BT_LE_CTRL_CHECK_CONNECT_IND_ACCESS_ADDRESS` | dotyczy **przyjmowania** `CONNECT_IND`, czyli roli rozgłaszającego — nie nasz przypadek |
+
+**Sprostowanie do mojego wcześniejszego zdania:** napisałem, że opcji scan backoff nie ma dla
+C6/H2, bo grep po `controller/esp32h2/Kconfig.in` nic nie dał. To było błędne.
+`CONFIG_BT_CTRL_SCAN_BACKOFF_UPPERLIMITMAX=32` **jest** w naszym `sdkconfig` dla H2 i trafia
+do `sdkconfig.h` — definicja siedzi w innym pliku Kconfig. Natomiast
+`NIMBLE_DISABLE_SCAN_BACKOFF` jest definiowane tylko dla H4, a dla H2 występuje wyłącznie
+w treści makra `BT_CONTROLLER_INIT_CONFIG_DEFAULT`, którego ścieżka NimBLE u nas nie rozwija.
+
+Co przegląd **dołożył** i czeka na przebieg ze sprzętem:
+
+- **`BT_LE_LL_PEER_SCA_SET_ENABLE=y` z `BT_LE_LL_PEER_SCA=10000`.** Mechanicznie najlepszy
+  pomysł z całego przeglądu i lustrzane odbicie testu, który już zrobiłem: wtedy podniosłem
+  **własne** SCA, czyli poszerzyłem okno odbioru u klawiatury, a ta opcja każe kontrolerowi
+  liczyć poszerzenie okna po stałej, maksymalnej niedokładności zegara peera, czyli poszerza
+  okno **u nas**. Nasz objaw to dokładnie nieodebrany pierwszy pakiet od peera.
+- **`BT_CTRL_SCAN_BACKOFF_UPPERLIMITMAX` z 32 na 1.**
+- **Połączenie przez listę akceptacji** (`ble_gap_wl_set()` plus `ble_gap_connect()`
+  z `peer_addr = NULL`) — najwyższy typ obu recenzentów. Sprawdza, czy problemem jest
+  dopasowanie adresu, i może być gotowym obejściem: w tablicy kandydatów mamy kilkanaście
+  adresów tej klawiatury, więc można wpisać je wszystkie i trafić w ten, którego użyje
+  następnym razem.
+
+Audyt zwrócił też uwagę, że wniosek „kontroler nigdy nie zgłosił zakończenia połączenia"
+opiera się na tym, że `ble_gap_connect()` **wróciło zerem**. To jest w logu potwierdzone
+pośrednio: gdy zwraca błąd, nasza kopia komponentu drukuje `esp_ble_gattc_open failed: %d`
+(widzieliśmy to raz, `rc=2`, gdy sonda kolidowała z normalną ścieżką), a w przebiegach
+z timeoutem tej linii nie ma.
+
+
 
 Rozpoznanie mówiło, że to najlepszy pozostały trop, bo zmienia dokładnie ten jeden komponent,
 który wskazaliśmy jako różnicę. **Sprawdzone na sprzęcie i trop jest zamknięty.**
