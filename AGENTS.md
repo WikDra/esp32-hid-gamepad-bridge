@@ -1590,8 +1590,43 @@ Dlaczego nie wyszło to wcześniej, choć `device_mark_dead()` był w kodzie od 
 odrzucaliśmy tak wyłącznie urządzenia z maską `0x00`, czyli takie, które **nie mają czego**
 notyfikować. Ta ścieżka była pierwszą, która odrzuca urządzenie już zasubskrybowane.
 
-**Do przejechania jeszcze:** cykl uśpienia i powrotu myszy przy podzielonym mostku, oraz
-zachowanie po restarcie jednego układu (drugi ma wtedy zobaczyć ciszę i wyczyścić stan).
+**3. Zerwanie łącza nie zwalniało trzymanego przycisku — mimo że był na to watchdog.**
+Znalezione **dopiero pomiarem**, bo logika wyglądała poprawnie. `set_remote_mouse(false)`
+wołało `refresh_connected_flags_locked()`, licząc na jego regułę „nie ma myszy → zeruj
+przyciski". Tylko że ta funkcja liczy flagę z **lokalnej** maski usage, a nasza klawiatura
+deklaruje własny raport myszy (§4.16), więc jej maska `0x63` trzyma bit MOUSE ustawiony.
+Warunek nigdy nie odpalał.
+
+Widać to było wprost w logu i przez chwilę wyglądało niewinnie: `peer silent ... clearing
+mouse state`, a następna linia `alive` nadal `mouse=1`. Naprawa zeruje przyciski i akumulatory
+wprost, niezależnie od przeliczonej flagi.
+
+Dowód po naprawie, z trzymanym lewym przyciskiem myszy w chwili ubicia satelity:
+
+```
+gamepad: xbox: LT=0 RT=1023                                      <- przycisk trzymany
+link:    peer silent for 1500 ms - clearing mouse state
+hid_host: remote mouse gone - released buttons still held: 0x01   <- watchdog zadzialal
+gamepad: xbox: LT=0 RT=0                                         <- pad puscil spust, ta sama ms
+link:    peer link up  ->  peer reports mouse connected
+gamepad: xbox: LT=0 RT=1023                                      <- dziala po powrocie
+```
+
+Metodologicznie: log **sam nosi teraz dowód** tej ścieżki (drukuje, co zwolnił, i tylko gdy
+faktycznie coś było trzymane), bo test zależny od trzymania przycisku w konkretnej milisekundzie
+jest niepowtarzalny. Pierwsze podejście do tego testu nic nie wykazało właśnie dlatego, że
+w feralnej sekundzie nikt nie trzymał przycisku.
+
+#### Oba brakujące cykle przejechane
+
+- **Uśpienie i powrót myszy** — potwierdzenie właściciela: mysz wraca poprawnie przy
+  podzielonym mostku.
+- **Restart jednego układu** — zmierzone (log powyżej). Gospodarz zgłasza `peer silent`,
+  czyści stan myszy, a po powrocie satelity dostaje `peer link up` i `peer reports mouse
+  connected`. Przez cały czas `pad ready`, klawiatura działa, heap bez zmian: **utrata
+  satelity nie rusza pada ani klawiatury**, mostek degraduje się łagodnie.
+
+Liczby z dłuższego przebiegu: **10 951 ramek, zero błędów CRC**.
 
 ### 4.34 `esp_hidh` zapisuje przez wskaźnik NULL, gdy urządzenie nie jest sparowane
 

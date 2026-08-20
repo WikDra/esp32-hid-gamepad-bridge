@@ -453,12 +453,41 @@ void ble_hid_host_inject_mouse(uint8_t buttons, int32_t dx, int32_t dy, int32_t 
 
 void ble_hid_host_set_remote_mouse(bool connected)
 {
+    uint8_t was_held = 0;
+
     taskENTER_CRITICAL(&s_mux);
     s_remote_mouse = connected;
     /* Recompute from the local table so that a locally connected mouse is not lost when the
      * remote one goes away. Clears the buttons if nothing is left. */
     refresh_connected_flags_locked();
+
+    if (!connected) {
+        /*
+         * Clear the mouse inputs EXPLICITLY. The refresh above is not enough, and the reason
+         * is worth remembering: it derives mouse_connected from the local usage mask, and our
+         * keyboard declares a mouse report of its own (Fn layer, AGENTS.md 4.16), so its mask
+         * 0x63 keeps the MOUSE bit set. The "clear if no mouse" guard therefore never fires
+         * on the host chip, and a button held at the instant the link died would have stayed
+         * held forever - precisely what this watchdog exists to prevent.
+         *
+         * Measured, not reasoned: the log showed "peer silent ... clearing mouse state"
+         * while the very next alive line still read "mouse=1".
+         */
+        was_held = s_state.mouse_buttons;
+        s_state.mouse_buttons = 0;
+        s_state.mouse_dx = 0;
+        s_state.mouse_dy = 0;
+        s_state.mouse_wheel = 0;
+    }
     taskEXIT_CRITICAL(&s_mux);
+
+    /* Logged outside the critical section, and only when something was actually held - so the
+     * log carries the proof that this path releases stuck buttons, without needing a test
+     * that depends on holding a button at exactly the right moment. */
+    if (was_held) {
+        ESP_LOGW(TAG, "remote mouse gone - released buttons that were still held: 0x%02x",
+                 was_held);
+    }
 }
 
 /* --------------------------------------------------------------- raporty HID */
