@@ -141,6 +141,24 @@ menu "HID bridge (application configuration)"
             rebuild - re-pairing the pad is NOT needed, because the descriptor does not
             change.
 
+    config APP_DEBUG_SCAN_ONLY
+        bool "Diagnostics: scan and log only, never connect to an input device"
+        default n
+        help
+            The scanner normally stops as soon as it hears a usable candidate and hands the
+            address to the connection path, which makes it impossible to measure what a
+            device is actually doing in the air: how often it advertises, and how quickly it
+            changes its address.
+
+            With this option the bridge keeps scanning and only logs. Every advertising
+            packet from a HID-looking device is printed with its address, RSSI, flags and raw
+            payload, so a long run gives the advertising interval and the address rotation
+            rate directly.
+
+            Written to characterise the keyboard from AGENTS.md 4.35, whose advertising
+            behaviour has to be reproduced by a synthetic advertiser before the difference
+            between the C3/S3 and C6/H2 controllers can be bisected.
+
     config APP_DEBUG_WATCH_ADDR
         hex "Diagnostics: address guarded by a hardware watchpoint (0 = disabled)"
         default 0

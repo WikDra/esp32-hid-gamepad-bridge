@@ -1054,6 +1054,11 @@ static void handle_adv_report(const struct ble_gap_disc_desc *disc)
      */
     if (looks_like_hid && !s_opening &&
         ble_hid_host_device_count() < HID_HOST_MAX_DEVICES) {
+#if CONFIG_APP_DEBUG_SCAN_ONLY
+        /* Measurement mode: keep listening. Cutting the round short here would hide exactly
+         * the thing we are measuring - how often the device advertises and how fast it
+         * changes address. */
+#else
         int rc = ble_gap_disc_cancel();
         if (rc == 0) {
             /*
@@ -1070,6 +1075,7 @@ static void handle_adv_report(const struct ble_gap_disc_desc *disc)
         } else if (rc != BLE_HS_EALREADY) {
             ESP_LOGD(TAG, "ble_gap_disc_cancel: rc=%d", rc);
         }
+#endif /* CONFIG_APP_DEBUG_SCAN_ONLY */
     }
 }
 
@@ -1191,6 +1197,9 @@ static void log_scan_results(void)
 /* Definicja nizej - skraca interwal polaczenia swiezo otwartego urzadzenia. */
 static void request_fast_interval(esp_hidh_dev_t *dev);
 
+/* __attribute__((unused)): with CONFIG_APP_DEBUG_SCAN_ONLY the caller is compiled out, and
+ * an unused-function warning there would be noise rather than signal. */
+static void try_connect_candidates(void) __attribute__((unused));
 static void try_connect_candidates(void)
 {
     candidate_t c;
@@ -1342,7 +1351,12 @@ static void scan_round(void)
     xEventGroupWaitBits(s_events, EV_DISC_DONE, pdTRUE, pdTRUE,
                         pdMS_TO_TICKS(SCAN_DURATION_MS + 2000));
     log_scan_results();
+#if CONFIG_APP_DEBUG_SCAN_ONLY
+    /* Measurement mode: we only characterise what is in the air (see APP_DEBUG_SCAN_ONLY).
+     * Connecting would stop the scan and destroy the very timing we are trying to measure. */
+#else
     try_connect_candidates();
+#endif
 }
 
 /*

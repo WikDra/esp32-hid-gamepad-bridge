@@ -1821,12 +1821,40 @@ Koszt, gdyby ktoś to podjął:
 
 
 
-Klawiatura wysyła jedno zdarzenie rozgłoszeniowe co kilka sekund i **za każdym razem pod
-innym adresem**, przy czym wszystkie obserwowane adresy mają górne bity `11`, czyli są
-statyczne losowe — a takie zgodnie ze specyfikacją nie powinny zmieniać się w trakcie pracy
-urządzenia. Zanotowanych adresów jest kilkanaście i **żaden nie powtórzył się ani raz**.
-Na C3 to nie przeszkadza. Czy właśnie to rozstraja inicjatora nowego kontrolera, nie zostało
-udowodnione — to najbardziej obiecujący trop, gdyby ktoś chciał wrócić do sprawy z snifferem.
+#### Charakterystyka klawiatury zmierzona wprost — i korekta naszego obrazu
+
+Wszystkie wcześniejsze pomiary tempa rozgłoszeń były **skażone naszym własnym zachowaniem**:
+skaner przerywał rundę po pierwszym usłyszanym pakiecie, żeby zdążyć zadzwonić, więc obraz
+„jeden pakiet na rundę, za każdym razem inny adres" mówił o nas, a nie o klawiaturze.
+
+`CONFIG_APP_DEBUG_SCAN_ONLY` wyłącza łączenie i zostawia sam nasłuch. Wynik jest zupełnie
+inny:
+
+```
+46220 ff:3a:0d:7a:43:7c -45      <- ten sam adres
+46540 ff:3a:0d:7a:43:7c -45
+48060 ff:3a:0d:7a:43:7c -45
+...
+59410 ff:3a:0d:7a:43:7c -40      <- 13,2 s później, nadal ten sam
+```
+
+- **adres jest stabilny** przez całą sesję parowania, zmierzone ≥ 13,2 s bez zmiany,
+- **pakiety lecą co 50–900 ms**, często kilka na sekundę,
+- flagi `0x05`, `ADV_IND`, pełne 31 bajtów z nazwą i beaconem Swift Pair,
+- RSSI −39 … −47 dBm.
+
+Czyli **to zwyczajny, zdrowy nadawca**. Hipoteza „adres rotuje przy każdym zdarzeniu, więc
+inicjator nie ma czego dopasować" upada w całości — różne adresy w poprzednich logach to
+osobne sesje parowania, bo każde wciśnięcie Fn generuje nowy adres.
+
+To **zaostrza** wniosek o kontrolerze, zamiast go osłabiać: inicjator C6/H2 nasłuchuje ciągle
+przez 6 s urządzenia, które w tym czasie nadaje kilkanaście razy pod stałym adresem przy
+−40 dBm, i nie kończy połączenia ani razu. C3 i S3 łączą się z tym samym urządzeniem
+natychmiast.
+
+Wniosek metodologiczny wart zapamiętania: **narzędzie pomiarowe nie może zmieniać tego, co
+mierzy.** Ta pomyłka żyła w notatkach kilka tur i zbudowaliśmy na niej dwie hipotezy (rotacja
+adresu, lista akceptacji), obie martwe od początku.
 
 ### 4.3 Co przenosimy z OpenLary, a co piszemy inaczej
 
