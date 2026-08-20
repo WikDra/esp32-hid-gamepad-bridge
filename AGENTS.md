@@ -1516,22 +1516,82 @@ po otwarciu: urządzenie, które nie obsługuje żadnej chcianej klasy, jest zam
 
 #### Stan weryfikacji
 
-Zweryfikowane logiem, bez udziału urządzeń BLE — bo keepalive pozwala sprawdzić sam drut:
+Najpierw sam drut, bez udziału urządzeń BLE — keepalive na to pozwala:
 
 ```
 S3: link: UART1 up: tx=GPIO-1 rx=GPIO17 921600 baud
     link: mode: receiver (mouse arrives over UART)
     link: peer link up                                 <- 306 ms po starcie
-    link: received 37 frames (CRC errors 0)
     link: received 111 frames (CRC errors 0)           <- 30 s, zero bledow
-H2: link: UART1 up: tx=GPIO24 rx=GPIO-1 921600 baud
-    link: mode: sender (mouse -> host chip)
-    link: sent 111 frames (dropped 0)                  <- liczniki zgadzaja sie po obu stronach
+H2: link: sent 111 frames (dropped 0)                  <- liczniki zgadzaja sie po obu stronach
 ```
 
-**Do przejechania na sprzęcie:** sparowanie myszy z H2 (trzeba trybu parowania, bo mysz ma bond
-z S3 z wcześniejszych testów), klawiatury z S3, pada z PC — i potwierdzenie, że ruch myszy
-rusza prawą gałką. Dopiero to zamyka temat; na razie udowodniony jest transport, nie całość.
+Potem **cały łańcuch na sprzęcie**, z myszą sparowaną z H2, klawiaturą z S3 i padem z PC:
+
+```
+H2: OPEN f4:ee:25:36:cf:75 'AJ159 PRO' vid=0x3151 pid=0x402c
+    connected (usage mask 0x63), 1/2 devices total
+    MOU map=0 id=5 len=7 [00 63 00 e1 ff 00 00]        <- mysz raportuje ruch
+    link: sent 117 frames (dropped 0)
+
+S3: inputs 1 (kbd=1 mouse=1) | pad ready               <- mouse=1 przychodzi z lacza
+    link: received 1388 frames (CRC errors 0)
+    mapper: pad: L(   0,0) R(  22, 64)                 <- RUCH MYSZY -> PRAWA GALKA
+    mapper: pad: L(   0,0) R(-123,-22)
+    hid_host: KBD map=0 id=1 len=8 [00 00 06 …]        <- klawiatura lokalnie na S3
+    mapper: pad: L(-127,0) R(   0,  0)                 <- klawisz A -> lewa galka
+    mapper: pad: … btn=0x002  ->  xbox: LT=1023        <- prawy przycisk myszy przez UART
+    mapper: pad: … btn=0x001  ->  xbox: RT=0 RT=1023   <- lewy przycisk myszy
+```
+
+Czyli **mysz na jednym układzie, klawiatura i pad na drugim, a PC widzi jednego pada**.
+Ruch, przyciski i klawisze przechodzą całą drogę, przy zerowych błędach CRC na 1388 ramkach.
+
+Do tego **potwierdzenie właściciela** (nie log): **test pada w Steam działa również na
+podzielonym mostku**. To istotne, bo znaczy, że podział nie ruszył niczego, co widzi Windows —
+deskryptor, tożsamość i profil XInput zostały po stronie S3 nietknięte, a mysz z drugiego
+układu wchodzi do tego samego raportu przez akumulator w `ble_hid_host`. Z punktu widzenia PC
+nie ma śladu, że urządzenia są na dwóch radiach.
+
+#### Dwa błędy z pierwszego uruchomienia, oba pouczające
+
+**1. AJAZZ AJ159 Pro deklaruje raporty KLAWIATURY.** Filtr klasy miał regułę: układ od myszy
+odrzuca urządzenie, które deklaruje raporty klawiatury — bo tak wygląda nasza klawiatura
+(§4.16). Pomiar pokazał, że mysz wygląda tak samo:
+
+```
+OPEN f4:ee:25:36:cf:75 'AJ159 PRO'
+    map=0 id=5 typ=INPUT usage=MOUSE    len=3
+    map=0 id=4 typ=INPUT usage=KEYBOARD len=8     <- mysz z raportem klawiatury
+    map=0 id=4 typ=INPUT usage=KEYBOARD len=15
+    map=0 id=1 typ=INPUT usage=KEYBOARD len=8
+```
+
+Maska wychodzi **0x63, dokładnie jak u klawiatury**. Reguła odrzucała więc tę jedną mysz, dla
+której ten układ istnieje. Wniosek nie jest lokalny: **mapa raportów nie rozróżnia klasy
+urządzenia** i nie ma sensu do tego wracać. Rozróżnia **appearance z rozgłoszenia**, i tam ta
+decyzja należy. W komentarzu przy tamtej regule sam napisałem, że mysz deklarująca klawiaturę
+zostanie odrzucona — i wysłałem ją mimo to; pomiar zajął minutę, rozumowanie zawiodło.
+
+**2. Zwolnienie urządzenia bez zerwania linku zalewa log.** Objaw był spektakularny: kilkaset
+linii na sekundę
+
+```
+E NIMBLE_HIDH: NOTIFY received for unknown device
+```
+
+Odrzucając urządzenie po otwarciu, wołaliśmy tylko `device_mark_dead()`, czyli zdejmowaliśmy
+**nasz** wpis. Link BLE zostawał zestawiony razem z subskrypcjami CCCD, więc mysz dalej
+notyfikowała, a `esp_hidh` nie miał już do czego dopasować uchwytu. Naprawa: na tej ścieżce
+wołamy `esp_hidh_dev_close()`, które na NimBLE robi
+`ble_gap_terminate(conn_id, BLE_ERR_REM_USER_CONN_TERM)`.
+
+Dlaczego nie wyszło to wcześniej, choć `device_mark_dead()` był w kodzie od dawna: dotychczas
+odrzucaliśmy tak wyłącznie urządzenia z maską `0x00`, czyli takie, które **nie mają czego**
+notyfikować. Ta ścieżka była pierwszą, która odrzuca urządzenie już zasubskrybowane.
+
+**Do przejechania jeszcze:** cykl uśpienia i powrotu myszy przy podzielonym mostku, oraz
+zachowanie po restarcie jednego układu (drugi ma wtedy zobaczyć ciszę i wyczyścić stan).
 
 ### 4.34 `esp_hidh` zapisuje przez wskaźnik NULL, gdy urządzenie nie jest sparowane
 

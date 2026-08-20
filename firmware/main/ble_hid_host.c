@@ -1387,13 +1387,18 @@ static void try_connect_candidates(void)
 #if !CONFIG_APP_HID_WANT_KEYBOARD || !CONFIG_APP_HID_WANT_MOUSE
         /*
          * Split bridge backstop: a device that got past the appearance filter (because it
-         * advertised none) but turns out to serve no class we want is closed again rather
-         * than parked in our single slot.
+         * advertised none) but serves no class we want is closed again rather than parked
+         * in our slot.
          *
-         * Asymmetric on purpose. For a mouse-only chip we also reject anything declaring
-         * KEYBOARD reports, because that is how our test keyboard looks - it declares both.
-         * A mouse that also declares keyboard reports would be rejected here; none of ours
-         * does, and the alternative is a keyboard silently occupying the mouse chip.
+         * The test is ONLY "does it offer a class we want". An earlier version also rejected
+         * a mouse-only chip's device if it declared KEYBOARD reports, on the theory that
+         * this is how our test keyboard looks. MEASURED AND WRONG: the AJAZZ AJ159 Pro
+         * declares keyboard reports of its own -
+         *     map=0 id=4 typ=INPUT usage=KEYBOARD len=8
+         *     map=0 id=1 typ=INPUT usage=KEYBOARD len=8
+         * so that rule rejected the very mouse the chip exists to serve. Report maps cannot
+         * separate these devices; the advertised appearance can, and that is where the
+         * discrimination belongs.
          */
         {
             uint8_t wanted = 0;
@@ -1403,14 +1408,15 @@ static void try_connect_candidates(void)
 #if CONFIG_APP_HID_WANT_MOUSE
             wanted |= ESP_HID_USAGE_MOUSE;
 #endif
-            bool ok = (mask & wanted) != 0;
-#if CONFIG_APP_HID_WANT_MOUSE && !CONFIG_APP_HID_WANT_KEYBOARD
-            if (mask & ESP_HID_USAGE_KEYBOARD) {
-                ok = false;
-            }
-#endif
-            if (!ok) {
+            if ((mask & wanted) == 0) {
                 ESP_LOGW(TAG, "  mask 0x%02x is not a class this chip serves - closing", mask);
+                /*
+                 * TERMINATE THE LINK, do not just drop our record. Freeing the device while
+                 * the peer stays connected and subscribed produced an endless
+                 * "NOTIFY received for unknown device" from esp_hidh: the notifications kept
+                 * arriving and there was no longer a device to match them to.
+                 */
+                esp_hidh_dev_close(dev);
                 device_mark_dead(dev);
                 candidate_set_cooldown(&c.addr);
                 continue;
