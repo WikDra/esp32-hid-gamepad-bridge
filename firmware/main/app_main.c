@@ -34,6 +34,9 @@
 #if CONFIG_APP_ROLE_FAKE_KEYBOARD
 #include "fake_keyboard.h"
 #endif
+#if !CONFIG_APP_LINK_DISABLED
+#include "chip_link.h"
+#endif
 
 static const char *TAG = "bridge";
 
@@ -109,6 +112,15 @@ void app_main(void)
     ESP_ERROR_CHECK(input_mapper_start());
 #elif CONFIG_APP_GAMEPAD_SELFTEST
     ESP_LOGW(TAG, "pad selftest enabled - input mapping is INACTIVE");
+#endif
+
+#if !CONFIG_APP_LINK_DISABLED
+    /*
+     * Split bridge. Started before the stack because it is pure UART - it does not touch
+     * BLE and must be ready to receive the moment the other chip starts talking, which on
+     * a shared-power board is roughly when we boot.
+     */
+    ESP_ERROR_CHECK(chip_link_start());
 #endif
 
     ESP_ERROR_CHECK(ble_stack_start());

@@ -22,3 +22,14 @@ CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 # Controller activity slots: 3 connections + scanning + advertising. Same option name as the
 # C3, because it is literally the same Kconfig file.
 CONFIG_BT_CTRL_BLE_MAX_ACT=6
+
+# -------------------------------------------------------------------- split bridge: host
+#
+# This chip serves the KEYBOARD and owns the PAD; the mouse arrives from the H2 over UART.
+# Two BLE links here instead of three, and the mouse gets a radio to itself on the other
+# chip - that is the point of the split, not the baud rate of the wire between them.
+CONFIG_APP_ENABLE_HID_HOST=y
+CONFIG_APP_ENABLE_GAMEPAD=y
+CONFIG_APP_HID_WANT_KEYBOARD=y
+CONFIG_APP_HID_WANT_MOUSE=n
+CONFIG_APP_LINK_RECEIVER=y

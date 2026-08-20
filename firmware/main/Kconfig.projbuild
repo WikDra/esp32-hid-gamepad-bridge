@@ -122,6 +122,119 @@ menu "HID bridge (application configuration)"
             Leaving a smaller value here does no harm: the firmware walks a ladder and
             uses the shortest interval the controller accepts. The log shows each attempt.
 
+    config APP_HID_WANT_KEYBOARD
+        bool "Central: accept keyboards"
+        depends on APP_ENABLE_HID_HOST
+        default y
+        help
+            Turn this off on a chip that is only meant to serve the mouse. Candidates
+            advertising the keyboard appearance (0x03C1) are then skipped before we even
+            try to connect, and a device that opens with no keyboard reports is closed.
+
+            Used by the split bridge on the ESP Thread BR board: the H2 wants the mouse
+            only, the S3 wants the keyboard only.
+
+    config APP_HID_WANT_MOUSE
+        bool "Central: accept mice"
+        depends on APP_ENABLE_HID_HOST
+        default y
+        help
+            Mirror of the option above. Note that our test keyboard also declares a mouse
+            report (its Fn layer emulates a mouse - AGENTS.md 4.16), so this flag alone
+            cannot tell the two devices apart; the advertised appearance does that.
+
+    choice APP_LINK_MODE
+        prompt "Inter-chip link over UART (split bridge)"
+        default APP_LINK_DISABLED
+        help
+            Splits the bridge across the two SoCs of an ESP Thread Border Router board,
+            which wires its ESP32-S3 and ESP32-H2 together with UART and SPI.
+
+            The point is not link speed - a mouse report crosses at 921600 baud in about
+            0.1 ms, two orders of magnitude below the 15 ms BLE connection interval. The
+            point is RADIO time: each chip then serves fewer links, instead of one radio
+            interleaving keyboard, mouse and pad.
+
+        config APP_LINK_DISABLED
+            bool "Disabled: one chip does everything"
+
+        config APP_LINK_RECEIVER
+            bool "Receiver (host chip: keyboard + pad, mouse arrives over UART)"
+
+        config APP_LINK_SENDER
+            bool "Sender (satellite chip: mouse only, forwarded over UART)"
+    endchoice
+
+    config APP_LINK_UART_PORT
+        int "Link: UART port number"
+        depends on !APP_LINK_DISABLED
+        range 1 2
+        default 1
+        help
+            Deliberately NOT port 0. On the H2 the link lands on GPIO23/24, which are that
+            chip's default UART0 pins, and UART0 is where the ROM bootloader prints. Using
+            UART1 over the GPIO matrix keeps the ROM chatter out of our driver; the framing
+            would survive it anyway, but there is no reason to invite it.
+
+    config APP_LINK_TX_GPIO
+        int "Link: TX pin (-1 when this side never transmits)"
+        depends on !APP_LINK_DISABLED
+        default 24 if IDF_TARGET_ESP32H2
+        default -1
+        help
+            MEASURED ON HARDWARE, not taken from a datasheet. The ESP Thread BR board's
+            internal S3-to-H2 wiring is not in the docs we could find - ESP-IDF's ot_br
+            example hardcodes GPIO4/5, but its README shows that as DevKit-to-DevKit
+            wiring, and on this board it is wrong. So the firmware swept its own input
+            pins while the other chip kept sending (APP_LINK_PROBE_RX):
+
+              S3 GPIO17  <--- H2 GPIO24 (U0TXD)    proven: 4 CRC-valid frames per second
+                                                   against a 250 ms keepalive
+
+            The link is one-directional, so the host chip does not transmit at all and its
+            TX stays -1 - no reason to drive a net whose other end we never verified. The
+            S3 counterpart of the H2's RX is most likely GPIO18, by adjacency, but that is
+            a guess and nothing depends on it.
+
+    config APP_LINK_RX_GPIO
+        int "Link: RX pin (-1 when this side never receives)"
+        depends on !APP_LINK_DISABLED
+        default 17 if IDF_TARGET_ESP32S3
+        default -1
+
+    config APP_LINK_BAUD
+        int "Link: baud rate"
+        depends on !APP_LINK_DISABLED
+        range 115200 3000000
+        default 921600
+        help
+            921600 puts a 10-byte mouse frame on the wire in ~108 us. Raising it further
+            buys nothing measurable; lower it first if the link ever shows CRC errors.
+
+    config APP_LINK_PEER_TIMEOUT_MS
+        int "Link: treat the peer as gone after this long without a frame [ms]"
+        depends on APP_LINK_RECEIVER
+        range 200 10000
+        default 1500
+        help
+            The sender emits a keepalive frame even when the mouse is still, so silence
+            means the peer really is gone. On timeout the receiver clears the mouse state,
+            otherwise a button held at the moment the link died would stay held forever.
+
+    config APP_LINK_PROBE_RX
+        bool "Link diagnostics: sweep candidate RX pins to find the peer"
+        depends on APP_LINK_RECEIVER
+        default n
+        help
+            Instead of receiving, walk a list of GPIOs and report how many bytes and how
+            many valid frames arrive on each. Use it when the wiring between the two chips
+            is not documented: the sender emits a keepalive every 250 ms, so a second per
+            pin is enough to tell.
+
+            Only ever configures a pin as UART RX, i.e. as an input, so it cannot fight
+            whatever else is driving that net. The USB pins (S3 GPIO19/20) are excluded
+            because the console runs on them.
+
     config APP_MOUSE_SCALE_DIV
         int "Mapping: mouse sensitivity divisor"
         depends on APP_ENABLE_GAMEPAD && APP_ENABLE_HID_HOST

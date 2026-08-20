@@ -1403,6 +1403,136 @@ Zastrzeżenie do §4.33: tamte pomiary na C3 zapisywały `rc=530`, czyli **prawd
 kontrolera (HCI 0x12), a nie `rc=2`, więc wniosek o suficie 15 ms nie był zbudowany na tej
 wadzie i pozostaje w mocy.
 
+### 4.36 Mostek rozdzielony na dwa układy płytki BR (branch `esp32-br-split`)
+
+Płytka ESP Thread Border Router ma **dwa układy połączone na PCB** — ESP32-S3 i ESP32-H2 —
+a my używaliśmy naraz tylko jednego. Ten branch dzieli mostek na oba:
+
+```
+klawiatura BLE ──→ S3  (central) ─┐
+                                  ├─→ pad BLE ──→ PC        (S3 jest peryferialem)
+mysz BLE ──────→ H2  (central) ──→ UART ──→ S3
+```
+
+Sens tego podziału **nie jest w szybkości drutu**, i to trzeba powiedzieć wprost, bo intuicja
+podpowiada inaczej. Ramka myszy ma 10 bajtów, czyli przy 921600 bodach **108 µs** na drucie,
+wobec interwału połączenia BLE 15 ms — cztery rzędy wielkości różnicy. Transport nie jest
+składnikiem opóźnienia. Zyskiem jest **czas radia**: zamiast jednej anteny przeplatającej
+klawiaturę, mysz i pada, każdy układ obsługuje mniej linków.
+
+Drugi zysk wychodzi z §4.35 i jest wręcz elegancki: **mysz działa na C6/H2 bez zarzutu, a
+klawiatura wymaga starej rodziny kontrolerów.** Ten podział daje każdemu urządzeniu układ,
+który je obsługuje — mysz na H2, klawiatura na S3. Ograniczenie z §4.35 przestaje w tej
+konfiguracji przeszkadzać, zamiast być obchodzone.
+
+#### Pin połączenia ZMIERZONY, bo dokumentacja go nie podaje
+
+Szukanie po dokumentacji dało tylko fałszywy trop. `esp_ot_config.h` z przykładu `ot_br`
+w ESP-IDF ma na sztywno `rx_pin = 4, tx_pin = 5` — ale README tego przykładu pokazuje te piny
+jako wiring **DevKit do DevKitu**, nie jako wewnętrzne połączenie płytki BR. Przykład
+z `esp-thread-br` używa `CONFIG_PIN_TO_RCP_TX/RX`, których wartości domyślnych nie udało się
+znaleźć; strona `hardware_platforms` podaje warianty zamówieniowe, a `build_and_run` tylko
+tyle, że „domyślnym interfejsem na płytce BR jest UART0, 460800".
+
+Na pinach 4/5 satelita nadawał (`sent 111 frames`), a gospodarz nie odbierał **nic**. Zamiast
+zgadywać dalej, firmware zmierzył to sam: `CONFIG_APP_LINK_PROBE_RX` przestawia UART na kolejne
+piny wejściowe i liczy, na którym pojawiają się ramki z poprawnym CRC. Satelita nadaje keepalive
+co 250 ms, więc sekunda na pin wystarcza.
+
+```
+W link: RX PIN SWEEP: 30 candidates, ~1 s each - the peer keepalives every 250 ms
+W link:   GPIO17: 8 bytes, 4 syncs, 4 VALID FRAMES   <<< THIS IS THE PIN
+W link: sweep done, most traffic on GPIO17 (8 bytes)
+```
+
+**S3 GPIO17 ← H2 GPIO24 (U0TXD).** Cztery poprawne ramki na sekundę przy keepalive co 250 ms —
+zgodność, która nie zostawia miejsca na przypadek, tym bardziej że sonda sprawdza CRC, więc
+przypadkowe `A5 5A` w szumie nie liczy się jako trafienie.
+
+Kierunku S3 → H2 **nie zmierzyliśmy i nie potrzebujemy**: łącze jest jednokierunkowe, bo
+gospodarz nie ma o co pytać satelity. TX po stronie S3 zostaje `-1`, czyli nie sterujemy siecią,
+której drugiego końca nie potwierdziliśmy. Przez adjacencję to prawdopodobnie GPIO18, ale to
+domysł i nic od niego nie zależy.
+
+#### Konsola H2 musi zejść z UART — to nie preferencja, to wymóg
+
+Łącze biegnie po GPIO24/23, czyli **domyślnych pinach UART0 układu H2**. Gdyby konsola została
+na UART0, tekst logu jechałby tym samym drutem, dwa peryferia sterowałyby jednym pinem, a każda
+linia logu wpadałaby do odbiornika S3. Dlatego `sdkconfig.defaults.esp32h2` na tym branchu ma
+`ESP_CONSOLE_USB_SERIAL_JTAG=y` + `SECONDARY_NONE=y`.
+
+Nic nie tracimy, bo płytka daje **każdemu układowi własne gniazdo USB** — potwierdzone
+sprzętowo: oba porty to `VID_303A&PID_1001`, czyli natywne USB obu układów (S3 na COM10, H2 na
+COM11). Uwaga: to odwrotnie niż w konfiguracji dla H2-DevKitM-1 na `main`, gdzie konsola jest
+na UART, bo tam jedno z dwóch gniazd idzie przez mostek CH343.
+
+Samo łącze używa **UART1**, nie UART0, przez matrycę GPIO. ROM pisze po UART0 przy każdym
+starcie niezależnie od konfiguracji, więc trzymamy się od niego z daleka — ramkowanie i tak by
+tę paplaninę odrzuciło, ale nie ma powodu jej zapraszać.
+
+#### Protokół
+
+```
+0xA5 0x5A | typ | dlugosc | payload | crc8(typ, dlugosc, payload)
+```
+
+- `0x01 MOUSE` — przyciski `u8`, dx `i16`, dy `i16`, kółko `i8`. Przesyłane **już
+  zdekodowane**, więc układ raportu konkretnej myszy (§4.10) zostaje w jednym miejscu,
+  a odbiornik dostaje czyste przyrosty.
+- `0x02 KEEPALIVE` — nadawany co 250 ms nawet gdy mysz stoi. Dzięki temu **cisza jest
+  informacją**: odbiornik po 1,5 s bez ramki czyści stan myszy, bo przycisk trzymany w chwili
+  zerwania łącza zostałby wciśnięty na zawsze.
+
+Ramka jest samoograniczająca (dwa bajty synchronizacji + CRC), bo odbiornik musi przetrwać
+śmieci na drucie. Przyrosty są per raport, nie kumulowane — kumuluje odbiornik, dokładnie tak
+jak robiłby to lokalny `ble_hid_host`.
+
+Wysyłka **nigdy nie blokuje wątku hosta NimBLE**: `chip_link_send_mouse()` tylko wkłada
+zdarzenie do kolejki, a pisze osobne zadanie. Zablokowanie tamtego wątku zatrzymałoby ten sam
+link BLE, z którego raport przyszedł.
+
+#### Szew w istniejącym kodzie okazał się jednopunktowy
+
+Mapper **pobiera** stan (`ble_hid_host_take_state()`), a nie dostaje go pchnięciem, więc
+wystarczyło wstrzykiwać mysz do tego samego akumulatora: `ble_hid_host_inject_mouse()`.
+Mapper i `ble_gamepad` nie wiedzą, że mysz jest na innym układzie, i nie mają w sobie ani
+jednej linii o tym podziale.
+
+Jedna pułapka: `refresh_connected_flags_locked()` przelicza flagi z **lokalnej** tablicy
+urządzeń, więc kasowałoby zdalną mysz przy każdym podłączeniu i rozłączeniu czegokolwiek.
+Dlatego zdalna mysz ma osobną flagę `s_remote_mouse`, ORowaną do stanu.
+
+#### Rozdział urządzeń między układy
+
+`APP_HID_WANT_KEYBOARD` / `APP_HID_WANT_MOUSE` decydują, jakiej klasy szuka dany układ.
+Rozróżnienie idzie po **appearance z rozgłoszenia** (0x03C1 klawiatura, 0x03C2 mysz), a nie po
+mapie raportów — bo nasza klawiatura deklaruje własny raport myszy (§4.16), więc jej maska
+usage mówi MOUSE i po niej tych urządzeń rozróżnić nie sposób.
+
+Pakiet **bez** pola appearance nie jest oceniany, bo tak wraca sparowany peer po uśpieniu
+(§4.20) i odrzucanie go zepsułoby rekonekcję. Zabezpieczeniem na ten przypadek jest kontrola
+po otwarciu: urządzenie, które nie obsługuje żadnej chcianej klasy, jest zamykane
+(`mask 0x%02x is not a class this chip serves`) zamiast zajmować slot.
+
+#### Stan weryfikacji
+
+Zweryfikowane logiem, bez udziału urządzeń BLE — bo keepalive pozwala sprawdzić sam drut:
+
+```
+S3: link: UART1 up: tx=GPIO-1 rx=GPIO17 921600 baud
+    link: mode: receiver (mouse arrives over UART)
+    link: peer link up                                 <- 306 ms po starcie
+    link: received 37 frames (CRC errors 0)
+    link: received 111 frames (CRC errors 0)           <- 30 s, zero bledow
+H2: link: UART1 up: tx=GPIO24 rx=GPIO-1 921600 baud
+    link: mode: sender (mouse -> host chip)
+    link: sent 111 frames (dropped 0)                  <- liczniki zgadzaja sie po obu stronach
+```
+
+**Do przejechania na sprzęcie:** sparowanie myszy z H2 (trzeba trybu parowania, bo mysz ma bond
+z S3 z wcześniejszych testów), klawiatury z S3, pada z PC — i potwierdzenie, że ruch myszy
+rusza prawą gałką. Dopiero to zamyka temat; na razie udowodniony jest transport, nie całość.
+
 ### 4.34 `esp_hidh` zapisuje przez wskaźnik NULL, gdy urządzenie nie jest sparowane
 
 Znalezione przy porcie na ESP32-C6, ale **to nie jest błąd specyficzny dla C6** — ten sam

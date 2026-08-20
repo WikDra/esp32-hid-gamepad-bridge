@@ -49,10 +49,17 @@ call "%IDF_DIR%\export.bat" >nul 2>&1
 
 REM On the first run the target has to be set - otherwise idf.py does not know what
 REM to build for, and this is also what loads our sdkconfig.defaults files.
+REM sdkconfig.local is picked up when present, mirroring scripts/build.sh - it is the
+REM gitignored place for machine-local overrides and one-off diagnostics.
+set DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.%TARGET%
+if exist "sdkconfig.local" (
+    set DEFAULTS=%DEFAULTS%;sdkconfig.local
+    echo == using overrides from sdkconfig.local
+)
 if not exist "%BUILD_DIR%\CMakeCache.txt" (
     echo == first build: setting target %TARGET%
     idf.py -B %BUILD_DIR% -D SDKCONFIG=%SDKCONFIG% ^
-        -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.%TARGET%" ^
+        -D "SDKCONFIG_DEFAULTS=%DEFAULTS%" ^
         set-target %TARGET% || (popd & exit /b 1)
 )
 
