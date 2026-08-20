@@ -14,6 +14,10 @@ if(CONFIG_APP_ENABLE_HID_HOST AND CONFIG_APP_ENABLE_GAMEPAD AND NOT CONFIG_APP_G
     list(APPEND srcs "input_mapper.c")
 endif()
 
+if(CONFIG_APP_ROLE_FAKE_KEYBOARD)
+    list(APPEND srcs "fake_keyboard.c")
+endif()
+
 idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS "."

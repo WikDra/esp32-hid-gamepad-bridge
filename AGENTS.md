@@ -1821,7 +1821,59 @@ Koszt, gdyby ktoś to podjął:
 
 
 
-#### Charakterystyka klawiatury zmierzona wprost — i korekta naszego obrazu
+#### Sztuczna klawiatura: H2 łączy się z kopią AULI, także przy dopasowanym sygnale
+
+`CONFIG_APP_ROLE_FAKE_KEYBOARD` zamienia płytkę w nadawcę, który udaje AULĘ **bajt w bajt** —
+te same 31 bajtów payloadu (flagi `0x05`, UUID 0x1812, appearance `0x03C1`, beacon Swift Pair
+Microsoftu, skrócona nazwa), `ADV_IND`, adres statyczny losowy, interwał 200 ms — i przyjmuje
+połączenia. Uruchomiona na S3 z płytki ESP Thread BR, obok H2 na tej samej PCB.
+
+Wynik pierwszego przebiegu, z H2 w normalnej roli mostka:
+
+```
+adv from 'AULA-F99Pro' e5:e7:f7:47:50:49 type=1 rssi=-7
+connection established, conn_handle=0
+encryption: conn_handle=0 status=0 | enc=1 auth=0 bond=1
+```
+
+**560 ms i połączone, razem z szyfrowaniem.** Wyzwalacz nie siedzi więc w treści rozgłoszenia:
+ani flagi, ani appearance, ani UUID, ani typ adresu, ani interwał.
+
+Zostawało zastrzeżenie: `rssi=-7`, bo obie płytki leżą na jednej PCB, a prawdziwa AULA zawodzi
+przy −40. Dlatego atrapa dostała regulację mocy (`APP_FAKE_KBD_TX_POWER`) — jedyny sposób,
+by udawać odległość bez przenoszenia sprzętu. Przy poziomie **0, czyli −24 dBm**:
+
+```
+adv from 'AULA-F99Pro' e5:bc:b0:26:67:fb type=1 rssi=-41
+connection established, conn_handle=0
+encryption: conn_handle=0 status=0 | enc=1 auth=0 bond=1
+```
+
+**−41 dBm to dokładnie zakres, w którym prawdziwa klawiatura zawodzi** (−37 … −48), a H2
+łączy się w 560 ms. To domyka sprawę sygnału kontrolą z dopasowanym RSSI, nie rozumowaniem.
+
+Co z tego wynika dla obrazu całości:
+
+- **inicjator C6/H2 jest sprawny**: łączy się z atrapą przy −41 dBm, łączy się z myszą,
+  łączy się z padem w roli peryferiala,
+- **nie łączy się wyłącznie z prawdziwą AULĄ**, a ta sama AULA łączy się z C3 i S3,
+- czyli różnica nie jest ani w rozgłoszeniu, ani w sile sygnału, ani w ogólnej zdolności
+  inicjowania — zostaje **zachowanie tej klawiatury na pierwszym zdarzeniu połączenia**,
+  czyli jedyny fragment, którego jeszcze nie zmierzyliśmy.
+
+Dalszy krok, który z tego wynika: porównać **ruch HCI** przy nieudanej próbie z prawdziwą
+klawiaturą i przy udanej z atrapą, na tej samej płytce. Atrapa daje nam wreszcie
+**referencję znanego dobrego przebiegu** dla dokładnie tej samej ścieżki kodu, więc różnica
+w HCI wskaże krok, na którym rzecz się rozjeżdża — a to jest już materiał, który zamyka
+zgłoszenie do Espressifu.
+
+Drobiazg zanotowany przy okazji: atrapa nie wystawia usługi HID, więc nasz kod słusznie
+odrzuca ją przez `no input reports (mask 0x00)`, a ponowna próba w następnej rundzie kończy
+się `esp_ble_gattc_open failed: 14` (`BLE_HS_EDONE`), bo `esp_hidh` trzyma już wpis dla tego
+adresu. Dla testu inicjowania to bez znaczenia — pytanie brzmi „czy link powstaje", a nie
+„czy urządzenie jest użyteczne".
+
+
 
 Wszystkie wcześniejsze pomiary tempa rozgłoszeń były **skażone naszym własnym zachowaniem**:
 skaner przerywał rundę po pierwszym usłyszanym pakiecie, żeby zdążyć zadzwonić, więc obraz

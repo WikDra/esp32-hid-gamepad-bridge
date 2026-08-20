@@ -2,6 +2,7 @@ menu "HID bridge (application configuration)"
 
     config APP_ENABLE_HID_HOST
         bool "Central role: receive reports from a BLE keyboard and mouse"
+        depends on !APP_ROLE_FAKE_KEYBOARD
         default y
         help
             Enables the BLE scanner and esp_hidh (GATT client). Can be turned off to
@@ -9,6 +10,7 @@ menu "HID bridge (application configuration)"
 
     config APP_ENABLE_GAMEPAD
         bool "Peripheral role: present a HID gamepad to the PC"
+        depends on !APP_ROLE_FAKE_KEYBOARD
         default y
         help
             Enables our own GATT server with HID service 0x1812 and advertising.
@@ -140,6 +142,70 @@ menu "HID bridge (application configuration)"
             If it is still too fast, raise it to 32 or 48. The change only requires a
             rebuild - re-pairing the pad is NOT needed, because the descriptor does not
             change.
+
+    config APP_ROLE_FAKE_KEYBOARD
+        bool "Diagnostics: act as a synthetic BLE keyboard instead of a bridge"
+        default n
+        help
+            Turns the board into an advertiser that impersonates the AULA F99 Pro in pairing
+            mode, byte for byte, and accepts connections. Nothing else runs - no HID host, no
+            gamepad.
+
+            What it is for: that keyboard pairs with the bridge on the C3 and S3 and never on
+            the C6 or H2, and the difference was narrowed to the controller library, which is
+            a prebuilt blob (AGENTS.md 4.35). This role replaces a device we cannot change
+            with one we can, so the properties of the advertiser - interval, address type,
+            discoverability flags - can be bisected against a failing initiator.
+
+            Run it on a second board, with the real keyboard switched off so it cannot
+            interfere.
+
+    config APP_FAKE_KBD_ADV_ITVL_MS
+        int "Synthetic keyboard: advertising interval in milliseconds"
+        depends on APP_ROLE_FAKE_KEYBOARD
+        range 20 10240
+        default 200
+        help
+            The measured original advertises every 50-900 ms, so 200 ms sits in the middle of
+            its range. Raise it to test whether a sparse advertiser is what the initiator
+            struggles with.
+
+    config APP_FAKE_KBD_RANDOM_ADDR
+        bool "Synthetic keyboard: advertise from a static random address"
+        depends on APP_ROLE_FAKE_KEYBOARD
+        default y
+        help
+            The original uses a static random address (type 1). Turn this off to advertise
+            from the public address instead - that is one of the bisection steps, because the
+            initiator's address filtering is a suspect.
+
+    config APP_FAKE_KBD_FLAGS
+        hex "Synthetic keyboard: the AD flags byte"
+        depends on APP_ROLE_FAKE_KEYBOARD
+        default 0x05
+        help
+            0x05 is what the original sends: LE Limited Discoverable plus BR/EDR not
+            supported. 0x06 swaps Limited for General Discoverable, which is what most
+            devices use - worth trying, because Limited mode is the unusual choice here.
+
+    config APP_FAKE_KBD_TX_POWER
+        int "Synthetic keyboard: transmit power level index (15 = +20 dBm, 0 = -24 dBm)"
+        depends on APP_ROLE_FAKE_KEYBOARD
+        range 0 15
+        default 15
+        help
+            Lets the synthetic keyboard be made quiet on purpose, which is the only way we
+            have to simulate distance without moving hardware.
+
+            Why it matters: the first run of this role connected on the H2 in 560 ms - but at
+            rssi -7 dBm, because both boards sit on the same PCB. The real keyboard fails on
+            the H2 at -40 dBm and succeeds on the S3 at -79 dBm. So the open question is
+            whether the C6/H2 INITIATOR is deaf at distances where its SCANNER hears fine.
+            Sweeping this value gives the rssi at which connecting stops working, which is a
+            number, not a hypothesis.
+
+            The index is esp_power_level_t: 15 = +20 dBm, 11 = +9 dBm, 8 = 0 dBm, 4 = -12 dBm,
+            0 = -24 dBm.
 
     config APP_DEBUG_SCAN_ONLY
         bool "Diagnostics: scan and log only, never connect to an input device"

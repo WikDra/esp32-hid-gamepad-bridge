@@ -31,6 +31,9 @@
 #if CONFIG_APP_ENABLE_HID_HOST && CONFIG_APP_ENABLE_GAMEPAD && !CONFIG_APP_GAMEPAD_SELFTEST
 #include "input_mapper.h"
 #endif
+#if CONFIG_APP_ROLE_FAKE_KEYBOARD
+#include "fake_keyboard.h"
+#endif
 
 static const char *TAG = "bridge";
 
@@ -109,6 +112,16 @@ void app_main(void)
 #endif
 
     ESP_ERROR_CHECK(ble_stack_start());
+
+#if CONFIG_APP_ROLE_FAKE_KEYBOARD
+    /*
+     * Started AFTER the stack, unlike the other roles, because it needs to register a random
+     * static address and that only works once the host has synced with the controller
+     * (AGENTS.md 4.35). Nothing else runs in this mode - the Kconfig options for the two
+     * normal roles depend on this being off.
+     */
+    ESP_ERROR_CHECK(fake_keyboard_start());
+#endif
 
 #if CONFIG_APP_DEBUG_WATCH_ADDR
     /*
