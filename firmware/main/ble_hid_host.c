@@ -858,6 +858,18 @@ static esp_hidh_dev_t *open_device_guarded(const ble_addr_t *addr)
         if (!(bits & EV_OPEN_DONE)) {
             ESP_LOGE(TAG, "the link to the device being opened dropped - esp_hidh_dev_open() will hang");
             ESP_LOGE(TAG, "this is an IDF bug: WAIT_CB() in nimble_hidh.c waits without a timeout");
+#if CONFIG_APP_DEBUG_CTRL_LOG_DUMP
+            /*
+             * The most interesting dump of all: on this path the controller reported the
+             * connection as established (HCI trace, AGENTS.md 4.35), the link then died with
+             * HCI 0x3E - and NimBLE emitted no connect event at all, so esp_hidh never
+             * learned the connection handle. Whatever the host did with that event is in
+             * here.
+             */
+            ESP_LOGW(TAG, "  === controller log dump begins (link dropped during open) ===");
+            esp_ble_controller_log_dump_all(true);
+            ESP_LOGW(TAG, "  === controller log dump ends ===");
+#endif
             ESP_LOGE(TAG, "restarting the chip - bonds live in NVS, everything comes back on its own");
             vTaskDelay(pdMS_TO_TICKS(500)); /* give the log time to reach the console */
             esp_restart();

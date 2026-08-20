@@ -1890,6 +1890,33 @@ granica domyślnego zakresu NimBLE 30–50 ms), latency 0, timeout nadzoru 2560 
 publiczny, adres peera losowy statyczny. Okno transmisji wybiera kontroler i w HCI go nie
 widać.
 
+#### Dwie naprawy, które z tego wyszły i zostają
+
+**1. Wyłączone ciche ponawianie NimBLE.** `CONFIG_BT_NIMBLE_ENABLE_CONN_REATTEMPT=n`
+sprawia, że aplikacja widzi prawdę od razu: w logu jest `disconnect; reason=574`
+(czyli `BLE_HS_HCI_ERR(0x3E)`) 350 ms po próbie, zamiast timeoutu po 6 s. Przy trzech cichych
+ponowieniach na próbę diagnostyka była wcześniej praktycznie niemożliwa — i to jest powód,
+dla którego dwa dni patrzyliśmy na zły etap.
+
+**2. Otwierający jest budzony, gdy link umiera w trakcie otwierania.** Nasza kopia
+`esp_hid` oddaje semafor w obu gałęziach obsługi rozłączenia, jeśli ktoś czeka na otwarcie
+(flaga `s_open_waiting` ustawiana wokół `WAIT_CB()`).
+
+Bez tego było tak: kontroler zgłasza połączenie, link umiera z `0x3E`, a `esp_hidh` **nie zna
+uchwytu** — log mówi wprost `disconnect handling: conn_handle=1 dev=NOT FOUND
+open_waiting=1`, bo zdarzenie połączenia nigdy nie dotarło do jego handlera. Upstream w tym
+miejscu tylko robi `break`, więc wołający zostaje w `WAIT_CB()` bez końca (§4.23), a nasz
+własny nadzór **restartuje układ** dwie sekundy później. Przy urządzeniu, które zawodzi
+w pętli, to restart co kilkanaście sekund.
+
+Po naprawie, zmierzone: `candidate` o 11556, `dev open failed! status: 0x0` o 11946 i kolejna
+próba o 18696. **390 ms od kandydata do czystej porażki**, bez restartu, z normalnym
+cooldownem — czyli mostek działa dalej i obsługuje pozostałe urządzenia, mimo że ta jedna
+klawiatura się nie łączy.
+
+To jest realna poprawa odporności niezależna od przyczyny: każde urządzenie, które nawiąże
+link i natychmiast go zerwie, było dla nas wcześniej powodem restartu.
+
 
 
 `CONFIG_APP_ROLE_FAKE_KEYBOARD` zamienia płytkę w nadawcę, który udaje AULĘ **bajt w bajt** —

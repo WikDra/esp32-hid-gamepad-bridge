@@ -47,6 +47,13 @@ static SemaphoreHandle_t s_ble_hidh_cb_semaphore = NULL;
 static int services_discovered;
 
 /*
+ * LOCAL PATCH (AGENTS.md 4.35): true while esp_hidh_dev_open() sits in WAIT_CB(). The
+ * disconnect handler uses it to decide whether releasing the semaphore would wake a real
+ * waiter or just leave a stray token behind for the next caller to trip over.
+ */
+static bool s_open_waiting;
+
+/*
  * LOCAL PATCH: upstream has these sizes written out as literals in three places and
  * never checks them on write. Named constants let the callbacks enforce the bounds.
  */
@@ -773,13 +780,60 @@ esp_hidh_gattc_event_handler(struct ble_gap_event *event, void *arg)
         /* Connection terminated. */
         MODLOG_DFLT(INFO, "disconnect; reason=%d ", event->disconnect.reason);
         dev = esp_hidh_dev_get_by_conn_id(event->disconnect.conn.conn_handle);
+        /*
+         * LOCAL PATCH (AGENTS.md 4.35): say out loud what this branch decided. The wake-up
+         * below did not fire on hardware and the reason was not visible from outside: either
+         * the device was not found by connection handle, or nobody was waiting.
+         */
+        ESP_LOGW(TAG, "disconnect handling: conn_handle=%u dev=%s open_waiting=%d",
+                 event->disconnect.conn.conn_handle, dev ? "found" : "NOT FOUND",
+                 (int)s_open_waiting);
         if (!dev) {
             ESP_LOGE(TAG, "CLOSE received for unknown device");
+            /*
+             * LOCAL PATCH (AGENTS.md 4.35): wake the opener here too.
+             *
+             * Measured on hardware: when the C6/H2 controller reports a connection to the
+             * troublesome keyboard and the link then dies with HCI 0x3E, esp_hidh never
+             * learned the connection handle - the log says "conn_handle=1 dev=NOT FOUND
+             * open_waiting=1". Upstream breaks out at this point, so the caller stays in
+             * WAIT_CB() forever and our own watchdog reboots the chip two seconds later.
+             *
+             * If somebody is waiting for an open, this disconnect is the answer to it: no
+             * other open can be in flight, because esp_hidh serialises them on its own mutex.
+             * dev->ble.conn_id is still -1 for that device, so the opener returns a clean
+             * failure and the retry logic takes over - no reboot.
+             */
+            if (s_open_waiting) {
+                SEND_CB();
+            }
             break;
         }
         if (!dev->connected) {
             dev->status = event->disconnect.reason;
             dev->ble.conn_id = -1;
+            /*
+             * LOCAL PATCH (AGENTS.md 4.35): wake the opener.
+             *
+             * This branch is taken when the link dies before the device was marked
+             * connected - and because upstream never sets dev->connected to true (4.25),
+             * that is EVERY disconnect, including one that lands in the middle of
+             * esp_hidh_dev_open(). Upstream just breaks, leaving the caller in WAIT_CB()
+             * with no timeout (4.23), so the open never returns and our watchdog restarts
+             * the chip.
+             *
+             * That is exactly what the C6/H2 keyboard case produces: the controller reports
+             * the connection as established and the link then dies with HCI 0x3E, which
+             * arrives here as reason=574. conn_id is already -1 at this point, so releasing
+             * the semaphore makes esp_hidh_dev_open() return NULL - a clean failure the
+             * caller handles - instead of a reboot.
+             *
+             * Guarded by s_open_waiting so we never hand out a semaphore nobody asked for;
+             * an unpaired give would let the NEXT WAIT_CB() fall straight through.
+             */
+            if (s_open_waiting) {
+                SEND_CB();
+            }
         } else {
             dev->connected = false;
             dev->status = event->disconnect.reason;
@@ -1092,7 +1146,10 @@ esp_hidh_dev_t *esp_ble_hidh_dev_open(uint8_t *bda, uint8_t address_type)
         ESP_LOGE(TAG, "esp_ble_gattc_open failed: %d", ret);
         return NULL;
     }
+    /* LOCAL PATCH (AGENTS.md 4.35): mark the window in which a disconnect must wake us. */
+    s_open_waiting = true;
     WAIT_CB();
+    s_open_waiting = false;
     if (dev->ble.conn_id < 0) {
         ret = dev->status;
         ESP_LOGE(TAG, "dev open failed! status: 0x%x", dev->status);
