@@ -207,6 +207,28 @@ menu "HID bridge (application configuration)"
             The index is esp_power_level_t: 15 = +20 dBm, 11 = +9 dBm, 8 = 0 dBm, 4 = -12 dBm,
             0 = -24 dBm.
 
+    config APP_DEBUG_CTRL_LOG_DUMP
+        bool "Diagnostics: dump the BLE controller's internal log after a failed open"
+        default n
+        help
+            The C6/H2 controller keeps its own log, including the HCI traffic between host and
+            controller, and can dump it on demand (esp_ble_controller_log_dump_all). With this
+            option the bridge triggers that dump the moment a device open fails.
+
+            Why: every conclusion about AGENTS.md 4.35 so far rests on "Connection failed;
+            status=13", which is a HOST-side timeout and says nothing about what the
+            controller did. The dump is the controller's own account of the same seconds.
+
+            Needs the controller log compiled in, which is a separate set of options:
+              CONFIG_BT_LE_CONTROLLER_LOG_ENABLED=y
+              CONFIG_BT_LE_CONTROLLER_LOG_HCI_ENABLED=y     (default y)
+              CONFIG_BT_LE_CONTROLLER_LOG_DUMP_ONLY=y       (default y, buffers in RAM)
+
+            The intended use is a pair of runs on the SAME board: one dialling the real
+            keyboard, which fails, and one dialling the synthetic keyboard from
+            APP_ROLE_FAKE_KEYBOARD, which succeeds. The difference between the two dumps is
+            the step where it goes wrong.
+
     config APP_DEBUG_SCAN_ONLY
         bool "Diagnostics: scan and log only, never connect to an input device"
         default n

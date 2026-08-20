@@ -14,6 +14,10 @@
 #include <string.h>
 
 #include "ble_stack.h"
+#if CONFIG_APP_DEBUG_CTRL_LOG_DUMP
+/* esp_ble_controller_log_dump_all() - the controller's own account of what happened. */
+#include "esp_bt.h"
+#endif
 #include "esp_hid_common.h"
 #include "esp_hidh.h"
 #include "esp_log.h"
@@ -1261,6 +1265,16 @@ static void try_connect_candidates(void)
         esp_hidh_dev_t *dev = open_device_guarded(&c.addr);
         if (dev == NULL) {
             ESP_LOGW(TAG, "  open failed, cooldown %d s", RETRY_COOLDOWN_US / 1000000);
+#if CONFIG_APP_DEBUG_CTRL_LOG_DUMP
+            /*
+             * Ask the controller what IT saw. Everything we know about the failure so far
+             * comes from a host-side timeout, which by definition cannot tell us whether the
+             * controller sent CONNECT_IND, heard anything back, or gave up on its own.
+             */
+            ESP_LOGW(TAG, "  === controller log dump begins ===");
+            esp_ble_controller_log_dump_all(true);
+            ESP_LOGW(TAG, "  === controller log dump ends ===");
+#endif
             candidate_set_cooldown(&c.addr);
             continue;
         }
@@ -1287,6 +1301,17 @@ static void try_connect_candidates(void)
         device_register(&c.addr, mask, dev);
         ESP_LOGI(TAG, "  connected (usage mask 0x%02x), %d/%d devices total",
                  mask, ble_hid_host_device_count(), HID_HOST_MAX_DEVICES);
+#if CONFIG_APP_DEBUG_CTRL_LOG_DUMP
+        /*
+         * The same dump on SUCCESS, which is what makes the failing one readable: a trace on
+         * its own says little, but the difference between a good and a bad attempt on the same
+         * board points at the step that breaks. Use the synthetic keyboard
+         * (APP_ROLE_FAKE_KEYBOARD) as the good case - it is the only peer we can make behave.
+         */
+        ESP_LOGW(TAG, "  === controller log dump begins (SUCCESSFUL open) ===");
+        esp_ble_controller_log_dump_all(true);
+        ESP_LOGW(TAG, "  === controller log dump ends ===");
+#endif
 
         request_fast_interval(dev);
 
