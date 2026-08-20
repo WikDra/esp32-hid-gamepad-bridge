@@ -1,11 +1,11 @@
 # esp32-hid-gamepad-bridge
 
-A BLE bridge on an ESP32-C3: **your Bluetooth keyboard and mouse become an Xbox controller
+A BLE bridge on an ESP32: **your Bluetooth keyboard and mouse become an Xbox controller
 that Windows exposes through XInput.**
 
 ```
 BLE HID keyboard ─┐
-                  ├─→ ESP32-C3 ─→ BLE HID gamepad ─→ PC (Windows)
+                  ├─→ ESP32 ─→ BLE HID gamepad ─→ PC (Windows)
 BLE HID mouse   ──┘   (2× central + 1× peripheral)
 ```
 
@@ -25,12 +25,16 @@ games:
 - **XInput works.** Windows binds its Xbox controller driver and lists the device as
   *"Bluetooth LE XINPUT compatible input device"*. Rocket League, Apex Legends and Steam all
   see the pad. Windows even sends rumble commands back to us, which only the Xbox driver does.
-- **Three concurrent BLE links** on a single ESP32-C3, with ~180 kB of heap to spare.
+- **Three concurrent BLE links** on a single chip, with ~180 kB of heap to spare on the C3
+  and ~250 kB on the S3.
 - **Sleep/wake cycles** of the input devices work: disconnects are detected, resources freed,
   and the device reconnects on its own.
 - **Measured report rates:** pad → PC at 7.5 ms (133 Hz), inputs at 15 ms (66 Hz).
+- **Verified end to end on the ESP32-C3 and the ESP32-S3.** The ESP32-C6 and ESP32-H2 build
+  and run, and handle the pad and the mouse, but will not connect to our test keyboard — see
+  *Known limitations*.
 
-Getting there required fixing eight separate defects in ESP-IDF's `esp_hid` component and
+Getting there required fixing nine separate defects in ESP-IDF's `esp_hid` component and
 working around two limitations in NimBLE's bundled services. All of it is documented in
 [`AGENTS.md`](AGENTS.md) with the evidence that led to each conclusion.
 
@@ -60,6 +64,21 @@ the pad from the Windows Bluetooth device list and pair it again.
 
 The board connects to the PC with a single USB-C cable, which powers it, flashes it and
 carries the console. No extra wiring.
+
+### Which chips this runs on
+
+Every target below builds from the same sources; the only per-target file is
+`firmware/sdkconfig.defaults.<target>`.
+
+| Target | Controller | State |
+|---|---|---|
+| `esp32c3` | older family (`BT_CTRL_*`) | **reference platform**, everything verified |
+| `esp32s3` | older family, shares the C3's controller library | **fully verified**: keyboard, mouse, pad, XInput |
+| `esp32c6` | newer family (`BT_LE_*`) | pad and mouse work; our test keyboard does not connect |
+| `esp32h2` | newer family (`BT_LE_*`) | as above; no Wi-Fi on this chip, which suits a BLE-only bridge |
+
+The keyboard problem on the newer controllers is not a configuration mistake and not signal
+strength — it was chased down to the link layer with an HCI trace. See *Known limitations*.
 
 Other keyboards and mice should work: nothing in the code is specific to these two models
 beyond the report-layout detection, which is driven by the devices' own HID report maps.
@@ -96,7 +115,8 @@ set IDF_WIN=D:\esp\v5.5.1\esp-idf
 Natively on Windows (no WSL needed):
 
 ```bat
-scripts\build-native-win.bat              REM build
+scripts\build-native-win.bat              REM build for esp32c3 (the default target)
+scripts\build-native-win.bat esp32s3      REM ...or any other supported target
 scripts\build-native-win.bat menuconfig   REM configure
 scripts\flash-win.bat COM6                REM flash
 scripts\monitor-win.bat COM6 30           REM console for 30 s, without resetting the board
@@ -107,22 +127,34 @@ Or building in WSL, flashing from Windows:
 
 ```bat
 scripts\build-win.bat esp32c3
-scripts\flash-win.bat COM6
+scripts\flash-win.bat COM6 esp32c3
 ```
 
 Both build paths use **separate build directories** (`build.esp32c3` for WSL,
 `build.win.esp32c3` for Windows), because absolute paths differ between the two and CMake
-will not tolerate them in one directory. `flash-win.bat` finds whichever is present.
+will not tolerate them in one directory. `flash-win.bat` picks whichever was built later.
+
+Two ESP-IDF versions can coexist, which is how this project compared controller behaviour
+across releases. `scripts/build.sh` takes both the IDF path and a build-directory suffix:
+
+```bash
+IDF_DIR=~/esp/v6.0.2/esp-idf BUILD_SUFFIX=.idf602 ./scripts/build.sh esp32h2
+```
+
+That yields `build.esp32h2.idf602` and its own `sdkconfig`, leaving the normal build alone.
+Flashing such an image needs `esptool` directly — the scripts only look for `build.<target>`
+and `build.win.<target>`; the offsets are in `flasher_args.json`.
 
 To reboot the board without opening a console session:
 
 ```bat
 scripts\reboot-win.bat COM6
-```\n
+```
+
 To wipe the chip completely, including the pairing keys in NVS:
 
 ```bat
-scripts\erase-win.bat COM6
+scripts\erase-win.bat COM6 esp32c3
 ```
 
 Note on native USB: the DTR/RTS lines drive reset and the bootloader, so `monitor.py` opens
@@ -208,18 +240,42 @@ To exercise the HID descriptor without a keyboard and mouse, enable
 
 ## Known limitations
 
-- **Input report rate is capped at 66 Hz (15 ms).** The ESP32-C3 controller refuses to
-  *initiate* any connection interval below 15 ms as central, returning HCI `0x12`. Six
-  hypotheses were tested and eliminated by separate measurements — radio capacity, link
-  count, grid alignment, `ce_len`, supervision timeout and the scanner — and there is no
-  Kconfig option for it. Details and the full evidence in `AGENTS.md` §4.33. The same
-  controller happily *maintains* a 7.5 ms link when Windows dictates it, which is how the pad
-  link reaches 133 Hz.
+- **Input report rate is capped at 66 Hz (15 ms).** As central, the controller refuses to
+  *initiate* any connection interval below 15 ms, returning HCI `0x12` — measured identically
+  on the ESP32-C3 and the ESP32-S3, which share the same controller library, so this is a
+  property of that controller family rather than of one board. Six hypotheses were tested and
+  eliminated by separate measurements — radio capacity, link count, grid alignment, `ce_len`,
+  supervision timeout and the scanner — and there is no Kconfig option for it (`AGENTS.md`
+  §4.33). The same controller happily *maintains* a shorter interval when the peer asks for
+  one: that is how the pad link reaches 7.5 ms with Windows, and how our test keyboard ends up
+  at 7.5 ms while the mouse, which never asks, stays at 15 ms.
+- **On the ESP32-C6 and ESP32-H2 our test keyboard does not connect.** The pad and the mouse
+  work there. An HCI trace from the controller's own log shows what happens: the controller
+  reports the connection as established, and the link then dies immediately with HCI `0x3E`
+  ("Connection Failed to be Established"), i.e. the two sides never meet on the first
+  connection events. The same firmware, keyboard and room work on the C3 and S3 — at a signal
+  42 dB *weaker*. Fifteen hypotheses were eliminated by measurement, including three ESP-IDF
+  versions and a synthetic keyboard that copies the real one byte for byte and does connect.
+  Full evidence in `AGENTS.md` §4.35.
 - **Windows only.** The XInput profile targets Windows specifically. The generic profile
   should work anywhere, but is untested elsewhere.
-- **The `esp_hid` patch is pinned to IDF 5.5.1.**
+- **The `esp_hid` patch is pinned to IDF 5.5.1.** IDF 6.0.2 fixes four of the nine defects we
+  patch, so the diff has to be rewritten rather than moved.
 - ESP32-C3 has no USB-OTG, so a USB (rather than Bluetooth) XInput device is not possible on
   this chip.
+
+## Diagnostics
+
+Optional, all off by default, all in `menuconfig`. They exist because each one answered a
+question that guesswork could not:
+
+| Option | What it does |
+|---|---|
+| `APP_DEBUG_SCAN_ONLY` | scans and logs, never connects — the only way to measure what a device really does in the air, since connecting stops the scan and distorts the measurement |
+| `APP_ROLE_FAKE_KEYBOARD` | turns the board into an advertiser impersonating our test keyboard byte for byte, with adjustable interval, address type, flags and transmit power; gives a peer whose behaviour you control |
+| `APP_DEBUG_CTRL_LOG_DUMP` | dumps the C6/H2 controller's internal log, HCI included, after a device open fails or succeeds; `scripts/decode_ctrl_log.py` turns the hex into readable HCI |
+| `APP_GAMEPAD_SELFTEST` | the pad sweeps its sticks and cycles buttons, so the descriptor can be exercised with no keyboard or mouse present |
+| `APP_DEBUG_WATCH_ADDR` | arms a hardware write watchpoint on an address, so a memory corruption panics with the backtrace of the culprit rather than the victim |
 
 ## Licence and attribution
 
@@ -232,7 +288,7 @@ This project is released under the MIT licence — see [`LICENSE`](LICENSE).
   `firmware/main/xbox_report_map.h`. See [`THIRD-PARTY.md`](THIRD-PARTY.md).
 - `firmware/components/esp_hid/` is a modified copy of a component from
   [**ESP-IDF**](https://github.com/espressif/esp-idf) (Apache-2.0). The modifications are
-  marked with `LOKALNA LATKA` comments and isolated in `PATCH.diff`.
+  marked with `LOCAL PATCH` comments and isolated in `PATCH.diff`.
 
 This project is not affiliated with or endorsed by Microsoft or Espressif. It presents
 Microsoft's vendor and product IDs so that Windows will load its own driver; that is
