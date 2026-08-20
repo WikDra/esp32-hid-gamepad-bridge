@@ -51,6 +51,62 @@ Każdy target buduje się z tych samych źródeł; jedyny plik zależny od ukła
 Problem z klawiaturą na nowszych kontrolerach nie wynika z konfiguracji ani z siły sygnału —
 został doprowadzony do warstwy łącza trace'em HCI. Szczegóły w sekcji *Znane ograniczenia*.
 
+## Opcjonalnie: mostek rozdzielony na dwa układy
+
+Na płytce z dwoma układami połączonymi na PCB — **ESP Thread Border Router**, gdzie siedzą
+ESP32-S3 i ESP32-H2 — mostek może chodzić rozdzielony na oba:
+
+```
+klawiatura BLE ──→ S3 (central) ─┐
+                                 ├─→ pad BLE ──→ PC     (S3 jest peryferialem)
+mysz BLE ────────→ H2 (central) ──→ UART ──→ S3
+```
+
+**Sens nie jest w szybkości drutu.** Ramka myszy ma 10 bajtów, czyli przy 921600 bodach ~108 µs,
+wobec interwału połączenia BLE 7,5–15 ms — cztery rzędy wielkości różnicy, więc transport nie
+jest składnikiem opóźnienia. Zyskiem jest **czas radia**: każdy układ obsługuje mniej linków,
+zamiast jednej anteny przeplatającej klawiaturę, mysz i pada.
+
+Przy okazji omija to ograniczenie z sekcji wyżej: mysz działa na nowszym kontrolerze bez
+zarzutu, a klawiatura potrzebuje starszego. Każde urządzenie trafia na układ, który je obsługuje.
+
+Zmierzone tempo każdego odcinka:
+
+| Odcinek | Tempo |
+|---|---|
+| mysz → H2 | 7,5 ms = **133 Hz** |
+| H2 → S3 po UART | 108 µs na ramkę — nie jest ogranicznikiem |
+| klawiatura → S3 | 15 ms = 66 Hz (133 Hz, gdy klawiatura sama o to poprosi) |
+| S3 → PC (pad) | 7,5 ms = **133 Hz** |
+
+Każdy układ buduje się i wgrywa pod swoim targetem; role biorą się z plików `sdkconfig.defaults`
+dla danego układu:
+
+```bat
+scripts\build-native-win.bat esp32s3
+scripts\flash-win.bat COM10 esp32s3     REM gospodarz: klawiatura + pad
+scripts\build-native-win.bat esp32h2
+scripts\flash-win.bat COM11 esp32h2     REM satelita: mysz
+```
+
+Mysz parujemy z H2, klawiaturę z S3, pada z PC. PC widzi jednego kontrolera i żadnego śladu
+tego, że mysz siedzi na innym radiu.
+
+Dwie rzeczy warte wiedzy, gdyby ktoś przenosił to na inną płytkę:
+
+- **Pin połączenia został zmierzony, nie odczytany z dokumentacji.** Przykład `ot_br` z ESP-IDF
+  ma na sztywno GPIO4/5, ale jego README pokazuje to jako wiring DevKit-do-DevKitu i dla tej
+  płytki jest błędne. `APP_LINK_PROBE_RX` przeskanuje piny wejściowe i pokaże, na którym
+  pojawiają się ramki z poprawnym CRC; na płytce BR odpowiedź to **S3 GPIO17 ← H2 GPIO24**.
+  Łącze jest jednokierunkowe, więc TX po stronie gospodarza zostaje nieprzypisany.
+- **Konsola H2 musi zejść z UART.** Łącze ląduje na domyślnych pinach UART0 tego układu, więc
+  konsola na UART pisałaby tekst logu po tym samym drucie. Płytka daje każdemu układowi własne
+  gniazdo USB, więc konsola idzie po USB Serial/JTAG.
+
+Łącze niesie ramkowany protokół z CRC i keepalive, dzięki czemu **cisza jest informacją**: gdy
+satelita zniknie, gospodarz zwalnia trzymany przycisk myszy, a pad i klawiatura pracują dalej.
+Zmierzone na 10 951 ramkach, zero błędów CRC.
+
 ## Wymagania po stronie PC
 
 - **ESP-IDF v5.5.1** (nie starszy — patrz `AGENTS.md`, sekcja o `GATTC_AUTO_PAIR`).
@@ -253,6 +309,7 @@ pytanie, na które zgadywanie nie wystarczyło:
 | `APP_DEBUG_SCAN_ONLY` | tylko skanuje i loguje, nigdy nie łączy — jedyny sposób, by zmierzyć, co urządzenie faktycznie robi w eterze, bo łączenie przerywa skan i zniekształca pomiar |
 | `APP_ROLE_FAKE_KEYBOARD` | zamienia płytkę w nadawcę udającego naszą klawiaturę testową bajt w bajt, z regulacją interwału, typu adresu, flag i mocy nadawania; daje peera, którego zachowanie kontrolujemy |
 | `APP_DEBUG_CTRL_LOG_DUMP` | zrzuca wewnętrzny log kontrolera C6/H2 razem z ruchem HCI, po nieudanym i po udanym otwarciu urządzenia; `scripts/decode_ctrl_log.py` zamienia hex na czytelne HCI |
+| `APP_LINK_PROBE_RX` | skanuje piny wejściowe i pokazuje, na którym pojawiają się ramki z poprawnym CRC z drugiego układu — tak ustaliliśmy połączenie S3↔H2 na płytce BR, bo dokumentacja go nie podaje |
 | `APP_GAMEPAD_SELFTEST` | pad sam przemiata gałkami i cyklicznie wciska przyciski, więc deskryptor można sprawdzić bez klawiatury i myszy |
 | `APP_DEBUG_WATCH_ADDR` | uzbraja sprzętowy watchpoint na zapis pod adres, więc uszkodzenie pamięci daje panikę z backtrace'em **sprawcy**, a nie ofiary |
 

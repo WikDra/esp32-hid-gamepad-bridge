@@ -29,7 +29,8 @@ games:
   and ~250 kB on the S3.
 - **Sleep/wake cycles** of the input devices work: disconnects are detected, resources freed,
   and the device reconnects on its own.
-- **Measured report rates:** pad → PC at 7.5 ms (133 Hz), inputs at 15 ms (66 Hz).
+- **Measured report rates:** pad → PC at 7.5 ms (133 Hz), inputs at 15 ms (66 Hz). Split
+  across two chips the mouse reaches 7.5 ms too — see *Optional: split across two chips*.
 - **Verified end to end on the ESP32-C3 and the ESP32-S3.** The ESP32-C6 and ESP32-H2 build
   and run, and handle the pad and the mouse, but will not connect to our test keyboard — see
   *Known limitations*.
@@ -65,6 +66,11 @@ the pad from the Windows Bluetooth device list and pair it again.
 The board connects to the PC with a single USB-C cable, which powers it, flashes it and
 carries the console. No extra wiring.
 
+Other keyboards and mice should work: nothing in the code is specific to these two models
+beyond the report-layout detection, which is driven by the devices' own HID report maps.
+Two device-specific quirks we had to handle are documented (`AGENTS.md` §4.10 and §4.17) and
+both are handled generically.
+
 ### Which chips this runs on
 
 Every target below builds from the same sources; the only per-target file is
@@ -80,10 +86,61 @@ Every target below builds from the same sources; the only per-target file is
 The keyboard problem on the newer controllers is not a configuration mistake and not signal
 strength — it was chased down to the link layer with an HCI trace. See *Known limitations*.
 
-Other keyboards and mice should work: nothing in the code is specific to these two models
-beyond the report-layout detection, which is driven by the devices' own HID report maps.
-Two device-specific quirks we had to handle are documented (`AGENTS.md` §4.10 and §4.17) and
-both are handled generically.
+## Optional: split across two chips
+
+On a board that carries two SoCs wired together — the **ESP Thread Border Router board**, with
+an ESP32-S3 and an ESP32-H2 on one PCB — the bridge can run split across both:
+
+```
+BLE keyboard ──→ S3 (central) ─┐
+                               ├─→ BLE gamepad ──→ PC     (the S3 is the peripheral)
+BLE mouse ─────→ H2 (central) ──→ UART ──→ S3
+```
+
+**The point is not the speed of the wire.** A mouse frame is 10 bytes, which at 921600 baud is
+~108 µs, against a BLE connection interval of 7.5–15 ms: four orders of magnitude apart, so the
+transport is not part of the latency. The gain is **radio time** — each chip serves fewer links
+instead of one antenna interleaving keyboard, mouse and pad.
+
+It also happens to route around the limitation above: the mouse works fine on the newer
+controller, and the keyboard needs the older one. Each device ends up on the chip that can
+serve it.
+
+Measured rates per hop, with the split running:
+
+| Hop | Rate |
+|---|---|
+| mouse → H2 | 7.5 ms = **133 Hz** |
+| H2 → S3 over UART | 108 µs per frame — not a limiter |
+| keyboard → S3 | 15 ms = 66 Hz (133 Hz whenever the keyboard itself asks) |
+| S3 → PC (pad) | 7.5 ms = **133 Hz** |
+
+Build and flash each chip with its own target; the roles come from the per-target defaults:
+
+```bat
+scripts\build-native-win.bat esp32s3
+scripts\flash-win.bat COM10 esp32s3     REM host: keyboard + pad
+scripts\build-native-win.bat esp32h2
+scripts\flash-win.bat COM11 esp32h2     REM satellite: mouse
+```
+
+Pair the mouse with the H2, the keyboard with the S3, and the pad with the PC. The PC sees one
+controller and no trace of the mouse being on a different radio.
+
+Two things worth knowing if you adapt this to another board:
+
+- **The interconnect pin was measured, not read from a datasheet.** ESP-IDF's `ot_br` example
+  hardcodes GPIO4/5, but its README shows that as DevKit-to-DevKit wiring and it is wrong for
+  this board. `APP_LINK_PROBE_RX` sweeps the input pins and reports where CRC-valid frames
+  arrive; on the BR board the answer is **S3 GPIO17 ← H2 GPIO24**. The link is one-directional,
+  so the host chip's TX stays unassigned.
+- **The H2's console must leave UART.** The link lands on that chip's default UART0 pins, so a
+  UART console would put log text on the same wire. The board gives each chip its own USB
+  socket, so the console goes over USB Serial/JTAG instead.
+
+The link carries a framed, CRC-checked protocol with a keepalive, so silence is meaningful: if
+the satellite disappears, the host releases any held mouse button and the pad and keyboard keep
+working. Measured over 10 951 frames with zero CRC errors.
 
 ## Requirements
 
@@ -274,6 +331,7 @@ question that guesswork could not:
 | `APP_DEBUG_SCAN_ONLY` | scans and logs, never connects — the only way to measure what a device really does in the air, since connecting stops the scan and distorts the measurement |
 | `APP_ROLE_FAKE_KEYBOARD` | turns the board into an advertiser impersonating our test keyboard byte for byte, with adjustable interval, address type, flags and transmit power; gives a peer whose behaviour you control |
 | `APP_DEBUG_CTRL_LOG_DUMP` | dumps the C6/H2 controller's internal log, HCI included, after a device open fails or succeeds; `scripts/decode_ctrl_log.py` turns the hex into readable HCI |
+| `APP_LINK_PROBE_RX` | sweeps candidate input pins and reports where CRC-valid frames from the other chip arrive — how the S3↔H2 wiring on the BR board was established, since the documentation does not give it |
 | `APP_GAMEPAD_SELFTEST` | the pad sweeps its sticks and cycles buttons, so the descriptor can be exercised with no keyboard or mouse present |
 | `APP_DEBUG_WATCH_ADDR` | arms a hardware write watchpoint on an address, so a memory corruption panics with the backtrace of the culprit rather than the victim |
 
