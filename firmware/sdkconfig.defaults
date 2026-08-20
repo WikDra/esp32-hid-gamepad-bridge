@@ -110,10 +110,20 @@ CONFIG_BT_NIMBLE_SVC_HID_MAX_INSTANCES=1
 # option itself cannot be disabled, because it also gates the esp_hidh host (4.8).
 CONFIG_BT_NIMBLE_SVC_HID_MAX_RPTS=1
 
-# BLE keyboards and mice sleep aggressively and drop the connection. Reattempting
-# inside the stack saves us writing our own reconnect logic.
-CONFIG_BT_NIMBLE_ENABLE_CONN_REATTEMPT=y
-CONFIG_BT_NIMBLE_MAX_CONN_REATTEMPT=3
+# Connection reattempts inside the stack: DISABLED, and this is a reversal.
+#
+# It used to be on, with the rationale that reattempting inside NimBLE saves us writing our
+# own reconnect logic. We have since written that logic anyway - a candidate table with
+# freshness and cooldown - and the stack's version turned out to be actively harmful: NimBLE
+# retries up to three times and does NOT tell the application, so all our 6 s connect budget
+# gets eaten by silent retries and the only thing the log shows is "timed out".
+#
+# It cost this project two days. A keyboard that the C6/H2 controller connects to and then
+# loses at the first connection event produced nothing but a host-side timeout; the real
+# error - HCI 0x3E, "Connection Failed to be Established" - was invisible because NimBLE
+# swallowed it. With this off, the log says `disconnect; reason=574` 350 ms after the attempt
+# (AGENTS.md 4.35) and our own retry path takes over.
+CONFIG_BT_NIMBLE_ENABLE_CONN_REATTEMPT=n
 
 # --- Application ---
 # At INFO level NimBLE prints "GATT procedure initiated: notify" for EVERY
