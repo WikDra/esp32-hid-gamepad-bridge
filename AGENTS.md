@@ -1821,7 +1821,76 @@ Koszt, gdyby ktoś to podjął:
 
 
 
-#### Sztuczna klawiatura: H2 łączy się z kopią AULI, także przy dopasowanym sygnale
+#### ROZSTRZYGNIĘTE trace'em HCI: połączenie POWSTAJE i umiera z HCI 0x3E
+
+Przez dwa dni wszystko opierało się na `Connection failed; status=13`, czyli na timeoucie
+**hosta**. Wewnętrzny log kontrolera (`APP_DEBUG_CTRL_LOG_DUMP`, dekoder
+`scripts/decode_ctrl_log.py`) pokazał, że obraz był odwrotny do naszych wniosków. Pełna
+sekwencja jednej próby, zdekodowana z surowych rekordów:
+
+```
+0d 20 19 10 00 10 00 00 01 b4 ab 54 24 9f ec 00 18 00 28 00 00 00 00 01 00 00 00 00
+  host -> LE_Create_Connection: peer ec:9f:24:54:ab:b4 (random), own=public,
+          scan 10/10 ms, itvl 30-50 ms, latency 0, supervision 2560 ms
+0f 04 00 01 0d 20
+  ctrl -> Command Status: status=0x00, komenda przyjeta
+3e 1f 0a 00 01 00 00 01 b4 ab 54 24 9f ec ... 28 00 00 00 00 01 00
+  ctrl -> LE ENHANCED CONNECTION COMPLETE: status=0x00, handle=1, rola=central,
+          peer ec:9f:24:54:ab:b4, itvl 0x0028 = 50 ms
+3e 04 14 01 00 00
+  ctrl -> LE Channel Selection Algorithm, handle 1
+16 20 02 01 00
+  host -> LE_Read_Remote_Features dla handle 1     <- host normalnie idzie dalej
+3e 0c 04 3e 01 00 22 00 ...
+  ctrl -> Read Remote Features Complete: status=0x3E
+05 04 00 01 00 3e
+  ctrl -> DISCONNECTION COMPLETE: handle 1, reason 0x3E
+0d 20 19 10 00 10 00 00 01 b4 ab 54 24 9f ec ...
+  host -> LE_Create_Connection, ten sam peer, jeszcze raz
+```
+
+**Kontroler wysyła `CONNECT_IND` i tworzy połączenie.** Zgłasza je jako `status=0x00`
+z uchwytem 1 i interwałem 50 ms. Host to przyjmuje i rusza dalej — pyta o cechy peera.
+I dopiero wtedy link **umiera z HCI `0x3E`**, czyli „Connection Failed to be Established":
+błąd, który znaczy, że strony nie spotkały się na zdarzeniach połączenia.
+
+Liczby z jednego nagrania, przy dwóch wciśnięciach Fn:
+
+| Zdarzenie | Ile |
+|---|---|
+| `LE_Create_Connection` | 4 |
+| Enhanced Connection Complete, `status=0x00` | **2** |
+| Disconnection Complete, `reason=0x3E` | **2** |
+| Read Remote Features Complete, `status=0x3E` | 2 |
+| `LE_Create_Connection_Cancel` | 4 |
+
+Czyli **każda próba kończy się nawiązaniem i natychmiastową śmiercią linku**, a nie brakiem
+reakcji kontrolera.
+
+**Dlaczego nie widzieliśmy tego dwa dni.** `CONFIG_BT_NIMBLE_ENABLE_CONN_REATTEMPT=y`
+z `CONFIG_BT_NIMBLE_MAX_CONN_REATTEMPT=3` — NimBLE po cichu ponawia połączenie po takim
+błędzie i **nie mówi o tym aplikacji**. Stąd cztery komendy na dwie próby. Aplikacja widzi
+wyłącznie to, że jej własny limit 6 s minął, i dostaje `BLE_HS_ETIMEOUT`. Nasze zdanie
+„kontroler nigdy nie zgłosił zakończenia połączenia" było więc **błędne**: zgłosił, i to
+sukcesem, tylko host tę informację zużył na ciche ponawianie.
+
+Co to wyjaśnia bez dodatkowych założeń:
+
+- **dlaczego klawiatura wychodzi z trybu parowania w dwie sekundy** — bo link naprawdę
+  powstaje po jej stronie; obserwacja właściciela była trafna i teraz ma potwierdzenie
+  na poziomie HCI,
+- **dlaczego sztuczna klawiatura, mysz i pad działają** — u nich pierwsze zdarzenia
+  połączenia dochodzą, więc nie ma `0x3E`,
+- **dlaczego żadna zmiana w rozgłaszaniu ani w sile sygnału nie pomogła** — problem jest
+  po nawiązaniu linku, a nie przed.
+
+Zawężenie jest teraz bardzo wąskie: **pierwsze zdarzenia połączenia między kontrolerem
+C6/H2 a tą klawiaturą**. Znane parametry, z którymi to zawodzi: interwał 50 ms (górna
+granica domyślnego zakresu NimBLE 30–50 ms), latency 0, timeout nadzoru 2560 ms, adres własny
+publiczny, adres peera losowy statyczny. Okno transmisji wybiera kontroler i w HCI go nie
+widać.
+
+
 
 `CONFIG_APP_ROLE_FAKE_KEYBOARD` zamienia płytkę w nadawcę, który udaje AULĘ **bajt w bajt** —
 te same 31 bajtów payloadu (flagi `0x05`, UUID 0x1812, appearance `0x03C1`, beacon Swift Pair
