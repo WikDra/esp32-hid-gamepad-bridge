@@ -973,6 +973,34 @@ static void handle_adv_report(const struct ble_gap_disc_desc *disc)
     bool looks_like_hid = has_hid_uuid || hid_appearance || name_is_known_device(name) ||
                           is_bonded_peer(&disc->addr) ||
                           disc->event_type == BLE_HCI_ADV_RPT_EVTYPE_DIR_IND;
+
+    /*
+     * Drop candidates that are not actually available to us.
+     *
+     * The AD flags byte says whether a device is offering itself: bit 0 is LE Limited
+     * Discoverable, bit 1 is LE General Discoverable. A device that advertises HID, is NOT
+     * bonded with us, and sets NEITHER bit is looking for a host it already knows - dialling
+     * it is futile, because even if the link came up it would want to encrypt with a key we
+     * do not have.
+     *
+     * This is not theory. In one scan round we had both of these in the air at once:
+     *   fb:1c:8e:df:af:e3  flags=0x04 (no discoverable bit)  raw len=11, no name
+     *   ed:a6:0a:52:f8:20  flags=0x05 (limited discoverable) raw len=31, 'AULA-F99Pro'
+     * and we picked the first one, spent the whole connect timeout on it, and were deaf to
+     * the second - which was the keyboard actually waiting to be paired.
+     *
+     * Two deliberate exceptions. A device with a bond is kept regardless of flags, because
+     * a peer returning from sleep advertises a minimal payload (AGENTS.md 4.20). And a
+     * packet with NO flags field at all (f.flags == 0 after a successful parse) is not
+     * judged, because absence of the field is not a statement about discoverability.
+     */
+    if (looks_like_hid && f.flags != 0 &&
+        (f.flags & (BLE_HS_ADV_F_DISC_LTD | BLE_HS_ADV_F_DISC_GEN)) == 0 &&
+        !is_bonded_peer(&disc->addr) &&
+        disc->event_type != BLE_HCI_ADV_RPT_EVTYPE_DIR_IND) {
+        looks_like_hid = false;
+    }
+
     candidate_seen(disc, &f, looks_like_hid, name);
 
     /*

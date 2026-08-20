@@ -1672,6 +1672,47 @@ pośrednio: gdy zwraca błąd, nasza kopia komponentu drukuje `esp_ble_gattc_ope
 (widzieliśmy to raz, `rc=2`, gdy sonda kolidowała z normalną ścieżką), a w przebiegach
 z timeoutem tej linii nie ma.
 
+#### Trzy pomysły z przeglądu, przejechane na sprzęcie — żaden nie pomaga
+
+| Zmiana | Wynik |
+|---|---|
+| `BT_LE_LL_PEER_SCA_SET_ENABLE=y` z `BT_LE_LL_PEER_SCA=10000` | `status=13` przy −44 i −43 dBm |
+| `BT_CTRL_SCAN_BACKOFF_UPPERLIMITMAX` 32 → 1 | bez zmian |
+| połączenie przez listę akceptacji (`peer_addr = NULL`) | mechanicznie działa (`accept list armed with 1 address`), `status=13` |
+
+Wszystkie trzy wycofane, bo nie pomogły; peer SCA i backoff to nastawy w generowanym
+`sdkconfig`, a ścieżka listy akceptacji została usunięta z kodu.
+
+**Dlaczego lista akceptacji niczego nie rozstrzygnęła, choć była najwyższym typem obu
+recenzentów.** Przy jednym adresie na liście jest to równoważne dzwonieniu pod ten adres
+wprost — a więcej adresów nie mieliśmy, bo tablica kandydatów czyści wpisy, których nie
+słyszymy. Żeby ta droga cokolwiek dała, klawiatura musiałaby **wracać** do adresów już
+użytych, a przy ponad dwudziestu zanotowanych nie powtórzył się żaden. Lista akceptacji nie
+umie zgadnąć adresu, którego jeszcze nie było, więc strukturalnie nie może tu pomóc.
+
+#### Realna naprawa, którą przy okazji ujawnił ten przebieg
+
+W jednej rundzie skanu w eterze były **dwa** urządzenia z appearance klawiatury:
+
+```
+fb:1c:8e:df:af:e3  flags=0x04 (NOT-DISCOVERABLE)  raw len=11, bez nazwy
+ed:a6:0a:52:f8:20  flags=0x05 (limited-disc)      raw len=31, 'AULA-F99Pro' + Swift Pair
+```
+
+Pierwsze to klawiatura szukająca **innego** hosta — nie oferuje się do parowania. Nasz kod
+wybierał właśnie ją, przepalał na niej pełny limit próby i w tym czasie był głuchy na tę
+drugą, która czekała na sparowanie. Ten sam adres `fb:1c:…` wybieraliśmy też dzień wcześniej,
+czyli część nieudanych prób na H2 poszła w ogóle nie w tę klawiaturę, o którą nam chodziło.
+
+Poprawka: kandydat, który **nie ma z nami bondu**, nie rozgłasza się kierunkowo i ma flagi bez
+bitu Limited ani General Discoverable, jest pomijany. Dwa świadome wyjątki: urządzenie
+z bondem przechodzi niezależnie od flag (peer wracający ze snu nadaje minimalny payload,
+§4.20), a pakiet **bez pola flag** nie jest oceniany, bo brak pola nie jest wypowiedzią
+o dostępności. Potwierdzone logiem: po zmianie dzwonimy już tylko pod `flags=0x05` z nazwą.
+
+To nie naprawia parowania na C6/H2 — te próby nadal kończą się `status=13` — ale usuwa realne
+marnowanie prób i tłumaczy część wcześniejszego szumu w pomiarach.
+
 
 
 Rozpoznanie mówiło, że to najlepszy pozostały trop, bo zmienia dokładnie ten jeden komponent,
