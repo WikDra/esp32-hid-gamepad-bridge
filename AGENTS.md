@@ -1628,6 +1628,37 @@ w feralnej sekundzie nikt nie trzymał przycisku.
 
 Liczby z dłuższego przebiegu: **10 951 ramek, zero błędów CRC**.
 
+#### Tempo każdego odcinka, zmierzone w stanie ustalonym
+
+Interwały logowały się dotąd tylko przy **zmianie**, więc stanu ustalonego nie było jak
+odczytać. Heartbeat drukuje teraz interwał każdego aktywnego linku (`links:` w `app_main.c`),
+bo to jedyna liczba, która ogranicza tempo raportów na danym odcinku:
+
+```
+S3: links: [2] peripheral 7.50 ms = 133 Hz | [3] central 15.00 ms = 66 Hz
+H2: links: [0] central 7.50 ms = 133 Hz
+```
+
+| Odcinek | Tempo | Kto o tym decyduje |
+|---|---|---|
+| mysz → H2 | **7,50 ms = 133 Hz** | kontroler H2 (nowa rodzina) potrafi to zainicjować |
+| H2 → S3 po UART | 108 µs na ramkę | nie jest ogranicznikiem, cztery rzędy wielkości zapasu |
+| klawiatura → S3 | **15,00 ms = 66 Hz** | sufit starej rodziny kontrolerów (§4.33) |
+| S3 → PC (pad) | **7,50 ms = 133 Hz** | Windows, jako central tego linku |
+
+Czyli **133 Hz jest na trzech odcinkach z czterech**, a wyjątkiem jest klawiatura. Powód jest
+znany i udowodniony: S3 należy do starej rodziny kontrolerów, która w roli centrala odmawia
+zainicjowania interwału krótszego niż 15 ms (§4.33). Klawiatura dostaje 7,5 ms tylko wtedy,
+gdy **sama** o to poprosi — widzieliśmy oba przypadki na tym samym firmware, i to rozstrzyga
+się przy każdym połączeniu na nowo, bo zależy od tego, kto poprosi pierwszy. Nasza drabinka
+nigdy tego nie psuje: gdy link już jest na 6, przerywa (`interval on link 3 is already 6`).
+
+Podziału **nie warto odwracać**, choć na pierwszy rzut oka to by pomogło. Klawiatura na H2
+miałaby 133 Hz, ale ona się z H2 **nie łączy w ogóle** (§4.35, HCI 0x3E) — a niezależnie od
+tego obecne przypisanie jest lepsze merytorycznie: ruch myszy zasila **analogową** gałkę, gdzie
+częstość widać wprost w gładkości, a klawisze są binarne i 15 ms na wciśnięcie nie zmienia
+odczucia.
+
 ### 4.34 `esp_hidh` zapisuje przez wskaźnik NULL, gdy urządzenie nie jest sparowane
 
 Znalezione przy porcie na ESP32-C6, ale **to nie jest błąd specyficzny dla C6** — ten sam

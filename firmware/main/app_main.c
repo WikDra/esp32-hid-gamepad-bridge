@@ -22,6 +22,9 @@
 
 #include "ble_stack.h"
 
+/* For reading each link's negotiated connection interval in the heartbeat. */
+#include "host/ble_gap.h"
+
 #if CONFIG_APP_ENABLE_HID_HOST
 #include "ble_hid_host.h"
 #endif
@@ -79,6 +82,40 @@ static void log_boot_banner(void)
              "off"
 #endif
     );
+}
+
+/*
+ * Reports the connection interval of EVERY active link, because that interval is the hard
+ * upper bound on how often each hop can carry a report - and because it is negotiated, not
+ * chosen: the pad link is set by Windows, an input link by whichever side asks for less.
+ * The values are only logged on change by the GAP listener, so without this line the steady
+ * state is invisible and the question "what rate are we actually running at" cannot be
+ * answered from a log.
+ */
+static void log_link_intervals(void)
+{
+    char line[160];
+    size_t n = 0;
+    int found = 0;
+
+    for (uint16_t h = 0; h <= 9; h++) {
+        struct ble_gap_conn_desc d;
+        if (ble_gap_conn_find(h, &d) != 0) {
+            continue;
+        }
+        const unsigned us = (unsigned)d.conn_itvl * 1250u; /* units of 1.25 ms */
+        if (n < sizeof(line)) {
+            n += (size_t)snprintf(line + n, sizeof(line) - n, "%s[%u] %s %u.%02u ms = %u Hz",
+                                  found ? " | " : "", h,
+                                  d.role == BLE_GAP_ROLE_MASTER ? "central" : "peripheral",
+                                  us / 1000u, (us % 1000u) / 10u, 1000000u / us);
+        }
+        found++;
+    }
+
+    if (found) {
+        ESP_LOGI(TAG, "  links: %s", line);
+    }
 }
 
 void app_main(void)
@@ -184,9 +221,11 @@ void app_main(void)
         if (ble_hid_host_device_count() > 0) {
             ble_hid_host_log_devices();
         }
+        log_link_intervals();
 #else
         ESP_LOGI(TAG, "alive %" PRIu32 " s | heap %" PRIu32 " B | pad %s",
                  tick, (uint32_t)esp_get_free_heap_size(), pad);
+        log_link_intervals();
 #endif
     }
 }
