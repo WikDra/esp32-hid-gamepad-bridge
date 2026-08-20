@@ -45,6 +45,20 @@ esp_err_t ble_hid_host_start(void);
  * process, so every delta ends up in exactly one gamepad report. */
 void ble_hid_host_take_state(hid_input_state_t *out);
 
+/*
+ * Split bridge: feed a mouse report that arrived from the other chip over UART, as if it
+ * had come from a mouse connected here. Accumulates exactly like the local path, so the
+ * mapper and the pad need to know nothing about where the mouse is.
+ */
+void ble_hid_host_inject_mouse(uint8_t buttons, int32_t dx, int32_t dy, int32_t wheel);
+
+/*
+ * Split bridge: mark the remote mouse present or gone. Called with false when the link
+ * goes silent or the peer reports that its mouse dropped - without it a button held at
+ * that moment would stay held in the pad report forever.
+ */
+void ble_hid_host_set_remote_mouse(bool connected);
+
 /* Number of currently open HID devices (0..HID_HOST_MAX_DEVICES). */
 int ble_hid_host_device_count(void);
 

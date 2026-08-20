@@ -14,6 +14,9 @@
 #include <string.h>
 
 #include "ble_stack.h"
+#if CONFIG_APP_LINK_SENDER
+#include "chip_link.h"
+#endif
 #if CONFIG_APP_DEBUG_CTRL_LOG_DUMP
 /* esp_ble_controller_log_dump_all() - the controller's own account of what happened. */
 #include "esp_bt.h"
@@ -69,6 +72,11 @@ static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static EventGroupHandle_t s_events;
 
 static hid_input_state_t s_state;
+
+/* Split bridge: set when a mouse report arrived from the other chip over UART. Held apart
+ * from s_state.mouse_connected because refresh_connected_flags_locked() recomputes that
+ * one from the local device table. */
+static bool s_remote_mouse;
 
 /* State of an in-progress device open. Declared here because the disconnect
  * listener uses it too, and that appears earlier in the file than open_device_guarded(). */
@@ -199,6 +207,13 @@ static void refresh_connected_flags_locked(void)
     }
     s_state.keyboard_connected = (mask & ESP_HID_USAGE_KEYBOARD) != 0;
     s_state.mouse_connected = (mask & ESP_HID_USAGE_MOUSE) != 0;
+
+    /* Split bridge: a mouse on the other chip counts as connected here. Kept as a separate
+     * flag because this function recomputes from the LOCAL device table and would otherwise
+     * clear the remote mouse on every local connect or disconnect. */
+    if (s_remote_mouse) {
+        s_state.mouse_connected = true;
+    }
 
     /* The device dropped out -> clear its inputs, otherwise the pad would be left
      * with a key or mouse button held down forever. */
@@ -424,6 +439,57 @@ void ble_hid_host_take_state(hid_input_state_t *out)
     taskEXIT_CRITICAL(&s_mux);
 }
 
+void ble_hid_host_inject_mouse(uint8_t buttons, int32_t dx, int32_t dy, int32_t wheel)
+{
+    taskENTER_CRITICAL(&s_mux);
+    s_remote_mouse = true;
+    s_state.mouse_connected = true;
+    s_state.mouse_buttons = buttons;
+    s_state.mouse_dx += dx;
+    s_state.mouse_dy += dy;
+    s_state.mouse_wheel += wheel;
+    taskEXIT_CRITICAL(&s_mux);
+}
+
+void ble_hid_host_set_remote_mouse(bool connected)
+{
+    uint8_t was_held = 0;
+
+    taskENTER_CRITICAL(&s_mux);
+    s_remote_mouse = connected;
+    /* Recompute from the local table so that a locally connected mouse is not lost when the
+     * remote one goes away. Clears the buttons if nothing is left. */
+    refresh_connected_flags_locked();
+
+    if (!connected) {
+        /*
+         * Clear the mouse inputs EXPLICITLY. The refresh above is not enough, and the reason
+         * is worth remembering: it derives mouse_connected from the local usage mask, and our
+         * keyboard declares a mouse report of its own (Fn layer, AGENTS.md 4.16), so its mask
+         * 0x63 keeps the MOUSE bit set. The "clear if no mouse" guard therefore never fires
+         * on the host chip, and a button held at the instant the link died would have stayed
+         * held forever - precisely what this watchdog exists to prevent.
+         *
+         * Measured, not reasoned: the log showed "peer silent ... clearing mouse state"
+         * while the very next alive line still read "mouse=1".
+         */
+        was_held = s_state.mouse_buttons;
+        s_state.mouse_buttons = 0;
+        s_state.mouse_dx = 0;
+        s_state.mouse_dy = 0;
+        s_state.mouse_wheel = 0;
+    }
+    taskEXIT_CRITICAL(&s_mux);
+
+    /* Logged outside the critical section, and only when something was actually held - so the
+     * log carries the proof that this path releases stuck buttons, without needing a test
+     * that depends on holding a button at exactly the right moment. */
+    if (was_held) {
+        ESP_LOGW(TAG, "remote mouse gone - released buttons that were still held: 0x%02x",
+                 was_held);
+    }
+}
+
 /* --------------------------------------------------------------- raporty HID */
 
 static void log_hex(const char *prefix, const uint8_t *data, uint16_t len)
@@ -534,6 +600,15 @@ static void handle_mouse_report(const esp_hidh_event_data_t *p)
     s_state.mouse_dy += dy;
     s_state.mouse_wheel += wheel;
     taskEXIT_CRITICAL(&s_mux);
+
+#if CONFIG_APP_LINK_SENDER
+    /*
+     * Split bridge: this chip has no pad, so the report's only destination is the host
+     * chip. Forwarded ALREADY DECODED, so the device-specific layout (AGENTS.md 4.10) stays
+     * in one place and the receiver deals in plain deltas.
+     */
+    chip_link_send_mouse(d[0], dx, dy, wheel);
+#endif
 
     /* The layout is settled, so the raw bytes are only needed when diagnosing a new
      * device. One line per second is kept so that it is possible to see that reports
@@ -1017,6 +1092,34 @@ static void handle_adv_report(const struct ble_gap_disc_desc *disc)
         looks_like_hid = false;
     }
 
+#if !CONFIG_APP_HID_WANT_KEYBOARD || !CONFIG_APP_HID_WANT_MOUSE
+    /*
+     * Split bridge: skip the device class this chip does not serve, before spending a
+     * connect attempt on it.
+     *
+     * The test is the ADVERTISED APPEARANCE, not the report map, and that is deliberate:
+     * our test keyboard declares a mouse report of its own (its Fn layer emulates a mouse,
+     * AGENTS.md 4.16), so its usage mask claims MOUSE too and cannot tell the two apart.
+     * The appearance can: 0x03C1 keyboard, 0x03C2 mouse.
+     *
+     * A packet with no appearance field is NOT judged here - that is a bonded peer coming
+     * back from sleep with a minimal payload (AGENTS.md 4.20), and rejecting it would break
+     * reconnection. The post-open mask check below is the backstop for that case.
+     */
+    if (looks_like_hid && f.appearance_is_present) {
+#if !CONFIG_APP_HID_WANT_KEYBOARD
+        if (f.appearance == ESP_HID_APPEARANCE_KEYBOARD) {
+            looks_like_hid = false;
+        }
+#endif
+#if !CONFIG_APP_HID_WANT_MOUSE
+        if (f.appearance == ESP_HID_APPEARANCE_MOUSE) {
+            looks_like_hid = false;
+        }
+#endif
+    }
+#endif
+
     candidate_seen(disc, &f, looks_like_hid, name);
 
     /*
@@ -1309,6 +1412,46 @@ static void try_connect_candidates(void)
             candidate_set_cooldown(&c.addr);
             continue;
         }
+
+#if !CONFIG_APP_HID_WANT_KEYBOARD || !CONFIG_APP_HID_WANT_MOUSE
+        /*
+         * Split bridge backstop: a device that got past the appearance filter (because it
+         * advertised none) but serves no class we want is closed again rather than parked
+         * in our slot.
+         *
+         * The test is ONLY "does it offer a class we want". An earlier version also rejected
+         * a mouse-only chip's device if it declared KEYBOARD reports, on the theory that
+         * this is how our test keyboard looks. MEASURED AND WRONG: the AJAZZ AJ159 Pro
+         * declares keyboard reports of its own -
+         *     map=0 id=4 typ=INPUT usage=KEYBOARD len=8
+         *     map=0 id=1 typ=INPUT usage=KEYBOARD len=8
+         * so that rule rejected the very mouse the chip exists to serve. Report maps cannot
+         * separate these devices; the advertised appearance can, and that is where the
+         * discrimination belongs.
+         */
+        {
+            uint8_t wanted = 0;
+#if CONFIG_APP_HID_WANT_KEYBOARD
+            wanted |= ESP_HID_USAGE_KEYBOARD;
+#endif
+#if CONFIG_APP_HID_WANT_MOUSE
+            wanted |= ESP_HID_USAGE_MOUSE;
+#endif
+            if ((mask & wanted) == 0) {
+                ESP_LOGW(TAG, "  mask 0x%02x is not a class this chip serves - closing", mask);
+                /*
+                 * TERMINATE THE LINK, do not just drop our record. Freeing the device while
+                 * the peer stays connected and subscribed produced an endless
+                 * "NOTIFY received for unknown device" from esp_hidh: the notifications kept
+                 * arriving and there was no longer a device to match them to.
+                 */
+                esp_hidh_dev_close(dev);
+                device_mark_dead(dev);
+                candidate_set_cooldown(&c.addr);
+                continue;
+            }
+        }
+#endif
 
         device_register(&c.addr, mask, dev);
         ESP_LOGI(TAG, "  connected (usage mask 0x%02x), %d/%d devices total",
