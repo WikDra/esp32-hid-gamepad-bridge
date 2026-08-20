@@ -1354,6 +1354,55 @@ wyjściowego.
 podłączeniu. Drabinka zostaje w kodzie — kto chce sprawdzić, czy nowsza wersja IDF to
 poluzowała, ustawia 6 i czyta log.
 
+#### Potwierdzenie na S3: 15 ms to sufit RODZINY kontrolerów, nie jednej płytki
+
+Ten sam pomiar powtórzony na ESP32-S3 (płytka ESP Thread BR, H2 wyczyszczony, żeby nie
+konkurował), z `APP_INPUT_CONN_ITVL=6`, czyli z drabinką startującą od 7,5 ms:
+
+```
+link 4 (mysz): interval 6 (7.50 ms)  rejected: rc=530 (HCI 0x12)
+               interval 8 (10.00 ms) rejected: rc=530 (HCI 0x12)
+               interval 10 (12.50 ms) rejected: rc=530 (HCI 0x12)
+               ACCEPTED: interval 12 (15.00 ms = 66 Hz), latency=0
+link 3 (klawiatura): interval on link 3 is already 6 (7 ms), leaving it
+```
+
+Identycznie jak na C3, do kodu błędu włącznie. Ponieważ S3 dzieli z C3 **bibliotekę
+kontrolera i przestrzeń opcji** (§4.35), wniosek z §4.33 wolno teraz sformułować szerzej:
+15 ms to sufit **starej rodziny kontrolerów** w roli centrala, a nie cecha jednej płytki.
+
+Zarazem link klawiatury pracuje na **7,5 ms** — bo o to prosi sama klawiatura. Dowodem jest
+`latency=48` w jego parametrach: my zawsze prosimy o `latency = 0`, więc ta wartość mogła
+przyjść tylko od peera. To domyka obraz z §4.33: kontroler **utrzymuje** krótki interwał
+narzucony przez peera i **odmawia zainicjowania** go sam.
+
+Praktyczny wniosek dla mostka: mysz dostaje 66 Hz na C3 i na S3, a klawiatura tyle, ile sobie
+wynegocjuje.
+
+#### Drabinka interwałów raportowała nieprawdę — naprawione
+
+Przy pierwszym przebiegu na S3 drabinka ogłosiła `no interval was accepted - keeping 50 ms`,
+podczas gdy link **właśnie ustawił się na 7,5 ms**. Dwa błędy w jednym miejscu:
+
+- **`BLE_HS_EALREADY` (rc=2) traktowane jako odrzucenie.** To nie odrzucenie, a informacja
+  „procedura aktualizacji już trwa" — bardzo często taka, którą zaczął peer. Stara wersja
+  wystrzeliwała wszystkie sześć wartości w tę samą milisekundę i sześć razy dostawała `rc=2`,
+  co w logu wyglądało jak sześć odmów kontrolera. Teraz czekamy 400 ms i ponawiamy, do
+  czterech podejść.
+- **`rc == 0` traktowane jako „przyjęte".** Odpowiedź jest asynchroniczna
+  (`BLE_GAP_EVENT_CONN_UPDATE`) — to samo ustalenie, które §4.33 zapisał dla strony pada,
+  ale w tej pętli nigdy go nie zastosowano. Teraz po wysłaniu prośby odczytujemy link przez
+  1,5 s i dopiero zmierzona wartość decyduje.
+
+Na koniec drabinka loguje zawsze **rzeczywisty** interwał linku, więc nie da się już
+przeczytać z logu wniosku sprzecznego z faktem. Uwaga metodologiczna ta sama, co przy
+`APP_DEBUG_SCAN_ONLY`: to już drugi raz, gdy nasze narzędzie pomiarowe kłamało w sposób
+spójny i dlatego wiarygodny.
+
+Zastrzeżenie do §4.33: tamte pomiary na C3 zapisywały `rc=530`, czyli **prawdziwe** odmowy
+kontrolera (HCI 0x12), a nie `rc=2`, więc wniosek o suficie 15 ms nie był zbudowany na tej
+wadzie i pozostaje w mocy.
+
 ### 4.34 `esp_hidh` zapisuje przez wskaźnik NULL, gdy urządzenie nie jest sparowane
 
 Znalezione przy porcie na ESP32-C6, ale **to nie jest błąd specyficzny dla C6** — ten sam

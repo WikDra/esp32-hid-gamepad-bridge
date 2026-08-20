@@ -1471,20 +1471,61 @@ static void request_fast_interval(esp_hidh_dev_t *dev)
             .min_ce_len = 0,
             .max_ce_len = 0,
         };
-        int rc = ble_gap_update_params(conn_handle, &params);
-        if (rc == 0) {
-            ESP_LOGI(TAG, "  ACCEPTED: interval %u (%u.%02u ms = %u Hz)",
-                     itvl, (unsigned)(itvl * 125 / 100), (unsigned)(itvl * 125 % 100),
-                     (unsigned)(1000 * 100 / (itvl * 125)));
-            return;
+
+        /*
+         * BLE_HS_EALREADY means an update procedure is already running on this link - very
+         * often one the PEER started - and it is NOT a rejection. The first version of this
+         * ladder counted it as one, fired all six values into the same instant and then
+         * announced "no interval was accepted" while the link had in fact just settled at
+         * 7.5 ms. The giveaway was latency=48 in the result: we always ask for latency 0, so
+         * that value could only have come from the peer's own request.
+         */
+        int rc = BLE_HS_EALREADY;
+        for (int attempt = 0; attempt < 4 && rc == BLE_HS_EALREADY; attempt++) {
+            rc = ble_gap_update_params(conn_handle, &params);
+            if (rc == BLE_HS_EALREADY) {
+                ESP_LOGI(TAG, "  interval %u: an update is already in flight, waiting", itvl);
+                vTaskDelay(pdMS_TO_TICKS(400));
+            }
         }
+
+        if (rc == 0) {
+            /*
+             * rc == 0 only means "the request went out". The answer arrives asynchronously
+             * as BLE_GAP_EVENT_CONN_UPDATE, so the only honest way to report the outcome is
+             * to read the link back (AGENTS.md 4.33 learned this on the pad side).
+             */
+            for (int waited = 0; waited < 1500; waited += 100) {
+                vTaskDelay(pdMS_TO_TICKS(100));
+                if (ble_gap_conn_find(conn_handle, &desc) != 0) {
+                    return; /* link gone - nothing left to tune */
+                }
+                if (desc.conn_itvl == itvl) {
+                    ESP_LOGI(TAG, "  ACCEPTED: interval %u (%u.%02u ms = %u Hz), latency=%u",
+                             itvl, (unsigned)(itvl * 125 / 100), (unsigned)(itvl * 125 % 100),
+                             (unsigned)(1000 * 100 / (itvl * 125)), desc.conn_latency);
+                    return;
+                }
+            }
+            ESP_LOGW(TAG, "  interval %u: request sent, but the link stayed at %u (%u ms)",
+                     itvl, desc.conn_itvl, (unsigned)(desc.conn_itvl * 125 / 100));
+            continue;
+        }
+
         /* rc >= 0x200 to blad HCI; kod z listy Bluetooth to rc - 0x200. */
         ESP_LOGW(TAG, "  interval %u (%u.%02u ms) rejected: rc=%d (HCI 0x%02x)",
                  itvl, (unsigned)(itvl * 125 / 100), (unsigned)(itvl * 125 % 100),
                  rc, rc >= 0x200 ? (unsigned)(rc - 0x200) : 0u);
     }
-    ESP_LOGW(TAG, "  no interval was accepted - keeping %u ms",
-             (unsigned)(desc.conn_itvl * 125 / 100));
+
+    /* Whatever happened above, say what the link actually ended up with. */
+    if (ble_gap_conn_find(conn_handle, &desc) == 0) {
+        ESP_LOGW(TAG, "  ladder finished - link %u runs at interval %u (%u.%02u ms = %u Hz),"
+                      " latency=%u",
+                 conn_handle, desc.conn_itvl, (unsigned)(desc.conn_itvl * 125 / 100),
+                 (unsigned)(desc.conn_itvl * 125 % 100),
+                 (unsigned)(1000 * 100 / (desc.conn_itvl * 125)), desc.conn_latency);
+    }
 }
 
 static void scan_task(void *arg)
