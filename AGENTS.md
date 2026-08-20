@@ -102,6 +102,7 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | Naprawa | lokalna kopia komponentu `esp_hid` z jednolinijkową łatką + kontrole granic. Potwierdzone, że build bierze naszą kopię (`check_local_esp_hid.py`) i że łatka jest w binarce. **Weryfikacja cyklu uśpienia na sprzęcie do zrobienia** |
 | **Dorobek śledztwa z §4.35 scalony do `main` i przejechany na C3** | po scaleniu: `roles: hid_host=on gamepad=on`, `TX power level: 15`, klawiatura i mysz **wracają same** z bondów (`OPEN d8:78:… 'AULA-F99Pro 5.0 '` z `enc=1 bond=1`, potem `f4:ee:…`), `inputs 2 (kbd=1 mouse=1)`, oba z maską `0x63`, w logu lecą `MOU … [00 1b 00 f5 ff 00 00]` i `KBD … [00 00 06 …]`. Heap 190 588 B |
 | **Cały łańcuch na scalonym `main`: wejścia → pad → PC** | `pad ready` plus mapowanie w logu: `pad: L(0,-127)` z klawisza, `pad: R(127,83)` z myszy, skos `L(-90,-90)` ze skalowaniem. Pad łączy się z PC sam z bondu — pierwsze podejrzenie, że wymaga ponownego sparowania, było błędne; w Windows był po prostu zapamiętany inny komputer |
+| **XInput na scalonym `main`** | właściciel potwierdził, że **test pada w Steam pokazuje wejścia poprawnie** — czyli po scaleniu 29 commitów ze śledztwa §4.35 profil Xbox nadal działa i nic w deskryptorze ani w tożsamości nie ucierpiało |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
 
