@@ -1,0 +1,23 @@
+## IDF Component Manager manifest.
+##
+## Both USB dependencies are gated on the target, and that gating is load-bearing rather
+## than tidiness: the ESP32-C3 has no USB OTG peripheral at all, so pulling esp_tinyusb or
+## the USB host stack into a C3 build breaks it. The BLE bridge on C3/C6/H2 must keep
+## building with no USB components in the picture.
+##
+## esp_tinyusb is pinned to the 1.x line on purpose. The 2.x API reorganised
+## tinyusb_config_t into nested port/phy/task/descriptor structs; our usb_pad.c is written
+## against the flat 1.x fields (device_descriptor, configuration_descriptor, ...). Moving to
+## 2.x means editing that one file, not the project.
+dependencies:
+  idf: ">=5.3"
+
+  espressif/esp_tinyusb:
+    version: "^1.7"
+    rules:
+      - if: "target in [esp32s2, esp32s3, esp32p4]"
+
+  espressif/usb_host_hid:
+    version: "^1.0"
+    rules:
+      - if: "target in [esp32s2, esp32s3, esp32p4]"

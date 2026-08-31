@@ -1403,6 +1403,195 @@ Zastrzeżenie do §4.33: tamte pomiary na C3 zapisywały `rc=530`, czyli **prawd
 kontrolera (HCI 0x12), a nie `rc=2`, więc wniosek o suficie 15 ms nie był zbudowany na tej
 wadzie i pozostaje w mocy.
 
+### 4.37 Wersja USB: dwa ESP32-S3, pad XInput po USB (branch `s3-usb`)
+
+```
+klawiatura USB ─┐                                    ┌─ pad Xbox 360 (XInput) ─→ PC
+                ├─→ hub ─→ S3 #1 (USB host) ─→ UART ─→ S3 #2 (USB device) ┘
+mysz USB ───────┘
+```
+
+Kod jest napisany i **wszystkie konfiguracje się budują**, ale na sprzęcie nie był jeszcze
+uruchomiony — właściciel nie ma w tej chwili dwóch S3. Ta sekcja zawiera ustalenia z
+researchu, decyzje projektowe i plan testu, żeby uruchomienie nie wymagało dopisywania kodu.
+
+#### Rozstrzygające ustalenie: po USB udajemy pada Xbox **360**, nie Series X
+
+To jedyna rzecz, która zmieniła założenia. Sprawdzone tą samą metodą, która rozstrzygnęła
+§4.32 — czytaniem plików INF w tym Windows, a nie zgadywaniem:
+
+```
+C:\Windows\INF\xusb22.inf
+  %XUSB22.DeviceName.Wired%=CC_Install, USB\Vid_045E&Pid_028E   <- Xbox 360 wired
+  %XUSB22.DeviceName%=CC_Install,       USB\Vid_045E&Pid_0719   <- odbiornik 360 wireless
+  %XUSB22.DeviceName.Jump%=CC_Install,  USB\Vid_045E&Pid_028F   <- play and charge
+```
+
+Dopasowanie idzie po **samym VID/PID**, bez klasy interfejsu. Trzy wnioski:
+
+1. **Deskryptor z wersji BLE jest tu bezużyteczny.** `xinputhid.inf`, który wiąże nasz pad
+   BLE, ma **zero** wpisów `USB\` (policzone: 0). Urządzenie USB HID z PID `0x0B13` dostanie
+   więc sterownik generyczny i żadnego XInput. **XInput po USB to w ogóle nie HID**: to
+   interfejs vendorowy `0xFF / 0x5D / 0x01`, dwa endpointy interrupt i brak Report Map.
+2. **Series X po USB to protokół GIP** (`xboxgip.inf`, „Xbox Game Input Protocol Driver"),
+   zupełnie inny i znacznie większy stack. Emulacja pada 360 daje ten sam efekt dla gier —
+   Windows wystawia zwykłego kontrolera XInput.
+3. Tożsamość: **VID `0x045E`, PID `0x028E`**, `bcdDevice 0x0114`.
+
+#### Protokół, wzięty z dwóch niezależnych źródeł
+
+Deskryptory i format raportów pochodzą z przechwytu Wireshark **prawdziwego** pada
+(partsnotincluded.com) i są zgodne z tym, na co dopasowuje się sterownik `xpad` w Linuksie
+(`bInterfaceClass 0xFF`, `bInterfaceSubClass 93`, `bInterfaceProtocol 1`).
+
+Raport wejściowy, 20 B na EP `0x81` co 4 ms (250 Hz):
+
+| Bajt | Zawartość |
+|---|---|
+| 0, 1 | typ `0x00`, długość `0x14` |
+| 2 | krzyżak (bity 0–3: góra, dół, lewo, prawo), Start, Back, L3, R3 |
+| 3 | LB, RB, Guide, —, A, B, X, Y |
+| 4, 5 | lewy i prawy spust, `uint8` 0–255 |
+| 6–13 | gałki, `int16` LE, X przed Y, **północ-wschód dodatni** |
+| 14–19 | nieużywane |
+
+Wyjściowo: `0x00 0x08 … [3]=lewy silnik [4]=prawy` (rumble) oraz `0x01 0x03 [2]=wzór` (LED).
+
+**Uwaga na znak osi Y.** Prawdziwy pad ma dodatni kierunek w górę, a nasz mapper produkuje
+dodatni w dół (konwencja ekranowa, z myszy i z WASD). `xpad` w Linuksie neguje Y właśnie
+z tego powodu. U nas ta jedna inwersja siedzi w `axis_to_xbox()` i nigdzie więcej — to
+klasyczne miejsce na błąd „gałka odwrócona".
+
+#### Jak to jest zrobione w TinyUSB
+
+XInput nie jest żadną klasą, którą TinyUSB zna, więc:
+
+- **cały deskryptor konfiguracji podajemy sami** — `esp_tinyusb` 1.7 przyjmuje
+  `configuration_descriptor` i `device_descriptor` w `tinyusb_config_t`,
+- **własna klasa** wchodzi przez `usbd_app_driver_get_cb()`, który w TinyUSB jest symbolem
+  **słabym** (`TU_ATTR_WEAK` w `usbd.c`) — to udokumentowany sposób dodania klasy bez
+  forkowania stacku, więc nie powtarzamy historii z §4.30, gdzie musieliśmy pisać usługi
+  GATT ręcznie, bo gotowych nie dało się użyć.
+
+Zadeklarowany jest **tylko interfejs 0**. Prawdziwy pad ma cztery (headset, nieznany,
+Xbox Security Method), ale żaden nie jest potrzebny do związania XInput, a sam security
+method nie jest zaimplementowany po stronie sterownika Windows.
+
+**Deskryptor vendorowy `0x21` (17 B) jest przepisany dosłownie i to nie jest zabobon.**
+Powtarza adresy endpointów i ich rozmiary, a źródło, które go rozebrało, stwierdziło wprost:
+zmiana numeru endpointu w deskryptorze endpointu **bez** zmiany go tutaj sprawia, że sterownik
+Windows przestaje rozmawiać z urządzeniem.
+
+**Jedno świadome odstępstwo:** prawdziwy pad podaje `bMaxPacketSize0 = 8`, my podajemy 64,
+bo tyle ma kontrolny endpoint TinyUSB (`CFG_TUD_ENDPOINT0_SIZE`) i deskryptor musi się
+zgadzać ze sprzętem. Dopasowanie w INF idzie po VID/PID, więc jest to bezpieczne; gdyby
+kiedyś przeszkadzało, wymuszamy `CFG_TUD_ENDPOINT0_SIZE` na 8.
+
+#### Huby: sprawdzone, że IDF 5.5.1 to potrafi
+
+To była druga rzecz, która mogła wywrócić plan („mysz i klawiatura przez huba"). W
+`components/usb/Kconfig` w 5.5.1 jest `CONFIG_USB_HOST_HUBS_SUPPORTED` (domyślnie `n`) oraz
+`CONFIG_USB_HOST_HUB_MULTI_LEVEL` dla hubów łączonych kaskadowo. **Nie jest to opcja za flagą
+eksperymentalną** — za `IDF_EXPERIMENTAL_FEATURES` schowana jest tylko liczba prób resetu
+portu. Własny przykład ESP-IDF `usb/host/hid` włącza huby w swoim
+`sdkconfig.defaults`, co jest najlepszym dowodem, że to zamierzony scenariusz.
+
+Bez tej opcji host obsługuje **dokładnie jedno** urządzenie podłączone bezpośrednio, czyli
+klawiatura i mysz naraz nie są możliwe.
+
+#### Sprzęt: dwie rzeczy do wiedzenia przed testem
+
+- **Konsola musi zejść z USB Serial/JTAG na UART, na obu układach.** Na S3 peryferium
+  USB Serial/JTAG i USB-OTG są podłączone do **tych samych pinów GPIO19/20** i tylko jedno
+  może nimi sterować. TinyUSB (albo host USB) zabiera te piny, więc konsola po USB
+  **zamilknie** — a objaw jest zwodniczy, wygląda jak martwy firmware. Na
+  **ESP32-S3-DevKitC-1** nic nie tracimy: ta płytka ma drugie gniazdo USB idące przez mostek
+  USB-UART do UART0. To ta sama pułapka, która kosztowała rundę diagnozy na H2-DevKitM
+  (§4.35), tylko z innej strony.
+- **Host musi zasilić urządzenia (VBUS).** Gniazdo devkitu samo z siebie nie poda 5 V
+  urządzeniom, dlatego zalecany jest **hub z własnym zasilaniem** — co przy okazji zdejmuje
+  pytanie, czy klawiatura z myszą nie przekroczą tego, co płytka mogłaby dać.
+
+#### Co zostało wspólne z wersją BLE, a co nowe
+
+Szew okazał się czterosymbolowy. `input_mapper` **pobiera** stan i **wysyła** raport, więc
+oba końce są teraz makrami wybieranymi w czasie kompilacji (`IO_TAKE_STATE`, `IO_INPUT_BUSY`,
+`IO_PAD_SEND`). Logika mapowania, krzywa myszy, filtr `ErrorRollOver` i tablica przypisań
+klawiszy **nie są duplikowane** — wersja USB używa dokładnie tych samych.
+
+Nowe pliki: `usb_pad.c` (urządzenie XInput), `usb_hid_host.c` (host + HID),
+`input_state.c` (akumulator stanu dla buildów bez BLE), `gamepad_state.h` i `input_state.h`
+(typy wyjęte ze nagłówków BLE, żeby build USB nie musiał ich włączać).
+
+`chip_link` dorobił **ramkę klawiatury** (`0x03`: modyfikatory + 6 kodów, stan absolutny,
+więc zgubiona ramka sama się naprawia) oraz keepalive z **maską obecności** zamiast jednego
+bitu myszy. Podział BLE zachowuje się jak dotąd, bo tam obecność myszy nadal liczy się
+z tablicy urządzeń.
+
+Warianty: jeden target, dwie role, więc skrypty przyjmują teraz **nazwę wariantu** i trzymają
+osobne katalogi build oraz osobny `sdkconfig`:
+
+```bat
+scripts\build-native-win.bat esp32s3 s3pad
+scripts\flash-win.bat COM<n> esp32s3 s3pad
+scripts\build-native-win.bat esp32s3 s3input
+scripts\flash-win.bat COM<m> esp32s3 s3input
+```
+
+#### Co już zweryfikowane bez sprzętu
+
+Deskryptor jest sprawdzany skryptem **na zbudowanej binarce**, nie na źródle — czyli na tym,
+co faktycznie pójdzie na drut:
+
+```
+python scripts/check_xinput_descriptor.py firmware/build.win.esp32s3.s3pad
+
+  configuration descriptor: 49 B (wTotalLength says 49)
+  interface 0: class FF subclass 5D protocol 01, 2 endpoints - OK
+  vendor 0x21: IN 0x81/20 B, OUT 0x01/8 B, consistent with the endpoints - OK
+  endpoint 0x81: interrupt, 32 B, every 4 ms - OK
+  endpoint 0x01: interrupt, 32 B, every 8 ms - OK
+  device: VID 0x045E PID 0x028E (Xbox 360 wired) - matches xusb22.inf
+  OK: interface 0 is byte-for-byte the real controller's
+```
+
+Skrypt porównuje blok interfejsu 0 **bajt w bajt** z przechwytem prawdziwego pada i sprawdza
+spójność wewnętrzną (długości, zgodność endpointów z deskryptorem `0x21`). Powstał z tego
+samego powodu co `gen_xbox_report_map.py`: 40 bajtów przepisywanych ręcznie to gwarantowana
+literówka, której potem szuka się w zachowaniu Windows, a nie w kodzie.
+
+Zbudowane bez ostrzeżeń: `s3pad` (284 kB), `s3input` (339 kB) oraz — jako test regresji —
+`esp32c3`, `esp32s3`, `esp32c6`, `esp32h2` w rolach BLE. Wersja USB **nie rusza** platformy
+odniesienia: na C3 komponenty USB nie są nawet zaciągane (reguły `rules:` w
+`idf_component.yml` po targecie), bo C3 nie ma peryferium USB OTG i build by padł.
+
+#### Plan testu na sprzęcie
+
+1. **Sam pad, bez drugiego układu.** Wgrać `s3pad`, podłączyć do PC. W logu (UART!) ma być
+   `USB XInput pad up: VID 0x045E PID 0x028E`, a potem `XInput interface open`. W Windows:
+   `joy.cpl` ma pokazać kontroler, a `Get-PnpDevice` identyfikator `USB\VID_045E&PID_028E`.
+   Bez drugiego układu pad będzie nieruchomy — to normalne, wejść nie ma.
+2. **Rozstrzygający dowód XInput:** uruchomić cokolwiek, co wibruje padem. W logu ma pojawić
+   się `rumble from host: left=… right=…`. Polecenia wibracji wysyła **wyłącznie** sterownik
+   pada, nie generyczna obsługa HID — to ten sam test, który rozstrzygnął §4.32 dla BLE.
+3. **Sam host, bez pada.** Wgrać `s3input`, podłączyć **zasilany hub** z klawiaturą i myszą.
+   W logu: `USB host up`, `external hubs: supported (multi-level)`, potem `HID connected` po
+   jednym na każde urządzenie i `KBD`/`MOU report len=…` przy używaniu.
+4. **Drut.** Połączyć UART: TX hosta → RX pada, wspólna masa. Piny ustawia
+   `APP_LINK_TX_GPIO` / `APP_LINK_RX_GPIO`; **na dwóch osobnych płytkach trzeba je podać
+   samemu**, bo domyślne (`17`/`-1`) opisują wewnętrzne połączenie płytki BR. Host ma
+   raportować `sent N frames (dropped 0)`, pad `received N frames (CRC errors 0)` i
+   `peer serves: mouse keyboard`.
+5. **Całość.** Ruch myszy → prawa gałka, WASD → lewa, klawisze i przyciski zgodnie z tabelą
+   mapowania, która jest wspólna z wersją BLE.
+
+Czego **nie** wiemy do tego testu: czy Windows zwiąże XUSB przy zadeklarowanym jednym
+interfejsie zamiast czterech. Deskryptor interfejsu 0 jest identyczny, a dopasowanie idzie po
+VID/PID, więc powinien — ale to jedyne miejsce, gdzie świadomie odbiegamy strukturalnie od
+prawdziwego pada. Jeśli nie zadziała, poprawka jest **wyłącznie w deskryptorze**: dopisać
+pozostałe trzy interfejsy (bajty są w §4.37 w źródle, w komentarzu `usb_pad.c`), co nie rusza
+ani jednej linii logiki.
+
 ### 4.36 Mostek rozdzielony na dwa układy płytki BR (branch `esp32-br-split`)
 
 Płytka ESP Thread Border Router ma **dwa układy połączone na PCB** — ESP32-S3 i ESP32-H2 —

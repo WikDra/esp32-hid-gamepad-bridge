@@ -18,26 +18,8 @@
 extern "C" {
 #endif
 
-/* D-pad (hat switch). A bitmap, because the arrow keys are independent; opposite
- * directions pressed together cancel out in ble_gamepad.c.
- *
- * NOTE: the D-pad only works in the Xbox profile. The generic pad descriptor has no
- * hat switch, and adding one would require re-pairing that profile in Windows. */
-#define GAMEPAD_DPAD_UP    0x01
-#define GAMEPAD_DPAD_RIGHT 0x02
-#define GAMEPAD_DPAD_DOWN  0x04
-#define GAMEPAD_DPAD_LEFT  0x08
-
-/* Axes are signed 8-bit, range -127..127, centred on 0.
- * Buttons: bit 0 = button 1, ..., bit 11 = button 12. */
-typedef struct {
-    int8_t lx;
-    int8_t ly;
-    int8_t rx;
-    int8_t ry;
-    uint16_t buttons;
-    uint8_t dpad;
-} gamepad_state_t;
+/* D-pad bitmap and gamepad_state_t are shared with the USB pad. */
+#include "gamepad_state.h"
 
 /* Registers the HID service in GATT and starts the advertising task.
  * Call after ble_stack_init() and before ble_stack_start(). */

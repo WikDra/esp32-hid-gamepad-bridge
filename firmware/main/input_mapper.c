@@ -20,6 +20,32 @@
 
 #include "input_mapper.h"
 
+/*
+ * Transport seam. The mapping logic below is identical for BLE and USB; only where the
+ * state comes from and where the report goes differ, so those two are macros resolved at
+ * compile time. Four symbols is the whole coupling.
+ */
+#if CONFIG_APP_ENABLE_HID_HOST
+#include "ble_hid_host.h"
+#define IO_TAKE_STATE(p) ble_hid_host_take_state(p)
+#define IO_INPUT_BUSY()  ble_hid_host_is_opening()
+#else
+#include "input_state.h"
+#define IO_TAKE_STATE(p) input_state_take(p)
+#define IO_INPUT_BUSY()  false
+#endif
+
+#if CONFIG_APP_ENABLE_GAMEPAD
+#include "ble_gamepad.h"
+#define IO_PAD_SEND(p) ble_gamepad_send(p)
+#elif CONFIG_APP_USB_PAD
+#include "usb_pad.h"
+#define IO_PAD_SEND(p) usb_pad_send(p)
+#else
+#error "input_mapper needs a pad transport: APP_ENABLE_GAMEPAD or APP_USB_PAD"
+#endif
+
+
 #include <inttypes.h>
 #include <stdbool.h>
 #include <string.h>
@@ -234,7 +260,7 @@ static void mapper_task(void *arg)
         hid_input_state_t in;
         /* Taking the state clears the mouse accumulators, so every delta ends up in
          * exactly one gamepad report. */
-        ble_hid_host_take_state(&in);
+        IO_TAKE_STATE(&in);
 
         gamepad_state_t out = {0};
         stick_from_wasd(&in, &out.lx, &out.ly);
@@ -253,11 +279,11 @@ static void mapper_task(void *arg)
          * a deflected stick or a held button for its duration.
          */
         static bool was_opening;
-        bool opening = ble_hid_host_is_opening();
+        bool opening = IO_INPUT_BUSY();
         if (opening) {
             if (!was_opening) {
                 gamepad_state_t neutral = {0};
-                ble_gamepad_send(&neutral);
+                IO_PAD_SEND(&neutral);
                 ESP_LOGI(TAG, "device open in progress - suspending pad reports");
             }
             was_opening = true;
@@ -268,7 +294,7 @@ static void mapper_task(void *arg)
             was_opening = false;
         }
 
-        bool sent = ble_gamepad_send(&out);
+        bool sent = IO_PAD_SEND(&out);
 
         /* Log only on a real change and no more than once per 250 ms - otherwise mouse
          * movement would flood the console. */

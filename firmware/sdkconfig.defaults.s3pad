@@ -1,0 +1,40 @@
+# VARIANT: USB pad chip of the S3+S3 USB bridge.
+#
+# This chip is a USB DEVICE: it presents an Xbox 360 wired controller to the PC and gets its
+# input state from the other S3 over UART. No BLE at all here.
+#
+# Use with:  scripts\build-native-win.bat esp32s3 s3pad
+#            scripts\flash-win.bat COM<n> esp32s3 s3pad
+
+# --- roles -------------------------------------------------------------------------------
+CONFIG_APP_ENABLE_HID_HOST=n
+CONFIG_APP_ENABLE_GAMEPAD=n
+CONFIG_APP_USB_PAD=y
+CONFIG_APP_USB_HID_HOST=n
+CONFIG_APP_LINK_RECEIVER=y
+
+# The link is the only input source here, so losing it must clear the pad quickly rather
+# than leaving a stick deflected. 500 ms is two keepalive periods plus margin.
+CONFIG_APP_LINK_PEER_TIMEOUT_MS=500
+
+# --- console -----------------------------------------------------------------------------
+# MUST be UART, and this is not a preference. On the ESP32-S3 the USB Serial/JTAG peripheral
+# and USB-OTG are wired to the SAME pins (GPIO19/20) and only one can drive them; TinyUSB
+# takes the pins, so a USB Serial/JTAG console would go silent - and worse, would look like a
+# crashed firmware. On an ESP32-S3-DevKitC-1 this is free: that board has a second USB socket
+# going through a USB-UART bridge to UART0.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# --- TinyUSB -----------------------------------------------------------------------------
+# No class is enabled: we register our own XInput class driver through TinyUSB's
+# usbd_app_driver_get_cb() hook, and supply the whole configuration descriptor ourselves.
+CONFIG_TINYUSB_CDC_ENABLED=n
+CONFIG_TINYUSB_MSC_ENABLED=n
+CONFIG_TINYUSB_HID_COUNT=0
+CONFIG_TINYUSB_MIDI_COUNT=0
+CONFIG_TINYUSB_VENDOR_COUNT=0
+
+# Report rate: the Xbox 360 IN endpoint is polled every 4 ms (250 Hz), so the mapper may as
+# well run faster than the 100 Hz the BLE build uses - there is no radio to share.
+CONFIG_APP_REPORT_RATE_HZ=250

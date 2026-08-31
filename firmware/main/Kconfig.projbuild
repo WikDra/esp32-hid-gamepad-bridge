@@ -90,7 +90,7 @@ menu "HID bridge (application configuration)"
 
     config APP_REPORT_RATE_HZ
         int "Pad: report task frequency [Hz]"
-        depends on APP_ENABLE_GAMEPAD
+        depends on APP_ENABLE_GAMEPAD || APP_USB_PAD
         range 10 250
         default 100
         help
@@ -235,9 +235,44 @@ menu "HID bridge (application configuration)"
             whatever else is driving that net. The USB pins (S3 GPIO19/20) are excluded
             because the console runs on them.
 
+    config APP_USB_PAD
+        bool "USB device role: present an XInput gamepad over USB"
+        depends on SOC_USB_OTG_SUPPORTED
+        depends on !APP_ROLE_FAKE_KEYBOARD
+        default n
+        help
+            Presents an Xbox 360 wired controller (VID 0x045E, PID 0x028E) over USB, which is
+            what makes Windows load its XInput driver. Read off this machine's
+            C:\Windows\INF\xusb22.inf, the match is on VID/PID alone.
+
+            NOT the same trick as the BLE profile. xinputhid.inf, which binds our BLE pad,
+            has zero USB entries - so a USB HID device with PID 0x0B13 gets the generic
+            driver instead. USB XInput is a vendor-specific interface with two interrupt
+            endpoints and no report descriptor at all.
+
+            Mutually exclusive with APP_ENABLE_GAMEPAD: one pad transport at a time. The
+            build stops with an #error if both are on.
+
+            Note that the console cannot stay on USB Serial/JTAG here: that peripheral and
+            USB-OTG share GPIO19/20 on the S3, so the console has to move to UART.
+
+    config APP_USB_HID_HOST
+        bool "USB host role: read a keyboard and a mouse over USB"
+        depends on SOC_USB_OTG_SUPPORTED
+        depends on !APP_ROLE_FAKE_KEYBOARD
+        default n
+        help
+            Runs the USB host stack and the HID class driver, so a keyboard and a mouse can be
+            attached - through a hub, which needs USB_HOST_HUBS_SUPPORTED.
+
+            Mutually exclusive with APP_ENABLE_HID_HOST (the BLE central role): the two would
+            both claim to be the source of input state.
+
+            Same console caveat as above.
+
     config APP_MOUSE_SCALE_DIV
         int "Mapping: mouse sensitivity divisor"
-        depends on APP_ENABLE_GAMEPAD && APP_ENABLE_HID_HOST
+        depends on (APP_ENABLE_GAMEPAD && APP_ENABLE_HID_HOST) || APP_USB_PAD
         range 1 128
         default 24
         help
