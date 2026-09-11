@@ -17,6 +17,17 @@ CONFIG_APP_LINK_RECEIVER=y
 # than leaving a stick deflected. 500 ms is two keepalive periods plus margin.
 CONFIG_APP_LINK_PEER_TIMEOUT_MS=500
 
+# --- inter-chip link ---------------------------------------------------------------------
+# Explicit for the same reason as on the input chip: the Kconfig default RX=17 describes the
+# ESP Thread BR board's internal wiring, and on an S3 SuperMini GPIO17 sits on the bottom pads
+# rather than the 18-pin side header. GPIO5 is a plain GPIO on that header.
+#
+# TX stays -1 - the link is one-directional and this side has nothing to ask the other chip.
+# uart_set_pin() takes -1 as UART_PIN_NO_CHANGE, so the pin is simply left alone; a wire may
+# be run for a future back-channel without anything driving it.
+CONFIG_APP_LINK_TX_GPIO=-1
+CONFIG_APP_LINK_RX_GPIO=5
+
 # --- console -----------------------------------------------------------------------------
 # MUST be UART, and this is not a preference. On the ESP32-S3 the USB Serial/JTAG peripheral
 # and USB-OTG are wired to the SAME pins (GPIO19/20) and only one can drive them; TinyUSB

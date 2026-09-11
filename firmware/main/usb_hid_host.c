@@ -21,7 +21,20 @@
 
 static const char *TAG = "usb_host";
 
-#define USB_HID_MAX_IFACES 4
+/*
+ * How many HID INTERFACES can be tracked at once - interfaces, not devices. The distinction
+ * matters: a 2.4 GHz receiver dongle typically exposes three or four HID interfaces on its own
+ * (boot keyboard, boot mouse, consumer control, plus a vendor one), so two dongles can easily
+ * present six to eight. Four was enough for a plain keyboard and a plain mouse and nothing
+ * more.
+ *
+ * Overflowing this array is not fatal - the interface is opened and started before it is
+ * recorded, and the report callback dispatches on params.proto rather than on this table, so
+ * input keeps flowing. What breaks is the bookkeeping: count_proto() under-counts, and a
+ * disconnect can then declare a class gone while another interface of it is still alive,
+ * which zeroes that class's state. Cheap to avoid, so avoid it.
+ */
+#define USB_HID_MAX_IFACES 8
 
 typedef struct {
     hid_host_device_handle_t handle;
@@ -251,14 +264,24 @@ static void driver_event_cb(hid_host_device_handle_t dev, const hid_host_driver_
         return;
     }
 
+    bool tracked = false;
     for (int i = 0; i < USB_HID_MAX_IFACES; i++) {
         if (!s_ifaces[i].in_use) {
             s_ifaces[i].in_use = true;
             s_ifaces[i].handle = dev;
             s_ifaces[i].proto = params.proto;
             s_open_count++;
+            tracked = true;
             break;
         }
+    }
+    if (!tracked) {
+        /* Reports from this interface will still arrive - see the comment on
+         * USB_HID_MAX_IFACES - but its class bookkeeping is now wrong. Say so, because the
+         * symptom (a class going dead when an unrelated interface disconnects) looks like
+         * anything but a full table. */
+        ESP_LOGW(TAG, "interface table full (%d) - addr %u iface %u not tracked",
+                 USB_HID_MAX_IFACES, params.addr, params.iface_num);
     }
 
     if (params.proto == HID_PROTOCOL_KEYBOARD) {

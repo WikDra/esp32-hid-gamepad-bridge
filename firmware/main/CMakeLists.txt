@@ -1,5 +1,9 @@
 set(srcs "app_main.c")
-set(reqs esp_hid nvs_flash esp_timer driver)
+# The GPIO and UART drivers are named EXPLICITLY rather than pulled in through the "driver"
+# meta-component. On IDF 5.x "driver" still re-exported them, but IDF 6.x dropped that: a
+# build there fails with "chip_link.c includes driver/uart.h, provided by esp_driver_uart".
+# Both component names exist since 5.3, which is this project's floor (idf_component.yml).
+set(reqs esp_hid nvs_flash esp_timer esp_driver_gpio esp_driver_uart)
 
 # The BLE stack is only linked when a BLE role is on, so a USB-only build does not pay for
 # NimBLE (~60 kB of heap and a lot of flash).

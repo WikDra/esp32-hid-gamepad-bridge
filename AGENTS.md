@@ -1577,10 +1577,10 @@ odniesienia: na C3 komponenty USB nie są nawet zaciągane (reguły `rules:` w
 3. **Sam host, bez pada.** Wgrać `s3input`, podłączyć **zasilany hub** z klawiaturą i myszą.
    W logu: `USB host up`, `external hubs: supported (multi-level)`, potem `HID connected` po
    jednym na każde urządzenie i `KBD`/`MOU report len=…` przy używaniu.
-4. **Drut.** Połączyć UART: TX hosta → RX pada, wspólna masa. Piny ustawia
-   `APP_LINK_TX_GPIO` / `APP_LINK_RX_GPIO`; **na dwóch osobnych płytkach trzeba je podać
-   samemu**, bo domyślne (`17`/`-1`) opisują wewnętrzne połączenie płytki BR. Host ma
-   raportować `sent N frames (dropped 0)`, pad `received N frames (CRC errors 0)` i
+4. **Drut.** Połączyć UART: TX hosta → RX pada, wspólna masa. Piny są już ustawione jawnie
+   w obu wariantach (`s3input` TX = GPIO4, `s3pad` RX = GPIO5, czyli piny z listwy
+   18-pinowej) — patrz §4.38 i [`docs/POLACZENIA-USB.pl.md`](docs/POLACZENIA-USB.pl.md).
+   Host ma raportować `sent N frames (dropped 0)`, pad `received N frames (CRC errors 0)` i
    `peer serves: mouse keyboard`.
 5. **Całość.** Ruch myszy → prawa gałka, WASD → lewa, klawisze i przyciski zgodnie z tabelą
    mapowania, która jest wspólna z wersją BLE.
@@ -1591,6 +1591,140 @@ VID/PID, więc powinien — ale to jedyne miejsce, gdzie świadomie odbiegamy st
 prawdziwego pada. Jeśli nie zadziała, poprawka jest **wyłącznie w deskryptorze**: dopisać
 pozostałe trzy interfejsy (bajty są w §4.37 w źródle, w komentarzu `usb_pad.c`), co nie rusza
 ani jednej linii logiki.
+
+### 4.38 Wersja USB na dwóch ESP32-S3 SuperMini: piny łącza, IDF 6.1 i instalator EIM
+
+Rozpiska połączeń do lutowania: [`docs/POLACZENIA-USB.pl.md`](docs/POLACZENIA-USB.pl.md).
+Tu tylko ustalenia, które wyszły przy przygotowaniu tego montażu. **Nic z tego nie było
+jeszcze uruchomione na sprzęcie** — płytki są w trakcie lutowania listew.
+
+#### Domyślne piny łącza były błędne dla dwóch osobnych płytek, i to w obie strony
+
+Wartości w `Kconfig.projbuild` opisują wewnętrzne połączenie płytki ESP Thread BR
+(`default 24 if IDF_TARGET_ESP32H2`, `default 17 if IDF_TARGET_ESP32S3`). Na targecie
+`esp32s3` rozwiązywały się więc do **TX = −1 i RX = 17**, co dla wariantów USB znaczyło:
+
+| Wariant | Rola | Co wychodziło z domyślnych | Skutek |
+|---|---|---|---|
+| `s3input` | nadajnik | TX = **−1** | `uart_set_pin()` dostaje `UART_PIN_NO_CHANGE`, czyli układ **w ogóle nie nadaje** |
+| `s3pad` | odbiornik | RX = **17** | GPIO17 jest na **dolnych padach** SuperMini, nie na listwie 18-pinowej |
+
+Pierwsze to zwykły błąd, nie kwestia płytki: wariant `s3input` nie mógł działać na żadnym
+sprzęcie. Wyszło z odczytania wygenerowanego `sdkconfig`, a nie z lektury Kconfiga — warto
+pamiętać, że `default X if TARGET` przy dwóch rolach na **jednym** targecie nie ma jak
+rozróżnić ról.
+
+Oba warianty podają teraz piny jawnie: **GPIO4 = TX, GPIO5 = RX**, kabel jest skrzyżowaniem.
+Wybór: zwykłe GPIO z listwy, bez funkcji strapping (GPIO0, 3, 45, 46), poza USB (GPIO19/20),
+poza flashem i PSRAM (GPIO26–37) i poza UART0 (GPIO43/44), którego potrzebuje konsola.
+
+#### Sprzęt pomocniczy: co potwierdzone, co zostaje otwarte
+
+- **ZMIERZONE: pin `5V` SuperMini podaje 5 V na VBUS gniazda USB-C.** Sprawdzone zasileniem
+  jednego ESP32 z drugiego, przez adapter OTG. Nie ma tam więc diody blokującej: host poda
+  urządzeniom zasilanie i wstrzykiwanie 5 V w kabel do huba nie jest potrzebne. Wynikają
+  z tego dwie rzeczy — pin `5V` i VBUS gniazda to **jedna sieć**, więc płytka pada (ta na
+  USB-C w PC) dostaje z przejściówki wyłącznie RXD/TXD/GND; oraz hub **pasywny** też się
+  zgłosi, bo VBUS jest, i pytanie sprowadza się wyłącznie do prądu.
+- **Przejściówka: CP2102 (SiLabs), listwa `DTR/RXD/TXD/+5V/GND/3V3`, poziomy logiczne 3,3 V**
+  na RX, TX i DTR (specyfikacja producenta). Zamyka to obawę o przekroczenie maksimum wejść
+  S3 bez mierzenia. `DTR` zostaje niepodłączony: automatyczne wejście w bootloader wymaga
+  **dwóch** linii (EN i GPIO0), a żadnej nie ma na listwie 18-pinowej — RTS jest w tym module
+  dodatkowo tylko padem lutowniczym.
+- **Hub: aktywny USB 3.0.** Zadziała przez swoją część 2.0, bo USB-OTG w S3 to **Full Speed**
+  (12 Mbit/s). Przejściówka USB-C (wtyk) na USB-A (gniazdo) — sprawdzony adapter OTG od
+  Pixela 7; linie CC nie mają znaczenia, bo gniazdo SuperMini prowadzi tylko D+, D−, VBUS
+  i GND.
+- **Wejścia przez odbiorniki radiowe 2,4 GHz, nie kablem od urządzeń.** Dongle nie mają
+  podświetlenia i nie ładują akumulatorów, więc cały hub schodzi poniżej 200 mA i przy
+  wyłączonym podświetleniu wystarczyłby nawet hub pasywny. Konsekwencja dla kodu:
+  `usb_hid_host.c` rozdziela raporty po **kodzie protokołu interfejsu**, a ten jest niezerowy
+  tylko dla interfejsów **boot** — dongle zwykle takie wystawia (stąd działa w BIOS-ie), ale
+  część odbiorników gamingowych prowadzi szybki strumień myszy interfejsem vendorowym, a na
+  boot zostawia kopię o niższym tempie. Objawem byłaby więc niższa częstość, nie brak
+  działania. `USB_HID_MAX_IFACES` podniesione **4 → 8**, bo jeden dongle wystawia zwykle
+  trzy–cztery interfejsy HID, czyli dwa mieszczą się w czterech tylko przypadkiem;
+  przepełnienie tablicy nie zatrzymuje raportów (callback dyspozycjonuje po `params.proto`),
+  ale psuje księgowanie klas, więc firmware mówi o nim teraz wprost
+  (`interface table full (8) - ... not tracked`).
+- **Zysk na tempie jest węższy, niż wygląda — i tu łatwo o nadużycie.** Napisałem najpierw, że
+  wersja USB znosi sufit 66 Hz z §4.33; to nieprawda dla podziału S3+H2, gdzie **mysz i pad
+  pracowały na 7,5 ms (133 Hz)**, czyli powyżej deklarowanych przez AJ159 Pro 125 Hz (§4.36).
+  66 Hz dotyczyło **wyłącznie klawiatury**, bo tylko ona wisiała na S3, czyli na starszej
+  rodzinie kontrolerów. Realny zysk wersji USB to zatem klawiatura oraz ewentualnie mysz, jeśli
+  dongle da `bInterval` krótszy niż 8 ms — do zmierzenia, nie do założenia.
+
+
+#### IDF 6.1 buduje wszystkie warianty po jednej poprawce przenośności
+
+Zbudowane na `v6.1`: `s3pad` 0x3a530 B, `s3input` 0x49800 B, oraz — jako regresja — wariant
+BLE na `esp32s3` 0x83400 B. Jedyna potrzebna zmiana w kodzie:
+
+```
+FAILED: chip_link.c.obj
+fatal error: driver/uart.h: No such file or directory
+Compilation failed because chip_link.c includes driver/uart.h,
+provided by esp_driver_uart component(s).
+```
+
+W IDF 5.x meta-komponent `driver` re-eksportował sterowniki UART i GPIO; w 6.x już nie.
+`firmware/main/CMakeLists.txt` wymienia je teraz wprost (`esp_driver_gpio esp_driver_uart`) —
+oba nazwy istnieją od 5.3, czyli od podłogi z `idf_component.yml`, więc build na 5.5.1 to nie
+psuje. `CONFIG_USB_HOST_HUBS_SUPPORTED` w 6.1 nadal istnieje i jest w `s3input` włączone
+(sprawdzone w wygenerowanym `sdkconfig`, nie w Kconfigu).
+
+#### Instalator EIM ma inny układ katalogów i psuje wszystkie skrypty `.bat`
+
+ESP-IDF ma teraz dwa instalatory o **niezgodnych** układach:
+
+| Instalator | Gdzie venv Pythona |
+|---|---|
+| `install.bat` | `%IDF_TOOLS_PATH%\python_env\idf<x.y>_py<a.b>_env` ← jedyne miejsce, w które patrzy `export.bat` |
+| EIM | `%IDF_TOOLS_PATH%\python\<x.y>\venv` + własny skrypt aktywacyjny dla PowerShella |
+
+Na instalacji EIM `export.bat` kończy się
+
+```
+ERROR: ESP-IDF Python virtual environment
+"C:\Espressif\tools\python_env\idf6.1_py3.13_env\Scripts\python.exe" not found.
+```
+
+a zaraz po nim każdy skrypt `.bat` z `scripts/` wywala `'idf.py' is not recognized`.
+`IDF_PYTHON_ENV_PATH` **nie pomaga** — sprawdzone, `export.bat` go nie honoruje. Niczego nie
+brakuje, venv jest tylko w innym miejscu.
+
+Rozwiązanie bez duplikowania drugiego venva: `scripts/idf-env.ps1` znajduje aktywację w
+kolejności `IDF_ACTIVATE` → rejestr EIM (`eim_idf.json`, jeden wpis na wersję) →
+`export.ps1` ze starego układu. Na nim stoją `scripts/build-native-win.ps1` i
+`scripts/flash-win.ps1`, odwzorowujące konwencje wariantów ze skryptów `.bat`.
+`monitor-win.bat` zostaje wsadem, bo potrzebuje tylko interpretera z `pyserial`, nie całego
+środowiska — nauczony szukać także w układzie EIM i drukujący, którego wybrał.
+
+Dwie pułapki warte zapamiętania, obie kosztowały po jednym nieudanym przebiegu:
+
+- `set "IDF_TOOLS_PATH=C:\Espressif\tools" && ...` — **cytowanie jest konieczne**, bo bez
+  niego `cmd` wciąga spację przed `&&` do wartości zmiennej i ścieżka w komunikacie błędu
+  wygląda na poprawną (`C:\Espressif\tools \python_env\...`), a nie jest.
+- W PowerShellu potok zwracający **jeden** element daje skalar, nie tablicę, więc `[0]` na
+  ścieżce zwraca jej **pierwszy znak**. `flash-win.ps1` opakowuje wynik w `@( )`; objaw był
+  taki: `Cannot find path 'F:\ai\...\F'`.
+
+#### Otwarta decyzja: nasza kopia `esp_hid` przysłania naprawioną wersję z 6.1
+
+Dotyczy tylko ról BLE, ale trzeba to wiedzieć przed jakimkolwiek buildem BLE na 6.1.
+`firmware/components/esp_hid/` jest przypięte do 5.5.1 (`nimble_hidh.c`, 1178 linii) i
+nadpisuje wersję z IDF 6.1 (**1295 linii**), która ma już naprawy §4.27
+(`services_discovered = 0`), §4.29 (`ble_gap_security_initiate`) i §4.25
+(`dev->connected = true`) — sprawdzone grepem w drzewie 6.1, zgodnie z tym, co §4.35
+przewidywał dla 6.0.2. Kompiluje się bez zmian, ale znaczy to, że **na 6.1 tracimy naprawy
+upstreamu**, zachowując w zamian nasze własne dodatki (limit próby 6 s zamiast 30 s,
+budzenie otwierającego przy śmierci linku, log CCCD na INFO). Wersja USB tego nie dotyka —
+`esp_hid` jest tam linkowane, ale nieużywane.
+
+Przy okazji: `scripts/check_local_esp_hid.py` patrzy tylko w `build.esp32c3` i
+`build.win.esp32c3`, więc dla innych targetów i wariantów nie odpowie na pytanie, czyja kopia
+weszła do builda.
+
 
 ### 4.36 Mostek rozdzielony na dwa układy płytki BR (branch `esp32-br-split`)
 

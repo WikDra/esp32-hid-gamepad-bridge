@@ -25,6 +25,19 @@ CONFIG_APP_LINK_SENDER=y
 CONFIG_USB_HOST_HUBS_SUPPORTED=y
 CONFIG_USB_HOST_HUB_MULTI_LEVEL=y
 
+# --- inter-chip link ---------------------------------------------------------------------
+# Pins given EXPLICITLY, because the Kconfig defaults describe the ESP Thread BR board's
+# internal S3-to-H2 wiring and are wrong here in both directions: on an esp32s3 target they
+# resolve to TX=-1 (this chip would never transmit at all) and RX=17, which on an S3 SuperMini
+# is not on the 18-pin side header but on the bottom pads.
+#
+# GPIO4/GPIO5 are plain GPIOs on that header: no strapping function (unlike GPIO0/3/45/46),
+# not the USB pins (GPIO19/20), not flash or PSRAM (GPIO26-37), and not UART0 (GPIO43/44),
+# which the console needs. TX is always GPIO4 and RX always GPIO5 on both boards, so the
+# cable is a plain crossover: this chip's GPIO4 goes to the pad chip's GPIO5.
+CONFIG_APP_LINK_TX_GPIO=4
+CONFIG_APP_LINK_RX_GPIO=-1
+
 # --- console -----------------------------------------------------------------------------
 # Same hard requirement as on the pad chip: USB Serial/JTAG and USB-OTG share GPIO19/20 on
 # the S3, and here USB-OTG is the host port. Console goes to UART.
