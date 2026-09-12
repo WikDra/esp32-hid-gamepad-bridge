@@ -91,11 +91,27 @@ menu "HID bridge (application configuration)"
     config APP_REPORT_RATE_HZ
         int "Pad: report task frequency [Hz]"
         depends on APP_ENABLE_GAMEPAD || APP_USB_PAD
-        range 10 250
+        range 10 1000
         default 100
         help
             The task wakes up at this rate, but a report is only sent to the PC when the
             pad state has actually changed.
+
+            TWO THINGS BOUND THIS FROM ABOVE, and both fail quietly rather than loudly.
+
+            First, the FreeRTOS tick: pdMS_TO_TICKS() rounds DOWN to whole ticks, so a rate
+            faster than CONFIG_FREERTOS_HZ collapses to one report per tick. Measured: 250 Hz
+            with the default 100 Hz tick gave 97 Hz, below what the BLE build manages. The
+            mapper logs the rate it actually achieves and warns when the requested one is
+            unreachable, so read that line instead of trusting this number.
+
+            Second, on USB the pad cannot beat its endpoint interval
+            (APP_XINPUT_EP_INTERVAL_MS): 4 ms means 250 Hz however fast this task runs.
+
+            The upper bound is 1000 because 1 ms is the floor for a Full Speed interrupt
+            endpoint and the ESP32-S3's USB-OTG is Full Speed only. Note that a value above the
+            range is NOT clamped - kconfig discards it and silently substitutes the default of
+            100, which is worth knowing before wondering where a setting went.
 
     config APP_INPUT_CONN_ITVL
         int "Inputs: target connection interval [units of 1.25 ms]"
@@ -270,6 +286,29 @@ menu "HID bridge (application configuration)"
 
             Same console caveat as above.
 
+    config APP_XINPUT_EP_INTERVAL_MS
+        int "USB pad: IN endpoint polling interval [ms]"
+        depends on APP_USB_PAD
+        range 1 8
+        default 4
+        help
+            How often the host asks the pad for a report. 4 ms (250 Hz) is what a real Xbox 360
+            wired controller declares, and it is the default because the rest of the descriptor
+            is copied from that controller byte for byte.
+
+            SETTING 1 BREAKS THAT BYTE-FOR-BYTE MATCH. It is safe as far as driver binding goes -
+            xusb22.inf matches on VID/PID alone and never looks at the descriptor - but it is a
+            structural deviation from the device we impersonate, and scripts/check_xinput_
+            descriptor.py will report it rather than pass silently.
+
+            1 ms is the floor for a Full Speed interrupt endpoint, and the ESP32-S3's USB-OTG is
+            Full Speed only, so 1 kHz is both the target and the ceiling here; the 8 kHz that
+            some mice manage natively needs High Speed microframes, which this chip does not have.
+
+            Raising the rate is only useful together with APP_REPORT_RATE_HZ, and that in turn
+            needs a FreeRTOS tick fast enough to express the period - see the mapper's startup
+            log, which states the rate it actually achieves.
+
     config APP_USB_PASSTHROUGH
         bool "USB: hotkey switches between the pad and plain keyboard+mouse"
         depends on APP_USB_PAD || APP_USB_HID_HOST
@@ -303,26 +342,53 @@ menu "HID bridge (application configuration)"
             Ctrl+Alt was picked because both modifiers are visible in the boot-protocol report
             and the pair is rare in games, where a stray toggle would be costly.
 
+    config APP_DEBUG_PAD_RATE_PROBE
+        bool "Diagnostics: force a different pad report every tick, to measure the transport"
+        depends on APP_ENABLE_GAMEPAD || APP_USB_PAD
+        default n
+        help
+            Makes the mapper alter one axis by one unit on every tick, so consecutive reports
+            are never identical.
+
+            WHY THIS IS NEEDED. A pad report is only sent when the state CHANGES, so counting
+            XInput packets measures three things at once: how fast the device can send, how often
+            the mapped value actually differs, and how vigorously somebody is moving the mouse.
+            The three cannot be separated afterwards - measurements of 243, 153 and 124 Hz across
+            three configurations turned out to say more about the smoothing filter and the hand
+            than about USB.
+
+            With this option every tick produces a distinct report, so scripts/xinput_rumble.py
+            --rate measures the transport alone: the endpoint interval, the task rate and
+            whatever the host driver is willing to forward.
+
+            The pad is unusable while this is on - one axis jitters by a single unit
+            continuously. It is a measuring instrument, not a feature.
+
     config APP_MOUSE_SCALE_DIV
         int "Mapping: mouse sensitivity divisor"
         depends on (APP_ENABLE_GAMEPAD && APP_ENABLE_HID_HOST) || APP_USB_PAD
-        range 1 128
+        range 1 512
         default 24
         help
-            The larger the value, the less sensitive the mouse. Full axis deflection
-            corresponds to an average delta of (this value * 4) mouse counts per task
-            tick, i.e. 96 counts per tick at the default of 24.
+            The larger the value, the less sensitive the mouse. Full axis deflection corresponds
+            to a mouse speed of (this value * 400) COUNTS PER SECOND - per second, not per task
+            tick, so the feel no longer changes when APP_REPORT_RATE_HZ does. It used to be
+            per-tick, and raising the report rate then quietly made the mouse less sensitive.
 
-            Where that number comes from: measurements showed up to ~355 counts per
-            report during brisk movement, and reports arrive every ~45 ms, i.e. ~79
-            counts per tick. With the previous default of 8 (full deflection at 32
-            counts) the stick hit maximum almost immediately. At 24 the same movement
-            gives around 80 % deflection, while careful aiming stays in the lower part
-            of the range.
+            At the default of 24 that is 9600 counts/s. Where the number comes from: measurements
+            showed up to ~355 counts per report during brisk movement with reports every ~45 ms,
+            i.e. ~7900 counts/s, so it lands around 80 % of the range. With the earlier default
+            of 8 the stick hit maximum almost immediately.
 
-            If it is still too fast, raise it to 32 or 48. The change only requires a
-            rebuild - re-pairing the pad is NOT needed, because the descriptor does not
-            change.
+            HIGH-DPI MICE NEED MORE. 9600 counts/s is one flick of the wrist at 3200 DPI, and on
+            the USB pad - which runs at 1 kHz and no longer throws away resolution in the filter -
+            that pegs the stick constantly. sdkconfig.defaults.s3pad therefore raises it. Treat
+            the value as a taste parameter and expect to try a few; the upper bound is generous
+            rather than tight, because the useful setting depends on mouse DPI, which the firmware
+            cannot know.
+
+            The change only requires a rebuild - re-pairing the pad is NOT needed, because the
+            descriptor does not change.
 
     config APP_ROLE_FAKE_KEYBOARD
         bool "Diagnostics: act as a synthetic BLE keyboard instead of a bridge"

@@ -152,24 +152,39 @@ nie na źródle.
 | Odcinek | Tempo | Kto o tym decyduje |
 |---|---|---|
 | dongle → układ wejść | **~750 Hz** | `bInterval` dongle'a, czyli odpytywanie co 1 ms |
-| układ wejść → układ pada | 108 µs na ramkę przy 921600 bodach | nie jest ogranicznikiem — ~8 % drutu przy 750 ramkach/s |
-| układ pada → PC | **zmierzone 243 Hz** | interwał 4 ms endpointu IN, bajt w bajt jak w prawdziwym padzie |
+| układ wejść → układ pada | 108 µs na ramkę przy 921600 bodach | nie jest ogranicznikiem — ~11 % drutu przy 1000 ramkach/s |
+| układ pada → PC | **997 Hz transportu, 830 Hz z realną myszą** | interwał 1 ms endpointu IN |
 
-Odcinek pada zmierzony od strony PC przez `scripts/xinput_rumble.py --rate`, licząc numery
-pakietów XInput w pętli dość szybkiej, by sama nie była ograniczeniem (415 000 odpytań na sekundę).
+Oba pomiary od strony PC przez `scripts/xinput_rumble.py --rate`, w pętli dość szybkiej, by sama
+nie była ograniczeniem (415 000 odpytań na sekundę). Znaczą różne rzeczy i ta różnica jest ważna:
 
-**Ta liczba zależy od tiku FreeRTOS i jest to pułapka warta zapamiętania.** `pdMS_TO_TICKS()`
-zaokrągla **w dół** do całych tików, więc przy domyślnym tiku 100 Hz okres 4 ms, o który prosi
-250 Hz, wychodzi **zero tików**; mapper bierze wtedy jeden tik i pad aktualizuje się **97 Hz** —
-czyli **niżej niż w wersji Bluetooth** — choć jego endpoint jest odpytywany co 4 ms. Dlatego
-wariant pada ustawia `CONFIG_FREERTOS_HZ=1000`, a mapper loguje teraz tempo, które **faktycznie
+- **997 Hz** to sufit transportu, zmierzony przy `APP_DEBUG_PAD_RATE_PROBE`, który wymusza inny
+  raport w każdym tiku. Nie zależy od niczyjej ręki, więc to liczba, na której można stać.
+- **830 Hz** to realna mysz przy energicznym ruchu. Powolny ruch daje znacznie mniej — zmierzone
+  70 Hz — i to jest poprawne, nie zepsute: raport idzie tylko na zmianie stanu, a filtr ma
+  z założenia utrzymywać **stałe** wychylenie przy stałej prędkości myszy. Liczba aktualizacji
+  mierzy więc zmienność wartości gałki, nie jakość łańcucha.
+
+Doprowadziły do tego trzy poprawki w mapperze, żadna w USB: stała czasowa filtra i czułość były
+wyrażone w tikach, nie w czasie, więc podniesienie tempa po cichu zmieniało odczucie; akumulator
+stałoprzecinkowy był za gruby i przy 1 kHz utykał; a wynik był obcinany do całych zliczeń myszy
+na tik, co przy 1 kHz zostawiało trzy użyteczne poziomy. Szczegóły i liczby przed i po:
+`AGENTS.md` §4.40.
+
+**Tempo zależy też od tiku FreeRTOS i to jest pułapka warta zapamiętania.** `pdMS_TO_TICKS()`
+zaokrągla w dół do całych tików, więc przy domyślnym tiku 100 Hz okres 1 ms wychodzi zero tików,
+mapper bierze jeden tik i pad aktualizuje się 100 Hz, choćby endpoint był odpytywany jak najszybciej.
+Dlatego wariant pada ustawia `CONFIG_FREERTOS_HZ=1000`, a mapper loguje tempo, które **faktycznie
 osiąga**, a nie to, o które go poproszono.
 
-Na przejściu z 750 Hz na 250 Hz **nic nie ginie**: mapper **kumuluje** przyrosty myszy między
-tikami, więc gałka odzwierciedla całkę ze wszystkich raportów, a nie próbkę z nich. Podniesienie
-odcinka pada wymagałoby zmiany tego interwału na 1 ms, co psuje zgodność bajt w bajt
-z prawdziwym kontrolerem — a skoro pozycja gałki jest filtrowaną prędkością, nie zdarzeniem,
-zysk byłby znikomy.
+Interwał endpointu ustawia `APP_XINPUT_EP_INTERVAL_MS`. Przy 1 ms jest to **jedyne pole, w którym
+ten deskryptor przestaje być zgodny bajt w bajt** z prawdziwym padem — co jest bezpieczne, bo
+`xusb22.inf` dopasowuje po samym VID/PID i deskryptora nie czyta (sprawdzone na sprzęcie) — a
+`scripts/check_xinput_descriptor.py` zgłasza to odstępstwo, zamiast milcząco przepuszczać.
+Powrót na 4 daje dokładną zgodność przy 250 Hz.
+
+Na styku 750 Hz wejść z padem **nic nie ginie**: mapper **kumuluje** przyrosty myszy między
+tikami, więc gałka odzwierciedla całkę ze wszystkich raportów, a nie próbkę z nich.
 
 ### Czego to wymaga
 
@@ -416,11 +431,12 @@ raport).
   które łatamy, więc `PATCH.diff` trzeba tam napisać od nowa, a nie przenieść.
 - ESP32-C3 nie ma USB-OTG, więc pad XInput po USB (zamiast po Bluetooth) na tym układzie nie
   jest możliwy.
-- **Pad USB raportuje 250 Hz, nie 1 kHz.** To interwał 4 ms endpointu IN, przepisany bajt
-  w bajt z prawdziwego pada Xbox 360; **zmierzone 243 Hz** od strony PC. Strona wejść chodzi
-  ~750 Hz, a mapper kumuluje przyrosty między tikami, więc żaden ruch nie jest gubiony.
-  Osiągnięcie tego tempa wymaga też `CONFIG_FREERTOS_HZ=1000` — przy domyślnym tiku 100 Hz pad
-  po cichu aktualizuje się 97 Hz.
+- **Pad USB chodzi 1 kHz, a liczba aktualizacji, którą zobaczysz, zależy od tego, jak ruszasz.**
+  Transport zmierzony na **997 Hz** przyrządem wymuszającym zmianę w każdym tiku, **830 Hz**
+  z realną myszą przy energicznym ruchu i 70 Hz przy powolnym — to ostatnie jest poprawne, nie
+  zepsute, bo raport idzie tylko na zmianie stanu. Doprowadziły do tego `CONFIG_FREERTOS_HZ=1000`
+  (przy tiku 100 Hz okres 1 ms po cichu staje się 10 ms) oraz trzy poprawki arytmetyki w mapperze,
+  opisane w `AGENTS.md` §4.40.
 
 ## Diagnostyka
 

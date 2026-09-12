@@ -56,17 +56,37 @@ CONFIG_TINYUSB_HID_COUNT=1
 CONFIG_TINYUSB_MIDI_COUNT=0
 CONFIG_TINYUSB_VENDOR_COUNT=0
 
-# Report rate: the Xbox 360 IN endpoint is polled every 4 ms (250 Hz), so the mapper may as
-# well run faster than the 100 Hz the BLE build uses - there is no radio to share.
-CONFIG_APP_REPORT_RATE_HZ=250
+# Report rate and endpoint interval, both MEASURED rather than guessed - see AGENTS.md 4.40.
+#
+# The endpoint at 1 ms deviates from the real Xbox 360 pad's 4 ms, which is the one field where
+# this descriptor is no longer byte-for-byte. It is safe: xusb22.inf matches on VID/PID alone and
+# never reads the descriptor, verified on hardware (driver bound, slot 0, 997 Hz through it).
+#
+# What each part buys, measured from the PC with scripts/xinput_rumble.py --rate:
+#   transport ceiling, with a forced change every tick   997 Hz
+#   with real mouse input                                466 Hz
+#   the same input at 4 ms / 250 Hz                       243 Hz
+# and worst-case added latency drops from ~8 ms (4 ms task + 4 ms poll) to ~2 ms.
+CONFIG_APP_REPORT_RATE_HZ=1000
+CONFIG_APP_XINPUT_EP_INTERVAL_MS=1
+
+# --- mouse feel --------------------------------------------------------------------------
+# Overridden for this variant, not for the project: the Kconfig default of 24 was tuned by hand
+# on the BLE build at 100 Hz (AGENTS.md 4.22), and it means full deflection at div * 400 = 9600
+# mouse counts per second. That is one brisk flick of the wrist on a high-DPI mouse, and the
+# owner reported the stick pegging at maximum too easily once the resolution loss in the mapper
+# was fixed - before that, truncation had been quietly damping the output.
+#
+# 64 puts full deflection at 25 600 counts/s, which is close to how this setup behaved while the
+# per-tick scaling was accidentally in force. It is a taste parameter: raise it for a calmer
+# stick, lower it for a twitchier one. Changing it needs only a rebuild - the descriptor does not
+# change, so no re-pairing and no driver reinstall.
+CONFIG_APP_MOUSE_SCALE_DIV=64
 
 # --- task timing -------------------------------------------------------------------------
 # FreeRTOS tick raised from the default 100 Hz, and this is load-bearing rather than tidiness.
-# pdMS_TO_TICKS() rounds DOWN to whole ticks, so at 100 Hz the 4 ms period that 250 Hz asks for
-# resolves to ZERO ticks; the mapper falls back to one tick and the pad ends up updating at
-# 100 Hz while its USB endpoint is polled every 4 ms. Measured from the PC side, not assumed.
-#
-# At 1000 Hz the period is expressible exactly, and it also leaves room for a 1 ms period if a
-# passthrough mode ever needs one. The cost is one timer interrupt per millisecond on a chip
-# that otherwise runs a single 250 Hz task, which is not a real cost here.
+# pdMS_TO_TICKS() rounds DOWN to whole ticks, so at 100 Hz a 1 ms period resolves to ZERO ticks;
+# the mapper falls back to one tick and the pad updates at 100 Hz while its USB endpoint is
+# polled every millisecond. Measured from the PC side, not assumed: 250 Hz requested on a 100 Hz
+# tick produced 97 Hz. At 1000 Hz the period is expressible exactly.
 CONFIG_FREERTOS_HZ=1000

@@ -148,33 +148,63 @@ static int8_t clamp_axis(int32_t v)
 /*
  * A mouse reports deltas, while an analog stick has an absolute position.
  *
- * The trap, visible in the device log: the mouse reports ~20-25 times per second while
- * this task runs at 100 Hz. With a naive "delta of this tick -> axis" mapping, three
- * ticks out of four see zero, so the stick jumps between deflected and centred ~20
- * times a second. Since a pad report only goes out on a state change, the PC then
- * receives an alternating series of R(0,x) and R(0,0) - which feels like jitter, not
- * movement.
+ * The trap, visible in the device log: at 100 Hz the mouse reported ~20-25 times per second
+ * while this task ran at 100 Hz. With a naive "delta of this tick -> axis" mapping, three
+ * ticks out of four see zero, so the stick jumps between deflected and centred ~20 times a
+ * second. Since a pad report only goes out on a state change, the PC then receives an
+ * alternating series of R(0,x) and R(0,0) - which feels like jitter, not movement.
  *
- * Hence an exponential moving average of the delta with a time constant of ~8 ticks
- * (80 ms). Under steady motion the stick holds a stable deflection proportional to
- * mouse speed, and returns to centre ~80 ms after the mouse stops.
+ * Hence an exponential moving average of the delta, with a time constant of MOUSE_TAU_MS.
+ * Under steady motion the stick holds a stable deflection proportional to mouse speed, and
+ * returns to centre about one time constant after the mouse stops.
+ *
+ * BOTH CONSTANTS BELOW ARE EXPRESSED IN TIME, NOT IN TICKS, and that is load-bearing rather
+ * than tidy. They used to be per-tick: the time constant was "8 ticks" and full deflection was
+ * "div * 4 counts per tick". Raising APP_REPORT_RATE_HZ therefore changed the feel silently -
+ * going from 100 Hz to 250 Hz made the filter 2.5x faster AND the mouse 2.5x less sensitive,
+ * quietly undoing the tuning that AGENTS.md 4.22 arrived at by hand. Derived from the rate at
+ * compile time, the numbers mean the same thing at 100 Hz and at 1 kHz.
  */
-#define EMA_SHIFT 3   /* time constant in ticks: 1 << 3 = 8 */
-#define EMA_FRAC  256 /* fixed-point arithmetic, so slow movements are not lost */
+#define MOUSE_TAU_MS 80  /* filter time constant; 80 ms is the value tuned at 100 Hz */
+
+/*
+ * Fractional resolution of the fixed-point accumulator. It has to be large relative to the
+ * number of ticks in the time constant, or the filter STALLS: the step is
+ * (sample * EMA_FRAC - ema) / EMA_TICKS in integer arithmetic, so once the difference falls
+ * below EMA_TICKS the increment truncates to zero and the average stops moving.
+ *
+ * That is not hypothetical - it is a bug this file had for one iteration. With EMA_FRAC 256 and
+ * a 1 kHz task the time constant is 80 ticks, leaving barely three units of headroom, and slow
+ * mouse movement simply stopped registering. 4096 keeps at least 51 units even at 1 kHz, and at
+ * 100 Hz it is 512, so nothing is lost at the low end either.
+ */
+#define EMA_FRAC     4096
+
+/* Time constant expressed in ticks at the configured rate. At 100 Hz this is 8, which is
+ * exactly what the hand-tuned version used. */
+#define EMA_TICKS_RAW ((CONFIG_APP_REPORT_RATE_HZ * MOUSE_TAU_MS) / 1000)
+#define EMA_TICKS     (EMA_TICKS_RAW > 0 ? EMA_TICKS_RAW : 1)
 
 static int32_t s_ema_x;
 static int32_t s_ema_y;
 
+/*
+ * Returns the accumulator in FIXED-POINT units, not whole counts per tick, and that matters
+ * more the faster the task runs. Truncating here used to be the real resolution limit: at
+ * 1 kHz the average delta per tick is about one count, so "counts per tick" had three usable
+ * levels - 0, 1, 2 - and the stick moved in steps of a seventh of its range. The whole path to
+ * the axis now stays in EMA_FRAC units.
+ */
 static int32_t ema_step(int32_t *ema, int32_t sample)
 {
-    *ema += ((sample * EMA_FRAC) - *ema) / (1 << EMA_SHIFT);
+    *ema += ((sample * EMA_FRAC) - *ema) / EMA_TICKS;
     /* Integer division never quite reaches zero for a small remainder, which would
      * leave the stick permanently off-centre. Below 1 count per tick there is nothing
      * worth carrying over anyway. */
     if (sample == 0 && *ema > -EMA_FRAC && *ema < EMA_FRAC) {
         *ema = 0;
     }
-    return *ema / EMA_FRAC;
+    return *ema;
 }
 
 static void stick_from_mouse(const hid_input_state_t *st, int8_t *out_x, int8_t *out_y)
@@ -183,16 +213,24 @@ static void stick_from_mouse(const hid_input_state_t *st, int8_t *out_x, int8_t 
     if (div < 1) {
         div = 1;
     }
-    /* Average delta per tick that should produce full deflection. At div=24 that is 96
-     * counts per tick; measurements on the reference mouse showed roughly 79 counts per
-     * tick during brisk movement, so that lands around 80 % of the range. */
-    int32_t full_scale = div * 4;
 
-    int32_t avg_x = ema_step(&s_ema_x, st->mouse_dx);
-    int32_t avg_y = ema_step(&s_ema_y, st->mouse_dy);
+    /*
+     * Mouse speed that produces full deflection, expressed in counts per SECOND so that the
+     * feel does not depend on the task rate. The tuned value was "div * 4 counts per tick at
+     * 100 Hz", which is div * 400 counts per second; at div=24 that is 9600 counts/s, and
+     * measurements on the reference mouse showed roughly 7900 counts/s during brisk movement,
+     * so it lands around 80 % of the range.
+     *
+     * The scaling is done in one expression, in 64-bit, rather than by first reducing the
+     * accumulator to counts per tick: both intermediate divisions used to truncate, and at high
+     * task rates almost nothing survived them.
+     */
+    const int64_t denom = (int64_t)div * 400 * EMA_FRAC;
+    const int32_t ema_x = ema_step(&s_ema_x, st->mouse_dx);
+    const int32_t ema_y = ema_step(&s_ema_y, st->mouse_dy);
 
-    *out_x = clamp_axis(avg_x * AXIS_MAX / full_scale);
-    *out_y = clamp_axis(avg_y * AXIS_MAX / full_scale);
+    *out_x = clamp_axis((int32_t)(((int64_t)ema_x * AXIS_MAX * CONFIG_APP_REPORT_RATE_HZ) / denom));
+    *out_y = clamp_axis((int32_t)(((int64_t)ema_y * AXIS_MAX * CONFIG_APP_REPORT_RATE_HZ) / denom));
 }
 
 static uint16_t buttons_from_state(const hid_input_state_t *st)
@@ -307,6 +345,19 @@ static void mapper_task(void *arg)
         stick_from_mouse(&in, &out.rx, &out.ry);
         out.buttons = buttons_from_state(&in);
         out.dpad = dpad_from_keys(&in);
+
+#if CONFIG_APP_DEBUG_PAD_RATE_PROBE
+        /*
+         * Measuring instrument, not a feature. Reports only go out on a state change, so
+         * without this the packet rate seen by the host says as much about the smoothing filter
+         * and the hand on the mouse as about the transport. One unit of alternation on one axis
+         * guarantees every tick is distinct, and then --rate measures the endpoint interval,
+         * the task rate and the host driver, and nothing else.
+         */
+        static bool probe_toggle;
+        probe_toggle = !probe_toggle;
+        out.lx = probe_toggle ? 1 : 0;
+#endif
 
         /*
          * Opening a HID device is the heaviest moment for the stack: one link runs
