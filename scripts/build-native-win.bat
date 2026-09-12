@@ -17,6 +17,13 @@ REM   scripts\build-native-win.bat esp32c6              - build for esp32c6
 REM   scripts\build-native-win.bat esp32c6 menuconfig   - configure that target
 REM   scripts\build-native-win.bat menuconfig           - configure esp32c3
 REM   scripts\build-native-win.bat esp32c3 fullclean    - clean
+REM
+REM VARIANTS. Some setups need two DIFFERENT roles on the SAME target - the USB bridge runs
+REM one S3 as the pad and another as the input host. A second argument naming an existing
+REM sdkconfig.defaults.<name> selects such a variant, and gets its own build directory and
+REM sdkconfig so the two never overwrite each other:
+REM   scripts\build-native-win.bat esp32s3 s3pad
+REM   scripts\build-native-win.bat esp32s3 s3input menuconfig
 
 setlocal
 REM The ESP-IDF path can be overridden with IDF_WIN, e.g.
@@ -33,10 +40,21 @@ if not errorlevel 1 (
     set TARGET=%1
     set ACTION=%2
 )
+
+REM A second argument that names a defaults file is a variant, not an action.
+set VARIANT=
+set VSUFFIX=
+if not "%ACTION%"=="" (
+    if exist "%~dp0..\firmware\sdkconfig.defaults.%ACTION%" (
+        set VARIANT=%ACTION%
+        set VSUFFIX=.%ACTION%
+        set ACTION=%3
+    )
+)
 if "%ACTION%"=="" set ACTION=build
 
-set BUILD_DIR=build.win.%TARGET%
-set SDKCONFIG=sdkconfig.win.%TARGET%
+set BUILD_DIR=build.win.%TARGET%%VSUFFIX%
+set SDKCONFIG=sdkconfig.win.%TARGET%%VSUFFIX%
 
 if not exist "%IDF_DIR%\export.bat" (
     echo ERROR: no ESP-IDF found in %IDF_DIR%
@@ -52,6 +70,10 @@ REM to build for, and this is also what loads our sdkconfig.defaults files.
 REM sdkconfig.local is picked up when present, mirroring scripts/build.sh - it is the
 REM gitignored place for machine-local overrides and one-off diagnostics.
 set DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.%TARGET%
+if not "%VARIANT%"=="" (
+    set DEFAULTS=%DEFAULTS%;sdkconfig.defaults.%VARIANT%
+    echo == variant %VARIANT%
+)
 if exist "sdkconfig.local" (
     set DEFAULTS=%DEFAULTS%;sdkconfig.local
     echo == using overrides from sdkconfig.local

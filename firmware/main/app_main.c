@@ -31,7 +31,8 @@
 #if CONFIG_APP_ENABLE_GAMEPAD
 #include "ble_gamepad.h"
 #endif
-#if CONFIG_APP_ENABLE_HID_HOST && CONFIG_APP_ENABLE_GAMEPAD && !CONFIG_APP_GAMEPAD_SELFTEST
+#if !CONFIG_APP_GAMEPAD_SELFTEST && \
+    ((CONFIG_APP_ENABLE_HID_HOST && CONFIG_APP_ENABLE_GAMEPAD) || CONFIG_APP_USB_PAD)
 #include "input_mapper.h"
 #endif
 #if CONFIG_APP_ROLE_FAKE_KEYBOARD
@@ -39,6 +40,15 @@
 #endif
 #if !CONFIG_APP_LINK_DISABLED
 #include "chip_link.h"
+#endif
+#if CONFIG_APP_USB_PAD
+#include "usb_pad.h"
+#endif
+#if CONFIG_APP_USB_HID_HOST
+#include "usb_hid_host.h"
+#endif
+#if CONFIG_APP_USB_PAD || CONFIG_APP_USB_HID_HOST
+#include "input_state.h"
 #endif
 
 static const char *TAG = "bridge";
@@ -92,6 +102,7 @@ static void log_boot_banner(void)
  * state is invisible and the question "what rate are we actually running at" cannot be
  * answered from a log.
  */
+#if CONFIG_APP_ENABLE_HID_HOST || CONFIG_APP_ENABLE_GAMEPAD
 static void log_link_intervals(void)
 {
     char line[160];
@@ -117,6 +128,7 @@ static void log_link_intervals(void)
         ESP_LOGI(TAG, "  links: %s", line);
     }
 }
+#endif /* a BLE role is present */
 
 void app_main(void)
 {
@@ -134,7 +146,21 @@ void app_main(void)
      * The order is forced by ble_hs_cfg being global and esp_hidh_init() overwriting it.
      * ble_stack_start() restores our callbacks at the very end (AGENTS.md 4.2).
      */
+#if CONFIG_APP_ENABLE_HID_HOST || CONFIG_APP_ENABLE_GAMEPAD || CONFIG_APP_ROLE_FAKE_KEYBOARD
     ESP_ERROR_CHECK(ble_stack_init());
+#endif
+
+    /*
+     * USB roles. Started before the link so that the device side is enumerable as early
+     * as possible - Windows begins asking for descriptors the moment VBUS appears, and
+     * a pad that answers late shows up as an unknown device.
+     */
+#if CONFIG_APP_USB_PAD
+    ESP_ERROR_CHECK(usb_pad_start());
+#endif
+#if CONFIG_APP_USB_HID_HOST
+    ESP_ERROR_CHECK(usb_hid_host_start());
+#endif
 
 #if CONFIG_APP_ENABLE_HID_HOST
     ESP_ERROR_CHECK(ble_hid_host_start());
@@ -143,9 +169,19 @@ void app_main(void)
     ESP_ERROR_CHECK(ble_gamepad_start());
 #endif
 
-#if CONFIG_APP_ENABLE_HID_HOST && CONFIG_APP_ENABLE_GAMEPAD && !CONFIG_APP_GAMEPAD_SELFTEST
-    /* The glue between the roles. With the selftest enabled the pad drives a test
-     * pattern, so the mapper would fight it over the same report. */
+/*
+ * The glue between input and pad. The condition must MIRROR the one in main/CMakeLists.txt
+ * that decides whether input_mapper.c is compiled at all - and until this was measured on
+ * hardware it did not: the file was built for APP_USB_PAD but the start below demanded the
+ * two BLE roles, so on the USB pad chip the mapper existed and never ran. Symptom: the pad
+ * enumerates, XInput sees it in slot 0, rumble works, and the sticks never move, because
+ * nothing turns input state into reports.
+ *
+ * With the selftest enabled the pad drives a test pattern, so the mapper would fight it
+ * over the same report.
+ */
+#if !CONFIG_APP_GAMEPAD_SELFTEST && \
+    ((CONFIG_APP_ENABLE_HID_HOST && CONFIG_APP_ENABLE_GAMEPAD) || CONFIG_APP_USB_PAD)
     ESP_ERROR_CHECK(input_mapper_start());
 #elif CONFIG_APP_GAMEPAD_SELFTEST
     ESP_LOGW(TAG, "pad selftest enabled - input mapping is INACTIVE");
@@ -160,7 +196,9 @@ void app_main(void)
     ESP_ERROR_CHECK(chip_link_start());
 #endif
 
+#if CONFIG_APP_ENABLE_HID_HOST || CONFIG_APP_ENABLE_GAMEPAD || CONFIG_APP_ROLE_FAKE_KEYBOARD
     ESP_ERROR_CHECK(ble_stack_start());
+#endif
 
 #if CONFIG_APP_ROLE_FAKE_KEYBOARD
     /*
@@ -200,8 +238,46 @@ void app_main(void)
 
 #if CONFIG_APP_ENABLE_GAMEPAD
         const char *pad = ble_gamepad_is_ready() ? "ready" : "no PC";
+#elif CONFIG_APP_USB_PAD
+        const char *pad = usb_pad_is_ready() ? "ready" : "no host";
 #else
         const char *pad = "off";
+#endif
+#if CONFIG_APP_USB_HID_HOST && !CONFIG_APP_USB_PAD && !CONFIG_APP_ENABLE_HID_HOST
+        /* Input-only chip: it has no pad of its own to report, and its heartbeat line below
+         * says nothing about one. Every other role combination reads this. */
+        (void)pad;
+#endif
+
+#if CONFIG_APP_USB_PAD || CONFIG_APP_USB_HID_HOST
+        /*
+         * The USB roles get their own heartbeat line rather than borrowing the BLE one,
+         * because what matters here is different: whether the host has configured us, what
+         * the peer chip is feeding us, and whether the host is sending rumble - which is the
+         * proof that the XInput driver bound and not a generic one.
+         */
+        {
+            hid_input_state_t st;
+            input_state_take(&st);
+#if CONFIG_APP_USB_HID_HOST
+            ESP_LOGI(TAG, "alive %" PRIu32 " s | heap %" PRIu32 " B (min %" PRIu32
+                          " B) | usb ifaces %d (kbd=%d mouse=%d)",
+                     tick, (uint32_t)esp_get_free_heap_size(),
+                     (uint32_t)esp_get_minimum_free_heap_size(), usb_hid_host_device_count(),
+                     st.keyboard_connected, st.mouse_connected);
+#else
+            uint8_t rl = 0, rr = 0;
+            usb_pad_get_rumble(&rl, &rr);
+            ESP_LOGI(TAG, "alive %" PRIu32 " s | heap %" PRIu32 " B (min %" PRIu32
+                          " B) | pad %s | inputs kbd=%d mouse=%d | rumble %u/%u",
+                     tick, (uint32_t)esp_get_free_heap_size(),
+                     (uint32_t)esp_get_minimum_free_heap_size(), pad, st.keyboard_connected,
+                     st.mouse_connected, rl, rr);
+#endif
+            if (st.modifiers || st.keys[0]) {
+                ESP_LOGI(TAG, "  keyboard: mod=0x%02x key=0x%02x", st.modifiers, st.keys[0]);
+            }
+        }
 #endif
 
 #if CONFIG_APP_ENABLE_HID_HOST
@@ -221,11 +297,23 @@ void app_main(void)
         if (ble_hid_host_device_count() > 0) {
             ble_hid_host_log_devices();
         }
+#if CONFIG_APP_ENABLE_HID_HOST || CONFIG_APP_ENABLE_GAMEPAD
         log_link_intervals();
-#else
+#endif
+/*
+ * Fallback heartbeat line, for builds that have neither the BLE central above nor a USB role
+ * further up. The USB roles are excluded explicitly because they print their own, richer line;
+ * without that exclusion a USB build logs the same tick TWICE, which is exactly what the first
+ * hardware run of the pad chip showed:
+ *     alive 190 s | heap 371088 B (min 371088 B) | pad ready | inputs kbd=0 mouse=0 | rumble 0/0
+ *     alive 190 s | heap 371088 B | pad ready
+ */
+#elif !CONFIG_APP_USB_PAD && !CONFIG_APP_USB_HID_HOST
         ESP_LOGI(TAG, "alive %" PRIu32 " s | heap %" PRIu32 " B | pad %s",
                  tick, (uint32_t)esp_get_free_heap_size(), pad);
+#if CONFIG_APP_ENABLE_HID_HOST || CONFIG_APP_ENABLE_GAMEPAD
         log_link_intervals();
+#endif
 #endif
     }
 }

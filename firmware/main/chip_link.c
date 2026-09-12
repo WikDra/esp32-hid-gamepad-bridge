@@ -15,7 +15,11 @@
 #include "sdkconfig.h"
 
 #if CONFIG_APP_LINK_RECEIVER || CONFIG_APP_LINK_SENDER
+#if CONFIG_APP_ENABLE_HID_HOST
 #include "ble_hid_host.h"
+#else
+#include "input_state.h"
+#endif
 #endif
 
 #if !CONFIG_APP_LINK_DISABLED
@@ -31,7 +35,12 @@ static const char *TAG = "link";
 #define LINK_SYNC1 0x5A
 
 #define LINK_TYPE_MOUSE     0x01 /* buttons u8, dx i16, dy i16, wheel i8         */
-#define LINK_TYPE_KEEPALIVE 0x02 /* mouse_present u8                             */
+#define LINK_TYPE_KEEPALIVE 0x02 /* presence bitmask u8: bit0 mouse, bit1 keyboard */
+#define LINK_TYPE_KEYBOARD  0x03 /* modifiers u8, keycodes u8 x6                 */
+#define LINK_TYPE_MODE      0x04 /* 0 = gamepad, 1 = passthrough                 */
+
+#define LINK_PRESENT_MOUSE    0x01
+#define LINK_PRESENT_KEYBOARD 0x02
 
 #define LINK_PAYLOAD_MAX 8
 #define LINK_FRAME_MAX   (2 + 1 + 1 + LINK_PAYLOAD_MAX + 1)
@@ -98,15 +107,58 @@ static esp_err_t link_uart_init(void)
 #if CONFIG_APP_LINK_SENDER
 
 typedef struct {
-    uint8_t buttons;
-    int16_t dx;
-    int16_t dy;
-    int8_t wheel;
-} mouse_evt_t;
+    uint8_t type; /* LINK_TYPE_MOUSE or LINK_TYPE_KEYBOARD */
+    union {
+        struct {
+            uint8_t buttons;
+            int16_t dx;
+            int16_t dy;
+            int8_t wheel;
+        } mouse;
+        struct {
+            uint8_t modifiers;
+            uint8_t keys[6];
+        } kbd;
+    };
+} link_evt_t;
 
 static QueueHandle_t s_tx_queue;
 static uint32_t s_sent_frames;
 static uint32_t s_dropped;
+static volatile uint8_t s_presence;
+
+void chip_link_set_presence(bool mouse, bool keyboard)
+{
+    s_presence = (uint8_t)((mouse ? LINK_PRESENT_MOUSE : 0) |
+                           (keyboard ? LINK_PRESENT_KEYBOARD : 0));
+}
+
+#if CONFIG_APP_USB_PASSTHROUGH
+static volatile uint8_t s_mode; /* 0 = gamepad, 1 = passthrough */
+
+void chip_link_set_mode(bool passthrough)
+{
+    s_mode = passthrough ? 1 : 0;
+    /*
+     * Sent immediately so the switch feels instant, and then repeated with every keepalive by
+     * the sender task. The repetition is what makes it robust: the mode is ABSOLUTE state, so
+     * a frame lost to line noise or to a reset of the other chip corrects itself within
+     * 250 ms instead of leaving the two chips disagreeing about which identity is on the bus.
+     */
+    if (s_tx_queue) {
+        link_evt_t evt = {.type = LINK_TYPE_MODE};
+        evt.kbd.modifiers = s_mode; /* reuse the byte; the frame carries one payload octet */
+        if (xQueueSend(s_tx_queue, &evt, 0) != pdTRUE) {
+            s_dropped++;
+        }
+    }
+}
+
+bool chip_link_mode_is_passthrough(void)
+{
+    return s_mode != 0;
+}
+#endif /* CONFIG_APP_USB_PASSTHROUGH */
 
 static int16_t clamp16(int32_t v)
 {
@@ -119,19 +171,31 @@ static int16_t clamp16(int32_t v)
     return (int16_t)v;
 }
 
+void chip_link_send_keyboard(uint8_t modifiers, const uint8_t keys[6])
+{
+    if (!s_tx_queue) {
+        return;
+    }
+    link_evt_t evt = {.type = LINK_TYPE_KEYBOARD};
+    evt.kbd.modifiers = modifiers;
+    memcpy(evt.kbd.keys, keys, sizeof(evt.kbd.keys));
+    if (xQueueSend(s_tx_queue, &evt, 0) != pdTRUE) {
+        s_dropped++;
+    }
+}
+
 void chip_link_send_mouse(uint8_t buttons, int32_t dx, int32_t dy, int32_t wheel)
 {
     if (!s_tx_queue) {
         return;
     }
-    const mouse_evt_t evt = {
-        .buttons = buttons,
-        .dx = clamp16(dx),
-        .dy = clamp16(dy),
-        .wheel = (int8_t)(wheel > 127 ? 127 : (wheel < -128 ? -128 : wheel)),
-    };
-    /* Never block the caller: it is the NimBLE host task. A full queue means the link is
-     * wedged, and one lost delta matters far less than a stalled BLE link. */
+    link_evt_t evt = {.type = LINK_TYPE_MOUSE};
+    evt.mouse.buttons = buttons;
+    evt.mouse.dx = clamp16(dx);
+    evt.mouse.dy = clamp16(dy);
+    evt.mouse.wheel = (int8_t)(wheel > 127 ? 127 : (wheel < -128 ? -128 : wheel));
+    /* Never block the caller: it is a USB or BLE driver callback. A full queue means the link
+     * is wedged, and one lost delta matters far less than a stalled input path. */
     if (xQueueSend(s_tx_queue, &evt, 0) != pdTRUE) {
         s_dropped++;
     }
@@ -160,26 +224,53 @@ static void sender_task(void *arg)
     uint32_t stat_frames = 0;
 
     for (;;) {
-        mouse_evt_t evt;
+        link_evt_t evt;
         /* Wake either on an event or on the keepalive deadline, whichever comes first. */
         if (xQueueReceive(s_tx_queue, &evt, pdMS_TO_TICKS(LINK_KEEPALIVE_MS)) == pdTRUE) {
-            uint8_t p[6];
-            p[0] = evt.buttons;
-            p[1] = (uint8_t)(evt.dx & 0xff);
-            p[2] = (uint8_t)((evt.dx >> 8) & 0xff);
-            p[3] = (uint8_t)(evt.dy & 0xff);
-            p[4] = (uint8_t)((evt.dy >> 8) & 0xff);
-            p[5] = (uint8_t)evt.wheel;
-            frame_send(LINK_TYPE_MOUSE, p, sizeof(p));
+            if (evt.type == LINK_TYPE_MOUSE) {
+                uint8_t p[6];
+                p[0] = evt.mouse.buttons;
+                p[1] = (uint8_t)(evt.mouse.dx & 0xff);
+                p[2] = (uint8_t)((evt.mouse.dx >> 8) & 0xff);
+                p[3] = (uint8_t)(evt.mouse.dy & 0xff);
+                p[4] = (uint8_t)((evt.mouse.dy >> 8) & 0xff);
+                p[5] = (uint8_t)evt.mouse.wheel;
+                frame_send(LINK_TYPE_MOUSE, p, sizeof(p));
+            } else if (evt.type == LINK_TYPE_KEYBOARD) {
+                uint8_t p[7];
+                p[0] = evt.kbd.modifiers;
+                memcpy(&p[1], evt.kbd.keys, sizeof(evt.kbd.keys));
+                frame_send(LINK_TYPE_KEYBOARD, p, sizeof(p));
+#if CONFIG_APP_USB_PASSTHROUGH
+            } else if (evt.type == LINK_TYPE_MODE) {
+                const uint8_t p = evt.kbd.modifiers;
+                frame_send(LINK_TYPE_MODE, &p, 1);
+#endif
+            }
         }
 
         int64_t now = esp_timer_get_time();
         if (now - last_keepalive_us >= LINK_KEEPALIVE_MS * 1000) {
             last_keepalive_us = now;
-            /* Tells the host chip that we are alive even while the mouse is still, and
-             * carries whether the mouse itself is connected here. */
-            uint8_t present = ble_hid_host_device_count() > 0 ? 1 : 0;
+            /*
+             * Tells the host chip that we are alive even while nothing moves, and carries
+             * which classes we serve.
+             *
+             * On the BLE split the mouse presence is still derived from the device table, so
+             * that branch behaves exactly as before this file learned about keyboards.
+             */
+            uint8_t present = s_presence;
+#if CONFIG_APP_ENABLE_HID_HOST
+            present = (uint8_t)(ble_hid_host_device_count() > 0 ? LINK_PRESENT_MOUSE : 0);
+#endif
             frame_send(LINK_TYPE_KEEPALIVE, &present, 1);
+#if CONFIG_APP_USB_PASSTHROUGH
+            /* Absolute state, resent with every keepalive - see chip_link_set_mode(). */
+            {
+                const uint8_t m = s_mode;
+                frame_send(LINK_TYPE_MODE, &m, 1);
+            }
+#endif
         }
 
         if (now - last_stat_us >= 10 * 1000 * 1000) {
@@ -204,7 +295,37 @@ static uint32_t s_rx_frames;
 #if !CONFIG_APP_LINK_PROBE_RX
 static uint32_t s_crc_errors; /* only the real receive path counts these */
 #endif
-static bool s_peer_mouse;
+static uint8_t s_peer_present;
+
+/*
+ * Where a received report goes depends on which bridge this is:
+ *   - BLE split: into ble_hid_host's accumulator, next to its local keyboard.
+ *   - USB split: into the shared accumulator, which is the only producer there.
+ * Wrapped in macros so the frame handler below reads the same in both.
+ */
+#if CONFIG_APP_ENABLE_HID_HOST
+#define LINK_ACCUM_MOUSE(b, dx, dy, w) ble_hid_host_inject_mouse((b), (dx), (dy), (w))
+#define LINK_MOUSE_PRESENT(on)         ble_hid_host_set_remote_mouse((on))
+#define LINK_SET_KEYBOARD(m, k)        ((void)0) /* keyboard is local on that chip */
+#define LINK_KEYBOARD_PRESENT(on)      ((void)(on))
+#else
+#define LINK_ACCUM_MOUSE(b, dx, dy, w) input_state_accum_mouse((b), (dx), (dy), (w))
+#define LINK_MOUSE_PRESENT(on)         input_state_set_mouse_present((on))
+#define LINK_SET_KEYBOARD(m, k)        input_state_set_keyboard((m), (k))
+#define LINK_KEYBOARD_PRESENT(on)      input_state_set_keyboard_present((on))
+#endif
+
+/*
+ * The mode frame only means anything on a chip that owns a USB pad, because switching identity
+ * is what it asks for. Everywhere else it is accepted and discarded, so an input chip built with
+ * passthrough enabled can talk to a pad chip built without it.
+ */
+#if CONFIG_APP_USB_PASSTHROUGH && CONFIG_APP_USB_PAD
+#include "usb_pad.h"
+#define LINK_SET_MODE(pt) usb_pad_request_mode((pt))
+#else
+#define LINK_SET_MODE(pt) ((void)(pt))
+#endif
 
 bool chip_link_peer_alive(void)
 {
@@ -229,21 +350,41 @@ static void handle_frame(uint8_t type, const uint8_t *p, uint8_t len)
             int16_t dx = (int16_t)((uint16_t)p[1] | ((uint16_t)p[2] << 8));
             int16_t dy = (int16_t)((uint16_t)p[3] | ((uint16_t)p[4] << 8));
             int8_t wheel = (int8_t)p[5];
-            ble_hid_host_inject_mouse(p[0], dx, dy, wheel);
+            LINK_ACCUM_MOUSE(p[0], dx, dy, wheel);
         }
+        break;
+
+    case LINK_TYPE_KEYBOARD:
+        if (len != 7) {
+            return;
+        }
+        LINK_SET_KEYBOARD(p[0], &p[1]);
+        break;
+
+    case LINK_TYPE_MODE:
+        if (len != 1) {
+            return;
+        }
+        LINK_SET_MODE(p[0] != 0);
         break;
 
     case LINK_TYPE_KEEPALIVE:
         if (len != 1) {
             return;
         }
-        if ((p[0] != 0) != s_peer_mouse) {
-            s_peer_mouse = (p[0] != 0);
-            ESP_LOGI(TAG, "peer reports mouse %s", s_peer_mouse ? "connected" : "gone");
-            /* No mouse on the peer means no more deltas will come; drop the state so the
-             * stick centres instead of holding its last deflection. */
-            if (!s_peer_mouse) {
-                ble_hid_host_set_remote_mouse(false);
+        if (p[0] != s_peer_present) {
+            const uint8_t was = s_peer_present;
+            s_peer_present = p[0];
+            ESP_LOGI(TAG, "peer serves:%s%s",
+                     (s_peer_present & LINK_PRESENT_MOUSE) ? " mouse" : "",
+                     (s_peer_present & LINK_PRESENT_KEYBOARD) ? " keyboard" : "");
+            /* A class that went away sends no more reports, so drop what it was holding -
+             * otherwise a button or key held at that instant stays held forever. */
+            if ((was & LINK_PRESENT_MOUSE) && !(s_peer_present & LINK_PRESENT_MOUSE)) {
+                LINK_MOUSE_PRESENT(false);
+            }
+            if ((was & LINK_PRESENT_KEYBOARD) && !(s_peer_present & LINK_PRESENT_KEYBOARD)) {
+                LINK_KEYBOARD_PRESENT(false);
             }
         }
         break;
@@ -394,10 +535,11 @@ static void receiver_task(void *arg)
         /* Link watchdog: silence is meaningful, because the sender keepalives. */
         bool alive = chip_link_peer_alive();
         if (peer_was_alive && !alive) {
-            ESP_LOGW(TAG, "peer silent for %d ms - clearing mouse state",
+            ESP_LOGW(TAG, "peer silent for %d ms - clearing its input state",
                      CONFIG_APP_LINK_PEER_TIMEOUT_MS);
-            ble_hid_host_set_remote_mouse(false);
-            s_peer_mouse = false;
+            LINK_MOUSE_PRESENT(false);
+            LINK_KEYBOARD_PRESENT(false);
+            s_peer_present = 0;
         } else if (!peer_was_alive && alive) {
             ESP_LOGI(TAG, "peer link up");
         }
@@ -431,7 +573,7 @@ esp_err_t chip_link_start(void)
     }
 
 #if CONFIG_APP_LINK_SENDER
-    s_tx_queue = xQueueCreate(16, sizeof(mouse_evt_t));
+    s_tx_queue = xQueueCreate(16, sizeof(link_evt_t));
     if (!s_tx_queue) {
         return ESP_ERR_NO_MEM;
     }

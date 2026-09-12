@@ -1,0 +1,49 @@
+# VARIANT: USB input chip of the S3+S3 USB bridge.
+#
+# This chip is a USB HOST: a keyboard and a mouse hang off it through a hub, and it forwards
+# their reports to the pad chip over UART. No BLE at all here.
+#
+# Use with:  scripts\build-native-win.bat esp32s3 s3input
+#            scripts\flash-win.bat COM<n> esp32s3 s3input
+#
+# HARDWARE NOTE, worth reading before wiring: as a host, this chip must supply VBUS to the
+# devices. A plain devkit's USB socket cannot source 5 V on its own, so use a POWERED hub -
+# which also removes any doubt about a keyboard and a mouse together exceeding what the board
+# could deliver.
+
+# --- roles -------------------------------------------------------------------------------
+CONFIG_APP_ENABLE_HID_HOST=n
+CONFIG_APP_ENABLE_GAMEPAD=n
+CONFIG_APP_USB_PAD=n
+CONFIG_APP_USB_HID_HOST=y
+CONFIG_APP_LINK_SENDER=y
+
+# --- USB host ----------------------------------------------------------------------------
+# Hub support is what makes "keyboard AND mouse" possible at all: without it the host serves
+# exactly one directly attached device. It is a plain option in IDF 5.5.1 (ESP-IDF's own
+# usb/host/hid example enables it in its defaults), not an experimental feature.
+CONFIG_USB_HOST_HUBS_SUPPORTED=y
+CONFIG_USB_HOST_HUB_MULTI_LEVEL=y
+
+# --- inter-chip link ---------------------------------------------------------------------
+# Pins given EXPLICITLY, because the Kconfig defaults describe the ESP Thread BR board's
+# internal S3-to-H2 wiring and are wrong here in both directions: on an esp32s3 target they
+# resolve to TX=-1 (this chip would never transmit at all) and RX=17, which on an S3 SuperMini
+# is not on the 18-pin side header but on the bottom pads.
+#
+# GPIO4/GPIO5 are plain GPIOs on that header: no strapping function (unlike GPIO0/3/45/46),
+# not the USB pins (GPIO19/20), not flash or PSRAM (GPIO26-37), and not UART0 (GPIO43/44),
+# which the console needs. TX is always GPIO4 and RX always GPIO5 on both boards, so the
+# cable is a plain crossover: this chip's GPIO4 goes to the pad chip's GPIO5.
+CONFIG_APP_LINK_TX_GPIO=4
+CONFIG_APP_LINK_RX_GPIO=-1
+
+# --- console -----------------------------------------------------------------------------
+# Same hard requirement as on the pad chip: USB Serial/JTAG and USB-OTG share GPIO19/20 on
+# the S3, and here USB-OTG is the host port. Console goes to UART.
+#
+# Default UART0 pins, which on an S3 SuperMini are the top two positions of the left header
+# column (labelled TX and RX, i.e. GPIO43/GPIO44). See the pad chip's defaults for why keeping
+# them beats custom pins. No clash with the link: that is UART1 on GPIO4/GPIO5.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y

@@ -12,6 +12,10 @@ Jeden układ utrzymuje **trzy jednoczesne połączenia BLE**: dwa jako **central
 z klawiatury i myszy) i jedno jako **peripheral** (wystawienie pada do PC). Zweryfikowane na
 sprzęcie na ESP32-C3 i ESP32-S3.
 
+Istnieje też **wariant bez Bluetootha**: dwie płytki ESP32-S3 przyjmują urządzenia wejściowe po
+USB i wystawiają przewodowego pada Xbox 360, bez żadnego parowania. Też zweryfikowany
+end-to-end — patrz *Opcjonalnie: USB zamiast Bluetootha*.
+
 Pad ma **dwa profile**, wybierane w menuconfig (`APP_GAMEPAD_PROFILE`):
 
 | Profil | Co widzi PC |
@@ -106,6 +110,118 @@ Dwie rzeczy warte wiedzy, gdyby ktoś przenosił to na inną płytkę:
 Łącze niesie ramkowany protokół z CRC i keepalive, dzięki czemu **cisza jest informacją**: gdy
 satelita zniknie, gospodarz zwalnia trzymany przycisk myszy, a pad i klawiatura pracują dalej.
 Zmierzone na 10 951 ramkach, zero błędów CRC.
+
+## Opcjonalnie: USB zamiast Bluetootha
+
+Ten sam mostek może zrezygnować z Bluetootha w całości. Dwie płytki ESP32-S3, połączone trzema
+drutami, przyjmują urządzenia wejściowe po USB i wystawiają **przewodowego pada Xbox 360**:
+
+```
+dongle klawiatury 2,4 GHz ─┐                              ┌─ pad Xbox 360 (XInput) ─→ PC
+                           ├─→ hub ─→ [S3 #1] ──UART──→ [S3 #2] ┘
+dongle myszy 2,4 GHz ──────┘        host USB      urzadzenie USB
+```
+
+Windows wiąże `xusb22`, czyli **ten sam sterownik XInput** co w profilu Bluetooth, tylko
+dopasowany po `USB\Vid_045E&Pid_028E`. **Nie ma żadnego parowania**, a pad działa od chwili
+wetknięcia kabla — także w ekranach konfiguracyjnych firmware'u.
+
+**Zweryfikowane end-to-end na sprzęcie**, każde twierdzenie osobnym pomiarem:
+
+| Co | Dowód |
+|---|---|
+| sterownik XInput się wiąże | `USB\VID_045E&PID_028E` → `Service=xusb22`, a `XInputGetState` widzi pada w slocie 0 |
+| ruch host → urządzenie działa | trzy różne pary wartości `XInputSetState` dały trzy zgodne linie `rumble from host: left=… right=…`, ze skalowaniem 16→8 bitów wymaganym przez format raportu |
+| host USB, hub i oba dongle | `usb ifaces 4 (kbd=1 mouse=1)`, `KBD report len=8`, `MOU report len=7` |
+| mysz → prawy analog | 977 zmian stanu w 18 s, z gładkim opadaniem do środka |
+| WASD → lewy analog | `w` → `L=(0,32767)`, `a` → `L=(-32767,0)` |
+| przyciski, spusty, krzyżak | test kontrolera w Steam pokazuje wszystko poprawnie |
+
+Warto wiedzieć, że **XInput po USB to w ogóle nie HID**, więc nic z pracy nad wersją Bluetooth
+się tu nie przenosi: to interfejs vendorowy (klasa `0xFF`, podklasa `0x5D`, protokół `0x01`)
+z dwoma endpointami interrupt i bez deskryptora raportu. `xinputhid.inf`, który wiąże pada BLE,
+ma **zero** wpisów `USB\`, więc urządzenie USB HID z PID `0x0B13` dostałoby sterownik generyczny.
+Deskryptor interfejsu jest tu bajt w bajt taki jak w prawdziwym padzie, sprawdzany wobec
+przechwytu Wireshark przez `scripts/check_xinput_descriptor.py` — i to na **zbudowanej binarce**,
+nie na źródle.
+
+### Zmierzone tempo raportów
+
+| Odcinek | Tempo | Kto o tym decyduje |
+|---|---|---|
+| dongle → układ wejść | **~750 Hz** | `bInterval` dongle'a, czyli odpytywanie co 1 ms |
+| układ wejść → układ pada | 108 µs na ramkę przy 921600 bodach | nie jest ogranicznikiem — ~8 % drutu przy 750 ramkach/s |
+| układ pada → PC | **zmierzone 243 Hz** | interwał 4 ms endpointu IN, bajt w bajt jak w prawdziwym padzie |
+
+Odcinek pada zmierzony od strony PC przez `scripts/xinput_rumble.py --rate`, licząc numery
+pakietów XInput w pętli dość szybkiej, by sama nie była ograniczeniem (415 000 odpytań na sekundę).
+
+**Ta liczba zależy od tiku FreeRTOS i jest to pułapka warta zapamiętania.** `pdMS_TO_TICKS()`
+zaokrągla **w dół** do całych tików, więc przy domyślnym tiku 100 Hz okres 4 ms, o który prosi
+250 Hz, wychodzi **zero tików**; mapper bierze wtedy jeden tik i pad aktualizuje się **97 Hz** —
+czyli **niżej niż w wersji Bluetooth** — choć jego endpoint jest odpytywany co 4 ms. Dlatego
+wariant pada ustawia `CONFIG_FREERTOS_HZ=1000`, a mapper loguje teraz tempo, które **faktycznie
+osiąga**, a nie to, o które go poproszono.
+
+Na przejściu z 750 Hz na 250 Hz **nic nie ginie**: mapper **kumuluje** przyrosty myszy między
+tikami, więc gałka odzwierciedla całkę ze wszystkich raportów, a nie próbkę z nich. Podniesienie
+odcinka pada wymagałoby zmiany tego interwału na 1 ms, co psuje zgodność bajt w bajt
+z prawdziwym kontrolerem — a skoro pozycja gałki jest filtrowaną prędkością, nie zdarzeniem,
+zysk byłby znikomy.
+
+### Czego to wymaga
+
+- **ESP32-S3, -S2 albo -P4 na każdy koniec.** C3 nie ma peryferium USB-OTG, więc tego nie zrobi.
+- **Przejściówka USB-UART na konsolę.** Obie płytki mają zajęte gniazdo USB, a na S3 peryferium
+  USB Serial/JTAG dzieli GPIO19/20 z USB-OTG, więc konsola musi zejść na UART. Jedna
+  przejściówka wystarcza — przekłada się między płytkami.
+- **Zasilany hub** na dongle i przejściówka USB-C na USB-A (OTG) do płytki hosta.
+- **Trzy druty między płytkami:** `GPIO4` → `GPIO5` (skrzyżowane) i wspólna masa.
+
+Pełna rozpiska połączeń, razem z układem listwy i pułapkami z uruchamiania:
+[`docs/POLACZENIA-USB.pl.md`](docs/POLACZENIA-USB.pl.md).
+
+```bat
+scripts\build-native-win.ps1 esp32s3 s3input
+scripts\flash-win.ps1  COM<n> esp32s3 s3input
+scripts\build-native-win.ps1 esp32s3 s3pad
+scripts\flash-win.ps1  COM<m> esp32s3 s3pad
+```
+
+Dwie rzeczy o wgrywaniu tych płytek. Cykl to **BOOT+RESET → wgranie → RESET**: twardy reset,
+który esptool wykonuje po zapisie, **nie** wyprowadza układu z trybu download, a objaw jest
+nieodróżnialny od martwego firmware'u, dopóki nie sprawdzi się tego przez
+`esptool --before no-reset flash-id` — bo to polecenie przechodzi wyłącznie wtedy, gdy układ
+siedzi w bootloaderze. Druga rzecz: gdy aplikacja wystartuje, przejmuje piny USB, więc port COM
+znika. To dowód, że pad działa, nie awaria.
+
+Tabela mapowania, krzywa myszy i wszystkie osobliwości wejść są **wspólne z wersją Bluetooth**:
+`input_mapper` pobiera stan i wysyła raport, a wymieniane w czasie kompilacji są tylko te dwa
+końce.
+
+### Passthrough na skrót klawiaturowy
+
+`Ctrl+Alt+G` na klawiaturze przełącza układ pada między padem a zwykłą klawiaturą i myszą HID,
+żeby tych samych urządzeń dało się używać do pisania bez odłączania czegokolwiek. Zweryfikowane
+w obie strony:
+
+| Tryb | Tożsamość | Co wiąże Windows |
+|---|---|---|
+| gamepad | `045E:028E` | `xusb22`, slot 0 XInput |
+| passthrough | `303A:4004` | `kbdhid` i `mouhid` na dwóch kolekcjach raportów |
+
+**Muszą to być dwie tożsamości, a nie jedno urządzenie złożone**, i warto to rozumieć przed
+zmienianiem: `xusb22` wiąże się na poziomie *urządzenia*, nie interfejsu — prawdziwy pad Xbox 360
+ma cztery interfejsy i sterownik bierze je wszystkie. Interfejsy klawiatury i myszy pod tym samym
+VID/PID zostałyby przez niego zagarnięte i nigdy nie dotarłyby do Windows jako urządzenia
+wejściowe. Dlatego układ odłącza się, podmienia deskryptory i wylicza od nowa; **pad znika na
+czas passthrough** i to jest przyjęty koszt.
+
+Tryb idzie przez łącze jako stan absolutny, powtarzany z każdym keepalive, więc zgubiona ramka
+albo reset jednej z płytek naprawia się w 250 ms, zamiast zostawić strony niezgodne co do tego,
+które urządzenie jest na szynie. Sam skrót jest **zjadany**, a nie przekazywany dalej, i wyzwala
+się zboczem — trzymana kombinacja nie może wywołać kilkudziesięciu re-enumeracji USB na sekundę.
+Klawisz ustawia `APP_PASSTHROUGH_KEYCODE`, a całą funkcję wyłącza `APP_USB_PASSTHROUGH`.
 
 ## Wymagania po stronie PC
 
@@ -298,6 +414,11 @@ raport).
   które łatamy, więc `PATCH.diff` trzeba tam napisać od nowa, a nie przenieść.
 - ESP32-C3 nie ma USB-OTG, więc pad XInput po USB (zamiast po Bluetooth) na tym układzie nie
   jest możliwy.
+- **Pad USB raportuje 250 Hz, nie 1 kHz.** To interwał 4 ms endpointu IN, przepisany bajt
+  w bajt z prawdziwego pada Xbox 360; **zmierzone 243 Hz** od strony PC. Strona wejść chodzi
+  ~750 Hz, a mapper kumuluje przyrosty między tikami, więc żaden ruch nie jest gubiony.
+  Osiągnięcie tego tempa wymaga też `CONFIG_FREERTOS_HZ=1000` — przy domyślnym tiku 100 Hz pad
+  po cichu aktualizuje się 97 Hz.
 
 ## Diagnostyka
 
@@ -312,6 +433,14 @@ pytanie, na które zgadywanie nie wystarczyło:
 | `APP_LINK_PROBE_RX` | skanuje piny wejściowe i pokazuje, na którym pojawiają się ramki z poprawnym CRC z drugiego układu — tak ustaliliśmy połączenie S3↔H2 na płytce BR, bo dokumentacja go nie podaje |
 | `APP_GAMEPAD_SELFTEST` | pad sam przemiata gałkami i cyklicznie wciska przyciski, więc deskryptor można sprawdzić bez klawiatury i myszy |
 | `APP_DEBUG_WATCH_ADDR` | uzbraja sprzętowy watchpoint na zapis pod adres, więc uszkodzenie pamięci daje panikę z backtrace'em **sprawcy**, a nie ofiary |
+
+Dwa narzędzia po stronie PC istnieją z tego samego powodu — odpowiadają na pytania, na które
+log urządzenia nie odpowie:
+
+| Skrypt | Na co odpowiada |
+|---|---|
+| `scripts/xinput_rumble.py` | czy XInput naprawdę *rozmawia* z padem, a nie tylko czy sterownik się związał: czyta wszystkie cztery sloty przez `XInputGetState`, a potem wysyła trzy celowo **różne** pary wartości silników, żeby log urządzenia dał się z nimi zestawić linia w linię. `--watch <s>` zamienia go w podgląd stanu na żywo, kluczowany po `dwPacketNumber` — to test end-to-end zrobiony od strony, którą czyta gra |
+| `scripts/check_xinput_descriptor.py` | czy deskryptor USB, który faktycznie pójdzie na drut, zgadza się z przechwytem Wireshark prawdziwego kontrolera — parsuje **zbudowaną binarkę**, nie źródło |
 
 ## Stan projektu
 

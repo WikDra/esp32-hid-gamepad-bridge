@@ -34,6 +34,10 @@ games:
 - **Verified end to end on the ESP32-C3 and the ESP32-S3.** The ESP32-C6 and ESP32-H2 build
   and run, and handle the pad and the mouse, but will not connect to our test keyboard — see
   *Known limitations*.
+- **A Bluetooth-free variant works too.** Two ESP32-S3 boards take the input devices over USB
+  and present a **wired Xbox 360 controller**, with no pairing anywhere: Windows binds the same
+  XInput driver, `XInputGetState` reports the pad in slot 0, rumble arrives from the host, and
+  Steam's controller test passes. See *Optional: USB instead of Bluetooth*.
 
 Getting there required fixing nine separate defects in ESP-IDF's `esp_hid` component and
 working around two limitations in NimBLE's bundled services. All of it is documented in
@@ -141,6 +145,120 @@ Two things worth knowing if you adapt this to another board:
 The link carries a framed, CRC-checked protocol with a keepalive, so silence is meaningful: if
 the satellite disappears, the host releases any held mouse button and the pad and keyboard keep
 working. Measured over 10 951 frames with zero CRC errors.
+
+## Optional: USB instead of Bluetooth
+
+The same bridge can drop Bluetooth entirely. Two ESP32-S3 boards, wired together with three
+wires, take USB input devices on one end and present a **wired Xbox 360 controller** on the
+other:
+
+```
+keyboard 2.4 GHz dongle ─┐                                ┌─ Xbox 360 pad (XInput) ─→ PC
+                         ├─→ hub ─→ [S3 #1] ──UART──→ [S3 #2] ┘
+mouse 2.4 GHz dongle ────┘         USB host        USB device
+```
+
+Windows binds `xusb22` — the same XInput driver as in the Bluetooth profile — but matched on
+`USB\Vid_045E&Pid_028E` instead. **There is no pairing at all**, and the pad works from the
+moment it is plugged in, including in firmware setup screens.
+
+**Verified end to end on hardware**, each claim by its own measurement:
+
+| What | Evidence |
+|---|---|
+| the XInput driver binds | `USB\VID_045E&PID_028E` → `Service=xusb22`, and `XInputGetState` reports slot 0 `CONNECTED` |
+| host-to-device traffic works | three different `XInputSetState` motor pairs produced three matching `rumble from host: left=… right=…` lines, scaled 16→8 bits as the report format requires |
+| USB host, hub and both dongles | `usb ifaces 4 (kbd=1 mouse=1)`, `KBD report len=8`, `MOU report len=7` |
+| mouse → right stick | 977 state changes in 18 s, decaying smoothly back to centre |
+| WASD → left stick | `w` → `L=(0,32767)`, `a` → `L=(-32767,0)` |
+| buttons, triggers, D-pad | Steam's controller test shows all of them correctly |
+
+Note that **USB XInput is not HID at all**, so none of the Bluetooth work carries over: it is a
+vendor-specific interface (class `0xFF`, subclass `0x5D`, protocol `0x01`) with two interrupt
+endpoints and no report descriptor. `xinputhid.inf`, which binds the BLE pad, contains zero
+`USB\` entries, so a USB HID device with PID `0x0B13` would get the generic driver instead. The
+interface descriptor here is byte-for-byte a real controller's, checked against a Wireshark
+capture by `scripts/check_xinput_descriptor.py` on the built binary rather than on the source.
+
+### Report rates, measured
+
+| Hop | Rate | Set by |
+|---|---|---|
+| dongle → input chip | **~750 Hz** | the dongle's `bInterval`, i.e. 1 ms polling |
+| input chip → pad chip | 108 µs per frame at 921600 baud | not a limiter — ~8 % of the wire at 750 frames/s |
+| pad chip → PC | **243 Hz measured** | the IN endpoint's 4 ms interval, byte-for-byte the real pad's |
+
+The pad hop was measured from the PC with `scripts/xinput_rumble.py --rate`, counting XInput
+packet numbers in a poll loop fast enough not to be the limit itself (415 000 polls/s).
+
+**That number depends on the FreeRTOS tick, which is a trap worth knowing about.**
+`pdMS_TO_TICKS()` rounds down to whole ticks, so at the default 100 Hz tick the 4 ms period that
+250 Hz asks for resolves to zero ticks, the mapper falls back to one tick, and the pad updates at
+**97 Hz** — below what the Bluetooth build achieves, while its endpoint is polled at 250 Hz. The
+pad variant therefore sets `CONFIG_FREERTOS_HZ=1000`, and the mapper now logs the rate it
+actually achieves instead of the one that was requested.
+
+Nothing is lost where 750 Hz meets 250 Hz: the mapper **accumulates** mouse deltas between
+ticks, so the stick reflects the integral of every report rather than a sample of them. Raising
+the pad hop would mean changing that interval to 1 ms, which breaks the byte-for-byte match with
+the real controller — and since a stick position is a filtered velocity rather than an event,
+there is little to gain.
+
+### What it needs
+
+- **An ESP32-S3, -S2 or -P4 for each end.** The C3 has no USB-OTG peripheral, so it cannot do
+  this at all.
+- **A USB-UART adapter for the console.** Both boards have their USB port taken, and on the S3
+  the USB Serial/JTAG peripheral shares GPIO19/20 with USB-OTG, so the console must move to
+  UART. One adapter is enough — it swaps between the boards.
+- **A powered hub** for the dongles, and a USB-C to USB-A OTG adapter for the host board.
+- **Three wires between the boards:** `GPIO4` → `GPIO5` (crossed) and a common ground.
+
+Full wiring sheet, including the pin header layout and the traps met while bringing it up:
+[`docs/POLACZENIA-USB.pl.md`](docs/POLACZENIA-USB.pl.md) (in Polish).
+
+```bat
+scripts\build-native-win.ps1 esp32s3 s3input
+scripts\flash-win.ps1  COM<n> esp32s3 s3input
+scripts\build-native-win.ps1 esp32s3 s3pad
+scripts\flash-win.ps1  COM<m> esp32s3 s3pad
+```
+
+Two things about flashing these boards. The cycle is **BOOT+RESET → flash → RESET**: the hard
+reset esptool performs after writing does not leave download mode, and the symptom is
+indistinguishable from dead firmware until you check with
+`esptool --before no-reset flash-id`, which only succeeds while the chip sits in the bootloader.
+And once the application runs it owns the USB pins, so the COM port disappears — that is the
+pad working, not a failure.
+
+The mapping table, the mouse curve and every input quirk are **shared with the Bluetooth
+build**: `input_mapper` takes state and sends a report, and only those two ends are swapped at
+compile time.
+
+### Passthrough on a hotkey
+
+`Ctrl+Alt+G` on the keyboard switches the pad chip between the gamepad and a plain HID keyboard
+plus mouse, so the same devices can be used for typing without unplugging anything. Verified in
+both directions:
+
+| Mode | Identity | What Windows binds |
+|---|---|---|
+| gamepad | `045E:028E` | `xusb22`, XInput slot 0 |
+| passthrough | `303A:4004` | `kbdhid` and `mouhid` on two report collections |
+
+**It has to be two identities rather than one composite device**, and that is worth
+understanding before changing it: `xusb22` binds at *device* level, not per interface — the real
+Xbox 360 pad has four interfaces and the driver owns all of them. Keyboard and mouse interfaces
+under the same VID/PID would be swallowed by it and never reach Windows as input devices. So the
+chip disconnects, swaps descriptors and re-enumerates; **the pad disappears while passthrough is
+active**, which is the accepted cost.
+
+The mode travels over the link as absolute state, repeated with every keepalive, so a lost frame
+or a reset of either chip corrects itself within 250 ms instead of leaving the two sides
+disagreeing about which device is on the bus. The hotkey itself is consumed rather than
+forwarded, and it is edge-triggered — a held combination must not re-enumerate USB dozens of
+times a second. The key is `APP_PASSTHROUGH_KEYCODE`, and the whole feature can be turned off
+with `APP_USB_PASSTHROUGH`.
 
 ## Requirements
 
@@ -320,6 +438,11 @@ To exercise the HID descriptor without a keyboard and mouse, enable
   patch, so the diff has to be rewritten rather than moved.
 - ESP32-C3 has no USB-OTG, so a USB (rather than Bluetooth) XInput device is not possible on
   this chip.
+- **The USB pad reports at 250 Hz, not 1 kHz.** That is the IN endpoint's 4 ms interval, copied
+  byte-for-byte from a real Xbox 360 controller; **243 Hz measured** from the PC side. The input
+  side runs at ~750 Hz and the mapper accumulates deltas between ticks, so no motion is
+  discarded. Reaching that rate also needs `CONFIG_FREERTOS_HZ=1000` — at the default 100 Hz
+  tick the pad silently updates at 97 Hz instead.
 
 ## Diagnostics
 
@@ -334,6 +457,13 @@ question that guesswork could not:
 | `APP_LINK_PROBE_RX` | sweeps candidate input pins and reports where CRC-valid frames from the other chip arrive — how the S3↔H2 wiring on the BR board was established, since the documentation does not give it |
 | `APP_GAMEPAD_SELFTEST` | the pad sweeps its sticks and cycles buttons, so the descriptor can be exercised with no keyboard or mouse present |
 | `APP_DEBUG_WATCH_ADDR` | arms a hardware write watchpoint on an address, so a memory corruption panics with the backtrace of the culprit rather than the victim |
+
+Two host-side tools exist for the same reason — they answer questions the device log cannot:
+
+| Script | What it answers |
+|---|---|
+| `scripts/xinput_rumble.py` | whether XInput actually *talks* to the pad, rather than merely whether a driver bound: it reads all four slots through `XInputGetState`, then sends three deliberately different motor pairs so the device log can be matched against them line by line. `--watch <s>` turns it into a live state view, keyed on `dwPacketNumber`, which is the end-to-end test taken from the side a game reads |
+| `scripts/check_xinput_descriptor.py` | whether the USB descriptor that will really be on the wire matches a Wireshark capture of a genuine controller — it parses the **built binary**, not the source |
 
 ## Licence and attribution
 

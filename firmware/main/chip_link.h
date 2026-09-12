@@ -41,6 +41,34 @@ esp_err_t chip_link_start(void);
  */
 void chip_link_send_mouse(uint8_t buttons, int32_t dx, int32_t dy, int32_t wheel);
 
+/*
+ * Sender only: absolute keyboard state, boot-protocol layout (modifier bitmap + up to six
+ * keycodes). Absolute rather than incremental, so a lost frame self-heals on the next one.
+ *
+ * Only the USB build uses this: on the BLE split bridge the keyboard is local to the host
+ * chip and never crosses the wire.
+ */
+void chip_link_send_keyboard(uint8_t modifiers, const uint8_t keys[6]);
+
+/*
+ * Sender only: tell the host chip which classes we currently serve. Carried by the keepalive,
+ * so the host learns about a device going away even if it was idle at the time.
+ */
+void chip_link_set_presence(bool mouse, bool keyboard);
+
+/*
+ * Sender only: ask the pad chip to switch USB identity - gamepad or keyboard+mouse passthrough.
+ *
+ * Sent immediately and then repeated with every keepalive. The mode is ABSOLUTE state rather
+ * than a toggle command on the wire, which is what makes it robust: a frame lost to noise, or a
+ * reset of either chip, corrects itself within one keepalive period instead of leaving the two
+ * sides disagreeing about which device is on the bus.
+ */
+void chip_link_set_mode(bool passthrough);
+
+/* Sender only: the mode last set, so the caller can toggle without keeping its own copy. */
+bool chip_link_mode_is_passthrough(void);
+
 /* Receiver only: whether a frame arrived recently enough (APP_LINK_PEER_TIMEOUT_MS). */
 bool chip_link_peer_alive(void);
 

@@ -1,0 +1,72 @@
+# VARIANT: USB pad chip of the S3+S3 USB bridge.
+#
+# This chip is a USB DEVICE: it presents an Xbox 360 wired controller to the PC and gets its
+# input state from the other S3 over UART. No BLE at all here.
+#
+# Use with:  scripts\build-native-win.bat esp32s3 s3pad
+#            scripts\flash-win.bat COM<n> esp32s3 s3pad
+
+# --- roles -------------------------------------------------------------------------------
+CONFIG_APP_ENABLE_HID_HOST=n
+CONFIG_APP_ENABLE_GAMEPAD=n
+CONFIG_APP_USB_PAD=y
+CONFIG_APP_USB_HID_HOST=n
+CONFIG_APP_LINK_RECEIVER=y
+
+# The link is the only input source here, so losing it must clear the pad quickly rather
+# than leaving a stick deflected. 500 ms is two keepalive periods plus margin.
+CONFIG_APP_LINK_PEER_TIMEOUT_MS=500
+
+# --- inter-chip link ---------------------------------------------------------------------
+# Explicit for the same reason as on the input chip: the Kconfig default RX=17 describes the
+# ESP Thread BR board's internal wiring, and on an S3 SuperMini GPIO17 sits on the bottom pads
+# rather than the 18-pin side header. GPIO5 is a plain GPIO on that header.
+#
+# TX stays -1 - the link is one-directional and this side has nothing to ask the other chip.
+# uart_set_pin() takes -1 as UART_PIN_NO_CHANGE, so the pin is simply left alone; a wire may
+# be run for a future back-channel without anything driving it.
+CONFIG_APP_LINK_TX_GPIO=-1
+CONFIG_APP_LINK_RX_GPIO=5
+
+# --- console -----------------------------------------------------------------------------
+# MUST be UART, and this is not a preference. On the ESP32-S3 the USB Serial/JTAG peripheral
+# and USB-OTG are wired to the SAME pins (GPIO19/20) and only one can drive them; TinyUSB
+# takes the pins, so a USB Serial/JTAG console would go silent - and worse, would look like a
+# crashed firmware.
+#
+# The DEFAULT UART0 pins are right here: on an ESP32-S3 SuperMini GPIO43 and GPIO44 are the top
+# two positions of the left header column, labelled TX and RX. Keeping the defaults buys two
+# things that custom pins would cost us: the first-stage ROM bootloader prints on these pins no
+# matter what is configured, which is a wiring test independent of our firmware, and the ROM
+# download protocol lives there too, so UART flashing stays available as a fallback.
+#
+# No clash with the inter-chip link: that runs on UART1 (APP_LINK_UART_PORT) over GPIO4/GPIO5.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# --- TinyUSB -----------------------------------------------------------------------------
+# The XInput identity registers its own class driver through TinyUSB's usbd_app_driver_get_cb()
+# hook and supplies the whole configuration descriptor itself, so no built-in class is needed
+# for it. HID_COUNT is 1 for the PASSTHROUGH identity: that one is an ordinary HID keyboard plus
+# mouse (two report IDs on one interface) and uses TinyUSB's own HID class driver. In pad mode
+# the configuration descriptor declares no HID interface, so that driver simply never matches.
+CONFIG_TINYUSB_CDC_ENABLED=n
+CONFIG_TINYUSB_MSC_ENABLED=n
+CONFIG_TINYUSB_HID_COUNT=1
+CONFIG_TINYUSB_MIDI_COUNT=0
+CONFIG_TINYUSB_VENDOR_COUNT=0
+
+# Report rate: the Xbox 360 IN endpoint is polled every 4 ms (250 Hz), so the mapper may as
+# well run faster than the 100 Hz the BLE build uses - there is no radio to share.
+CONFIG_APP_REPORT_RATE_HZ=250
+
+# --- task timing -------------------------------------------------------------------------
+# FreeRTOS tick raised from the default 100 Hz, and this is load-bearing rather than tidiness.
+# pdMS_TO_TICKS() rounds DOWN to whole ticks, so at 100 Hz the 4 ms period that 250 Hz asks for
+# resolves to ZERO ticks; the mapper falls back to one tick and the pad ends up updating at
+# 100 Hz while its USB endpoint is polled every 4 ms. Measured from the PC side, not assumed.
+#
+# At 1000 Hz the period is expressible exactly, and it also leaves room for a 1 ms period if a
+# passthrough mode ever needs one. The cost is one timer interrupt per millisecond on a chip
+# that otherwise runs a single 250 Hz task, which is not a real cost here.
+CONFIG_FREERTOS_HZ=1000

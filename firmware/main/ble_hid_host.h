@@ -13,30 +13,12 @@
 
 #include "esp_err.h"
 
+/* hid_input_state_t and HID_KEYS_MAX live here, shared with the USB build. */
+#include "input_state.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/* USB HID keyboard boot protocol: up to 6 keys held simultaneously. */
-#define HID_KEYS_MAX 6
-
-typedef struct {
-    /* Keyboard: modifier bitmap (bit0 LCtrl ... bit7 RGui) and USB HID keycodes. */
-    uint8_t modifiers;
-    uint8_t keys[HID_KEYS_MAX];
-
-    /* Mouse: button bitmap (bit0 left, bit1 right, bit2 middle). */
-    uint8_t mouse_buttons;
-
-    /* Mouse: motion accumulated since the previous state read. The mouse reports
-     * deltas and the pad task runs at a different rate, so we sum them up. */
-    int32_t mouse_dx;
-    int32_t mouse_dy;
-    int32_t mouse_wheel;
-
-    bool keyboard_connected;
-    bool mouse_connected;
-} hid_input_state_t;
 
 /* Starts NimBLE, esp_hidh and the scanning task. Call once, from app_main. */
 esp_err_t ble_hid_host_start(void);

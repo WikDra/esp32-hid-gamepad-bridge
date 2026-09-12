@@ -1,8 +1,9 @@
 @echo off
 REM Flashes the firmware using esptool from the Windows ESP-IDF installation.
 REM
-REM   scripts\flash-win.bat [COM port] [target]
+REM   scripts\flash-win.bat [COM port] [target] [variant]
 REM   scripts\flash-win.bat COM6 esp32c3
+REM   scripts\flash-win.bat COM10 esp32s3 s3pad     - two roles on one target
 REM
 REM MSYSTEM is cleared because ESP-IDF's export.bat refuses to run under Git Bash/MSYS.
 setlocal EnableDelayedExpansion
@@ -10,6 +11,8 @@ set PORT=%1
 if "%PORT%"=="" set PORT=COM6
 set TARGET=%2
 if "%TARGET%"=="" set TARGET=esp32c3
+set VSUFFIX=
+if not "%3"=="" set VSUFFIX=.%3
 
 REM The path to the Windows ESP-IDF installation can be overridden with IDF_WIN,
 REM e.g.  set IDF_WIN=D:\esp\v5.5.1\esp-idf
@@ -25,8 +28,8 @@ REM Two build directories can coexist: build.<target> from WSL and build.win.<ta
 REM from a native Windows build. Choosing one by a fixed preference silently flashes a
 REM stale image whenever the other one is newer - which cost real debugging time once.
 REM So we flash whichever image was built LAST.
-set WSL_DIR=%~dp0..\firmware\build.%TARGET%
-set WIN_DIR=%~dp0..\firmware\build.win.%TARGET%
+set WSL_DIR=%~dp0..\firmware\build.%TARGET%%VSUFFIX%
+set WIN_DIR=%~dp0..\firmware\build.win.%TARGET%%VSUFFIX%
 set BUILD_DIR=
 
 if exist "%WSL_DIR%\flash_args" if exist "%WIN_DIR%\flash_args" (

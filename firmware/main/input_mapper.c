@@ -20,6 +20,45 @@
 
 #include "input_mapper.h"
 
+/*
+ * Transport seam. The mapping logic below is identical for BLE and USB; only where the
+ * state comes from and where the report goes differ, so those two are macros resolved at
+ * compile time. Four symbols is the whole coupling.
+ */
+#if CONFIG_APP_ENABLE_HID_HOST
+#include "ble_hid_host.h"
+#define IO_TAKE_STATE(p) ble_hid_host_take_state(p)
+#define IO_INPUT_BUSY()  ble_hid_host_is_opening()
+#else
+#include "input_state.h"
+#define IO_TAKE_STATE(p) input_state_take(p)
+#define IO_INPUT_BUSY()  false
+#endif
+
+#if CONFIG_APP_ENABLE_GAMEPAD
+#include "ble_gamepad.h"
+#define IO_PAD_SEND(p) ble_gamepad_send(p)
+#elif CONFIG_APP_USB_PAD
+#include "usb_pad.h"
+#define IO_PAD_SEND(p) usb_pad_send(p)
+#else
+#error "input_mapper needs a pad transport: APP_ENABLE_GAMEPAD or APP_USB_PAD"
+#endif
+
+/*
+ * Passthrough is the third end of the seam: in that mode the chip is a plain HID keyboard and
+ * mouse instead of a pad, so the mapping below is skipped entirely and the raw state goes out
+ * unchanged. Compiles to nothing when the feature or the USB pad is absent.
+ */
+#if CONFIG_APP_USB_PASSTHROUGH && CONFIG_APP_USB_PAD
+#define IO_SERVICE_MODE()      usb_pad_service_mode()
+#define IO_PASSTHROUGH_SEND(p) usb_pad_send_passthrough(p)
+#else
+#define IO_SERVICE_MODE()      false
+#define IO_PASSTHROUGH_SEND(p) ((void)(p))
+#endif
+
+
 #include <inttypes.h>
 #include <stdbool.h>
 #include <string.h>
@@ -225,6 +264,23 @@ static void mapper_task(void *arg)
 {
     const TickType_t period = pdMS_TO_TICKS(1000 / CONFIG_APP_REPORT_RATE_HZ);
     TickType_t last_wake = xTaskGetTickCount();
+
+    /*
+     * pdMS_TO_TICKS() rounds DOWN to whole FreeRTOS ticks, so a rate faster than the tick
+     * rate silently collapses to one report per tick. MEASURED CONSEQUENCE: with
+     * APP_REPORT_RATE_HZ=250 and the default 100 Hz tick the pad updated at 100 Hz, not 250,
+     * even though its USB endpoint is polled every 4 ms - the number in menuconfig was simply
+     * unreachable. Say so in the log rather than let it lie; the fix is CONFIG_FREERTOS_HZ.
+     */
+    const unsigned achieved = (unsigned)configTICK_RATE_HZ / (unsigned)(period > 0 ? period : 1);
+    if (achieved < CONFIG_APP_REPORT_RATE_HZ) {
+        ESP_LOGW(TAG, "APP_REPORT_RATE_HZ=%d is not reachable with a %d Hz FreeRTOS tick - "
+                      "reports go out at %u Hz; raise CONFIG_FREERTOS_HZ",
+                 CONFIG_APP_REPORT_RATE_HZ, (int)configTICK_RATE_HZ, achieved);
+    } else {
+        ESP_LOGI(TAG, "mapping task at %u Hz (FreeRTOS tick %d Hz)", achieved,
+                 (int)configTICK_RATE_HZ);
+    }
     gamepad_state_t prev_logged = {0};
     int64_t last_log_us = 0;
 
@@ -234,7 +290,17 @@ static void mapper_task(void *arg)
         hid_input_state_t in;
         /* Taking the state clears the mouse accumulators, so every delta ends up in
          * exactly one gamepad report. */
-        ble_hid_host_take_state(&in);
+        IO_TAKE_STATE(&in);
+
+        /*
+         * Applies a pending identity switch and tells us which mode is now in force. Done here,
+         * in the task that also submits reports, so re-enumeration can never race a transfer -
+         * that is cheaper and easier to reason about than a lock around both.
+         */
+        if (IO_SERVICE_MODE()) {
+            IO_PASSTHROUGH_SEND(&in);
+            continue;
+        }
 
         gamepad_state_t out = {0};
         stick_from_wasd(&in, &out.lx, &out.ly);
@@ -253,11 +319,11 @@ static void mapper_task(void *arg)
          * a deflected stick or a held button for its duration.
          */
         static bool was_opening;
-        bool opening = ble_hid_host_is_opening();
+        bool opening = IO_INPUT_BUSY();
         if (opening) {
             if (!was_opening) {
                 gamepad_state_t neutral = {0};
-                ble_gamepad_send(&neutral);
+                IO_PAD_SEND(&neutral);
                 ESP_LOGI(TAG, "device open in progress - suspending pad reports");
             }
             was_opening = true;
@@ -268,7 +334,7 @@ static void mapper_task(void *arg)
             was_opening = false;
         }
 
-        bool sent = ble_gamepad_send(&out);
+        bool sent = IO_PAD_SEND(&out);
 
         /* Log only on a real change and no more than once per 250 ms - otherwise mouse
          * movement would flood the console. */
