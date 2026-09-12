@@ -408,6 +408,26 @@ raport).
 
 ## Znane ograniczenia
 
+> **Arytmetyka przeliczania myszy na gałkę zmieniła się po tym, jak wariant Bluetooth był
+> ostatnio weryfikowany na sprzęcie, i ta zmiana jest po BLE NIEPRZETESTOWANA.**
+> `input_mapper.c` wyraża teraz stałą czasową filtra i czułość w czasie, a nie w tikach zadania,
+> i nie obcina już wyniku do całych zliczeń myszy na tik (`AGENTS.md` §4.40). Zmierzone zostało
+> to wyłącznie na padzie USB — 997 Hz transportu, 830 Hz z realną myszą.
+>
+> Przy tempie 100 Hz, którego używa wariant BLE, nominalna czułość i stała czasowa wychodzą
+> identyczne jak w wartościach dobranych ręcznie w `AGENTS.md` §4.22. Różni się rozdzielczość:
+> drobne ruchy liczą się teraz proporcjonalnie, zamiast być zaokrąglane do zera, więc prawa gałka
+> będzie bardziej precyzyjna i możliwie żywsza niż dotąd.
+>
+> **Jeśli wariant BLE zacznie się dziwnie zachowywać, wróć do commita `c25c017`.** To ostatni
+> commit z arytmetyką dokładnie w takim stanie, w jakim mostek Bluetooth był weryfikowany
+> end-to-end, a zawiera już całą pracę nad USB, sprawdzoną na sprzęcie:
+>
+> ```
+> git checkout c25c017          # zobaczyc
+> git revert 9a5f535            # albo cofnac sama te zmiane na galezi
+> ```
+
 - **Częstotliwość raportów z wejść jest ograniczona do 66 Hz (15 ms).** Kontroler w roli
   centrala odmawia *zainicjowania* interwału krótszego niż 15 ms, zwracając HCI `0x12` —
   zmierzone identycznie na ESP32-C3 i ESP32-S3, które dzielą bibliotekę kontrolera, więc to

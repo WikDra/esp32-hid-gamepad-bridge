@@ -436,6 +436,26 @@ To exercise the HID descriptor without a keyboard and mouse, enable
 
 ## Known limitations
 
+> **The mouse-to-stick arithmetic changed after the Bluetooth build was last verified on
+> hardware, and that change is UNTESTED over BLE.** `input_mapper.c` now expresses the filter
+> time constant and the sensitivity in time rather than in task ticks, and no longer truncates
+> the result to whole mouse counts per tick (`AGENTS.md` §4.40). It was measured on the USB pad
+> only — 997 Hz transport, 830 Hz with a real mouse.
+>
+> At a 100 Hz report rate, which is what the BLE build uses, the nominal sensitivity and time
+> constant come out identical to the hand-tuned values of `AGENTS.md` §4.22. What differs is
+> resolution: small movements now register proportionally instead of being rounded away, so the
+> right stick will feel finer and possibly livelier than before.
+>
+> **If the BLE build misbehaves, go back to commit `c25c017`.** That is the last commit with the
+> arithmetic exactly as it was when the Bluetooth bridge was verified end to end, and it already
+> contains all of the USB work, itself verified on hardware:
+>
+> ```
+> git checkout c25c017          # inspect it
+> git revert 9a5f535            # or drop just this change on a branch
+> ```
+
 - **Input report rate is capped at 66 Hz (15 ms).** As central, the controller refuses to
   *initiate* any connection interval below 15 ms, returning HCI `0x12` — measured identically
   on the ESP32-C3 and the ESP32-S3, which share the same controller library, so this is a
