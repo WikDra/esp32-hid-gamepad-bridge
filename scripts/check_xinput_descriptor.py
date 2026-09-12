@@ -37,6 +37,11 @@ REFERENCE_IFACE0 = bytes([
 
 DESC_CONFIG, DESC_INTERFACE, DESC_ENDPOINT, DESC_VENDOR = 0x02, 0x04, 0x05, 0x21
 
+# Index of the IN endpoint's bInterval inside REFERENCE_IFACE0: 9 bytes of interface descriptor,
+# 17 of the vendor one, then the 7-byte endpoint descriptor whose last field this is.
+IFACE0_IN_INTERVAL_AT = 32
+REAL_IN_INTERVAL_MS = REFERENCE_IFACE0[IFACE0_IN_INTERVAL_AT]
+
 
 def fail(msg):
     print("FAIL: " + msg)
@@ -44,17 +49,30 @@ def fail(msg):
 
 
 def find_descriptor(blob):
-    """Locate our configuration descriptor by the interface-0 signature."""
-    at = blob.find(REFERENCE_IFACE0)
-    if at < 0:
+    """Locate our configuration descriptor by the interface-0 signature.
+
+    The IN endpoint's bInterval is the ONE field allowed to differ from the reference. 1 ms is
+    the only way to reach 1 kHz out of a Full Speed device, and driver binding never looks at
+    the descriptor - xusb22.inf matches on VID/PID alone. So the search substitutes just that
+    field and reports what it found, instead of failing and hiding the rest of the comparison.
+    """
+    candidates = [REAL_IN_INTERVAL_MS] + [i for i in range(1, 9) if i != REAL_IN_INTERVAL_MS]
+    for interval in candidates:
+        probe = bytearray(REFERENCE_IFACE0)
+        probe[IFACE0_IN_INTERVAL_AT] = interval
+        at = blob.find(bytes(probe))
+        if at >= 0:
+            break
+    else:
         fail("interface 0 block not found in the image - either the descriptor differs from "
-             "the real controller, or the build does not contain usb_pad.c")
+             "the real controller in more than the IN endpoint interval, or the build does "
+             "not contain usb_pad.c")
     # The configuration descriptor is the 9 bytes immediately before it.
     start = at - 9
     if start < 0 or blob[start + 1] != DESC_CONFIG:
         fail("found interface 0, but no configuration descriptor directly in front of it")
     total = blob[start + 2] | (blob[start + 3] << 8)
-    return blob[start:start + total], total
+    return blob[start:start + total], total, interval
 
 
 def main():
@@ -69,7 +87,7 @@ def main():
     blob = images[0].read_bytes()
     print("image: %s (%d B)" % (images[0].name, len(blob)))
 
-    desc, total = find_descriptor(blob)
+    desc, total, in_interval = find_descriptor(blob)
     print("configuration descriptor: %d B (wTotalLength says %d)" % (len(desc), total))
     if len(desc) != total:
         fail("wTotalLength %d does not match the bytes present (%d)" % (total, len(desc)))
@@ -132,11 +150,19 @@ def main():
                  (addr, attrs))
         if size != 32:
             fail("endpoint 0x%02X has wMaxPacketSize %d, the real pad uses 32" % (addr, size))
-        expect_interval = 4 if addr & 0x80 else 8
-        if interval != expect_interval:
-            fail("endpoint 0x%02X has bInterval %d, the real pad uses %d" %
-                 (addr, interval, expect_interval))
-        print("  endpoint 0x%02X: interrupt, %d B, every %d ms - OK" % (addr, size, interval))
+        if addr & 0x80:
+            # The IN interval is configurable on purpose (APP_XINPUT_EP_INTERVAL_MS); anything
+            # in 1..8 ms is a legal Full Speed interrupt interval, so report rather than reject.
+            if not 1 <= interval <= 8:
+                fail("endpoint 0x%02X has bInterval %d, outside the 1..8 ms a Full Speed "
+                     "interrupt endpoint may use" % (addr, interval))
+            note = "" if interval == REAL_IN_INTERVAL_MS else "  <- DEVIATES from the real pad"
+            print("  endpoint 0x%02X: interrupt, %d B, every %d ms = %d Hz - OK%s" %
+                  (addr, size, interval, 1000 // interval, note))
+        else:
+            if interval != 8:
+                fail("endpoint 0x%02X has bInterval %d, the real pad uses 8" % (addr, interval))
+            print("  endpoint 0x%02X: interrupt, %d B, every %d ms - OK" % (addr, size, interval))
 
     # Device descriptor: the identity is what makes Windows load XInput at all.
     dev = blob.find(bytes([0x12, 0x01, 0x00, 0x02, 0xFF, 0xFF, 0xFF]))
@@ -149,8 +175,17 @@ def main():
              "045E:0719 and 045E:028F" % (vid, pid))
     print("  device: VID 0x%04X PID 0x%04X (Xbox 360 wired) - matches xusb22.inf" % (vid, pid))
 
-    print("\nOK: descriptor is internally consistent and interface 0 is byte-for-byte the "
-          "real controller's.")
+    if in_interval == REAL_IN_INTERVAL_MS:
+        print("\nOK: descriptor is internally consistent and interface 0 is byte-for-byte the "
+              "real controller's.")
+    else:
+        print("\nOK: descriptor is internally consistent and interface 0 matches the real "
+              "controller in EVERY byte except the IN endpoint interval, which is %d ms "
+              "instead of %d ms (%d Hz instead of %d Hz)." %
+              (in_interval, REAL_IN_INTERVAL_MS, 1000 // in_interval,
+               1000 // REAL_IN_INTERVAL_MS))
+        print("    Deliberate - APP_XINPUT_EP_INTERVAL_MS. Binding is unaffected, because "
+              "xusb22.inf matches on VID/PID alone and never reads the descriptor.")
     return 0
 
 

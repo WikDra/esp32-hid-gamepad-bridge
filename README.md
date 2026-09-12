@@ -190,24 +190,40 @@ capture by `scripts/check_xinput_descriptor.py` on the built binary rather than 
 | Hop | Rate | Set by |
 |---|---|---|
 | dongle → input chip | **~750 Hz** | the dongle's `bInterval`, i.e. 1 ms polling |
-| input chip → pad chip | 108 µs per frame at 921600 baud | not a limiter — ~8 % of the wire at 750 frames/s |
-| pad chip → PC | **243 Hz measured** | the IN endpoint's 4 ms interval, byte-for-byte the real pad's |
+| input chip → pad chip | 108 µs per frame at 921600 baud | not a limiter — ~11 % of the wire at 1000 frames/s |
+| pad chip → PC | **997 Hz transport, 830 Hz measured with a real mouse** | the IN endpoint's 1 ms interval |
 
-The pad hop was measured from the PC with `scripts/xinput_rumble.py --rate`, counting XInput
-packet numbers in a poll loop fast enough not to be the limit itself (415 000 polls/s).
+Both numbers were measured from the PC with `scripts/xinput_rumble.py --rate`, in a poll loop fast
+enough not to be the limit itself (415 000 polls/s). They mean different things and the difference
+matters:
 
-**That number depends on the FreeRTOS tick, which is a trap worth knowing about.**
-`pdMS_TO_TICKS()` rounds down to whole ticks, so at the default 100 Hz tick the 4 ms period that
-250 Hz asks for resolves to zero ticks, the mapper falls back to one tick, and the pad updates at
-**97 Hz** — below what the Bluetooth build achieves, while its endpoint is polled at 250 Hz. The
-pad variant therefore sets `CONFIG_FREERTOS_HZ=1000`, and the mapper now logs the rate it
-actually achieves instead of the one that was requested.
+- **997 Hz** is the transport ceiling, taken with `APP_DEBUG_PAD_RATE_PROBE`, which forces a
+  different report every tick. It does not depend on anyone's hand, so it is the number to trust.
+- **830 Hz** is with real mouse input during brisk movement. Slow movement gives far less — 70 Hz
+  was measured — and that is correct rather than broken: a report only goes out when the state
+  changes, and the filter is designed to hold a *steady* deflection at a steady mouse speed. So
+  the update count measures how much the stick value varies, not how good the pipeline is.
 
-Nothing is lost where 750 Hz meets 250 Hz: the mapper **accumulates** mouse deltas between
-ticks, so the stick reflects the integral of every report rather than a sample of them. Raising
-the pad hop would mean changing that interval to 1 ms, which breaks the byte-for-byte match with
-the real controller — and since a stick position is a filtered velocity rather than an event,
-there is little to gain.
+Reaching this needed three fixes in the mapper, none of them in USB: the filter time constant and
+the sensitivity were expressed in ticks rather than in time, so raising the rate silently changed
+the feel; the fixed-point accumulator was too coarse and stalled at 1 kHz; and the result was
+truncated to whole mouse counts per tick, which at 1 kHz left three usable levels. Details and the
+before/after numbers are in `AGENTS.md` §4.40.
+
+**The rate also depends on the FreeRTOS tick, which is a trap worth knowing about.**
+`pdMS_TO_TICKS()` rounds down to whole ticks, so at the default 100 Hz tick a 1 ms period resolves
+to zero ticks, the mapper falls back to one tick, and the pad updates at 100 Hz however fast its
+endpoint is polled. The pad variant therefore sets `CONFIG_FREERTOS_HZ=1000`, and the mapper logs
+the rate it actually achieves instead of the one that was requested.
+
+The endpoint interval is `APP_XINPUT_EP_INTERVAL_MS`. At 1 ms it is **the one field where this
+descriptor is no longer byte-for-byte** the real controller's, which is safe - `xusb22.inf` matches
+on VID/PID alone and never reads the descriptor, verified on hardware - and
+`scripts/check_xinput_descriptor.py` reports the deviation rather than passing silently. Set it
+back to 4 for exact fidelity at 250 Hz.
+
+Nothing is lost where 750 Hz of input meets the pad: the mapper **accumulates** mouse deltas
+between ticks, so the stick reflects the integral of every report rather than a sample of them.
 
 ### What it needs
 
@@ -420,6 +436,26 @@ To exercise the HID descriptor without a keyboard and mouse, enable
 
 ## Known limitations
 
+> **The mouse-to-stick arithmetic changed after the Bluetooth build was last verified on
+> hardware, and that change is UNTESTED over BLE.** `input_mapper.c` now expresses the filter
+> time constant and the sensitivity in time rather than in task ticks, and no longer truncates
+> the result to whole mouse counts per tick (`AGENTS.md` §4.40). It was measured on the USB pad
+> only — 997 Hz transport, 830 Hz with a real mouse.
+>
+> At a 100 Hz report rate, which is what the BLE build uses, the nominal sensitivity and time
+> constant come out identical to the hand-tuned values of `AGENTS.md` §4.22. What differs is
+> resolution: small movements now register proportionally instead of being rounded away, so the
+> right stick will feel finer and possibly livelier than before.
+>
+> **If the BLE build misbehaves, go back to commit `c25c017`.** That is the last commit with the
+> arithmetic exactly as it was when the Bluetooth bridge was verified end to end, and it already
+> contains all of the USB work, itself verified on hardware:
+>
+> ```
+> git checkout c25c017          # inspect it
+> git revert 9a5f535            # or drop just this change on a branch
+> ```
+
 - **Input report rate is capped at 66 Hz (15 ms).** As central, the controller refuses to
   *initiate* any connection interval below 15 ms, returning HCI `0x12` — measured identically
   on the ESP32-C3 and the ESP32-S3, which share the same controller library, so this is a
@@ -443,11 +479,12 @@ To exercise the HID descriptor without a keyboard and mouse, enable
   patch, so the diff has to be rewritten rather than moved.
 - ESP32-C3 has no USB-OTG, so a USB (rather than Bluetooth) XInput device is not possible on
   this chip.
-- **The USB pad reports at 250 Hz, not 1 kHz.** That is the IN endpoint's 4 ms interval, copied
-  byte-for-byte from a real Xbox 360 controller; **243 Hz measured** from the PC side. The input
-  side runs at ~750 Hz and the mapper accumulates deltas between ticks, so no motion is
-  discarded. Reaching that rate also needs `CONFIG_FREERTOS_HZ=1000` — at the default 100 Hz
-  tick the pad silently updates at 97 Hz instead.
+- **The USB pad runs at 1 kHz, and the update count you observe depends on how you move.**
+  Transport measured at **997 Hz** with a probe that forces a change every tick, **830 Hz** with
+  real mouse input during brisk movement, and 70 Hz when barely moving — the last one is correct
+  rather than broken, because a report only goes out when the state changes. Reaching that needed
+  `CONFIG_FREERTOS_HZ=1000` (at a 100 Hz tick a 1 ms period silently becomes 10 ms) and three
+  arithmetic fixes in the mapper, described in `AGENTS.md` §4.40.
 
 ## Diagnostics
 

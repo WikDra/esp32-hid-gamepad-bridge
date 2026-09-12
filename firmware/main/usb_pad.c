@@ -95,9 +95,11 @@ static const uint8_t s_config_desc[] = {
     0x08,                   /* its payload size */
     0x00, 0x00,
 
-    /* Endpoint IN: 32 B interrupt every 4 ms (250 Hz) */
+    /* Endpoint IN: 32 B interrupt. The real pad declares 4 ms (250 Hz); the interval is the one
+     * field we allow to differ, because 1 ms is the only way to get 1 kHz out of a Full Speed
+     * device and driver binding does not depend on it (APP_XINPUT_EP_INTERVAL_MS). */
     0x07, TUSB_DESC_ENDPOINT, XINPUT_EP_IN, TUSB_XFER_INTERRUPT,
-    U16_TO_U8S_LE(XINPUT_EP_SIZE), 0x04,
+    U16_TO_U8S_LE(XINPUT_EP_SIZE), CONFIG_APP_XINPUT_EP_INTERVAL_MS,
 
     /* Endpoint OUT: 32 B interrupt every 8 ms */
     0x07, TUSB_DESC_ENDPOINT, XINPUT_EP_OUT, TUSB_XFER_INTERRUPT,
@@ -663,8 +665,13 @@ esp_err_t usb_pad_start(void)
     }
 
     ESP_LOGI(TAG, "USB XInput pad up: VID 0x045E PID 0x028E (Xbox 360 wired)");
-    ESP_LOGI(TAG, "  config descriptor %u B, report %u B on EP 0x%02x every 4 ms",
-             (unsigned)sizeof(s_config_desc), XINPUT_IN_REPORT_LEN, XINPUT_EP_IN);
+    ESP_LOGI(TAG, "  config descriptor %u B, report %u B on EP 0x%02x every %d ms (%d Hz)",
+             (unsigned)sizeof(s_config_desc), XINPUT_IN_REPORT_LEN, XINPUT_EP_IN,
+             CONFIG_APP_XINPUT_EP_INTERVAL_MS, 1000 / CONFIG_APP_XINPUT_EP_INTERVAL_MS);
+#if CONFIG_APP_XINPUT_EP_INTERVAL_MS != 4
+    ESP_LOGW(TAG, "  endpoint interval deviates from the real pad's 4 ms - deliberate, but it is "
+                  "the one field where this descriptor is no longer byte-for-byte");
+#endif
 #if CONFIG_APP_USB_PASSTHROUGH
     ESP_LOGI(TAG, "  passthrough identity available: VID 0x303A PID 0x4004 (HID kbd+mouse), "
                   "hotkey Ctrl+Alt+0x%02x on the input chip",

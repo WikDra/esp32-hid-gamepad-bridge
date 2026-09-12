@@ -1925,6 +1925,92 @@ Przy okazji: `scripts/check_local_esp_hid.py` patrzy tylko w `build.esp32c3` i
 weszła do builda.
 
 
+### 4.40 Pad USB na 1 kHz: co naprawdę ograniczało tempo (branch `usb-1khz`)
+
+Pytanie brzmiało „czy da się 1 kHz". Odpowiedź: **da się, transport robi 997 Hz, a z realną myszą
+wychodzi 830 Hz** — ale zysk przyszedł z arytmetyki w mapperze, nie z podniesienia interwału USB.
+Po drodze wyszły trzy błędy i jedna lekcja metodyczna, którą złamałem trzy razy.
+
+#### 8 kHz jest fizycznie nieosiągalne, 1 kHz to sufit
+
+USB-OTG w ESP32-S3 to **Full Speed**, gdzie najkrótszy interwał endpointu interrupt wynosi 1 ms.
+8 kHz, które deklaruje mysz, wymaga High Speed z mikroramkami 125 µs. Więc 1 kHz jest zarazem
+celem i granicą, niezależnie od tego, co potrafi urządzenie wejściowe.
+
+#### Trzy błędy, wszystkie w przeliczaniu, żaden w USB
+
+**1. Stała czasowa filtra i czułość były wyrażone w TIKACH, nie w czasie.** `EMA_SHIFT 3` znaczyło
+8 tików, a pełne wychylenie `div * 4` zliczeń **na tik**. Podniesienie tiku z 100 Hz na 1000 Hz
+zmieniłoby więc filtr z 80 ms na 8 ms i czułość dziesięciokrotnie — a zmiana na 250 Hz, zrobiona
+kilka godzin wcześniej, już po cichu przestawiła jedno i drugie 2,5×. Oba parametry są teraz
+wyrażone w czasie (`MOUSE_TAU_MS`, zliczenia na **sekundę**) i wyliczane z tempa przy kompilacji,
+więc przy 100 Hz dają dokładnie te same liczby co wersja dobrana ręcznie w §4.22.
+
+**2. `EMA_FRAC` 256 było za małe przy dużej liczbie tików.** Krok filtra to
+`(sample * EMA_FRAC - ema) / EMA_TICKS` w arytmetyce całkowitej, więc gdy różnica spadnie poniżej
+`EMA_TICKS`, przyrost obcina się do zera i **filtr utyka**. Przy 1 kHz stała czasowa to 80 tików,
+czyli zostawały trzy jednostki zapasu i powolny ruch przestawał się liczyć. Teraz 4096.
+
+**3. Najważniejszy: `ema_step()` zwracał CAŁKOWITE zliczenia na tik.** Przy 1 kHz średni przyrost
+to około jedno zliczenie, więc po obcięciu zostawały trzy poziomy — 0, 1, 2 — a potem mnożone
+przez `127/9`. Cała rozdzielczość ginęła przed dojściem do osi. Ścieżka do osi liczy się teraz
+w jednym wyrażeniu w `int64`, bez pośrednich obcięć.
+
+Zmierzone skutki, przy tym samym rodzaju ruchu:
+
+| Konfiguracja | Zmierzone |
+|---|---|
+| 1 ms / 1000 Hz, `EMA_FRAC` 256, obcinanie | 124 Hz |
+| 1 ms / 1000 Hz, `EMA_FRAC` 4096, obcinanie | 144 Hz |
+| 1 ms / 1000 Hz, bez obcinania | **466 Hz** |
+
+#### Co jest ustalone bezspornie, a co tylko poglądowo
+
+**Bezspornie**, bo pomiar nie zależy od ręki: `APP_DEBUG_PAD_RATE_PROBE` wymusza inny raport
+w każdym tiku i daje **997 Hz**. Czyli endpoint 1 ms, zadanie 1000 Hz i `xusb22` przenoszą
+praktycznie równy tysiąc pakietów na sekundę. Osobno, z arytmetyki: opóźnienie dodane przez
+mostek spada z ≤8 ms (4 ms okres zadania + 4 ms odpytywanie) na **≤2 ms**.
+
+**Poglądowo**, bo zależy od ruchu ręki: z realną myszą wyszło 830 Hz przy energicznym ruchu
+i 70 Hz przy powolnym. Niska liczba przy powolnym ruchu **nie jest usterką** — filtr z założenia
+utrzymuje stałe wychylenie przy stałej prędkości, a raport idzie tylko na zmianie stanu, więc
+brak zmian znaczy „nie ma czego wysyłać".
+
+Hipoteza, którą postawiłem i którą pomiar **odrzucił**: że 8-bitowe osie (127 kroków) ograniczają
+tempo, bo powolniejsza gałka przechodzi mniej granic kroku. Przy energicznym ruchu i mniejszej
+czułości wyszło 830 Hz, czyli 83 % sufitu — wartość zmienia się prawie w każdym tiku i tak.
+Poszerzenie osi do `int16` nie jest więc potrzebne dla tempa; zostaje jako ewentualna poprawa
+**precyzji** przy małych wychyleniach, gdzie kroków jest mało.
+
+#### Lekcja metodyczna: trzy razy porównałem przebiegi o różnym ruchu ręki
+
+Liczby 243, 153, 144, 466, 70 i 830 Hz zbierałem przy różnym machaniu myszą i trzy razy
+wyciągnąłem z nich wniosek, którego nie wolno było wyciągnąć. Za każdym razem korekta przyszła
+od właściciela: „machałem mniej", „ruszałem powoli". Miernik zależny od operatora nie służy do
+porównywania konfiguracji — do tego jest przyrząd wymuszający zmianę stanu, i dopiero on dał
+liczbę, na której można stać.
+
+To czwarty raz w tym projekcie, gdy narzędzie pomiarowe kłamało spójnie i dlatego wiarygodnie:
+po `APP_DEBUG_SCAN_ONLY`, drabince interwałów z §4.33 i trybie `--watch`, który sam siebie
+ograniczał do 100 Hz.
+
+#### Czułość trzeba było zmniejszyć, i to nie jest przypadek
+
+Po usunięciu obcinania gałka dobijała do maksimum przy szarpnięciu myszą, bo pełne wychylenie
+przy `div=24` to 9 600 zliczeń na sekundę — jeden ruch nadgarstkiem na myszy o dużym DPI.
+`sdkconfig.defaults.s3pad` ustawia `APP_MOUSE_SCALE_DIV=64`, czyli 25 600 zliczeń/s; właściciel
+potwierdził, że wtedy „nie dobija od razu do full wychylenia". Zakres opcji poszerzony do 512, bo
+użyteczna wartość zależy od DPI myszy, czego firmware nie zna. Domyślna wartość dla builda BLE
+zostaje 24 — tam tempo to 100 Hz i nic się nie zmieniło.
+
+#### Stan weryfikacji
+
+Zmierzone na sprzęcie: transport 997 Hz, realna mysz 830 Hz, czułość oceniona przez właściciela.
+**Nie zweryfikowane:** wariant BLE po tych zmianach. `input_mapper.c` jest wspólny, a przy 100 Hz
+nominalna czułość i stała czasowa wychodzą identyczne jak przed zmianą — ale rozdzielczość jest
+teraz pełna, więc drobne ruchy będą się liczyć wyraźniej niż dotąd. Przed scaleniem do `main`
+warto przejechać jeden przebieg na C3.
+
 ### 4.39 Passthrough na skrót: dwie tożsamości USB, nie jedno urządzenie złożone
 
 Skrót `Ctrl+Alt+G` przełącza układ pada między padem XInput a zwykłą klawiaturą i myszą HID,
