@@ -1974,6 +1974,11 @@ czyli dokładnie kształtem błędu z §4.38.
 leżeć, bo skrót przychodzi łączem **do tego właśnie układu** — bez urządzenia na szynie nie
 byłoby czym poprosić o powrót.
 
+Kontrola regresji po obiegu: pad zmierzony **236 Hz** po powrocie z passthrough, wobec 243 Hz na
+świeżo uruchomionym układzie. Różnica mieści się w tym, ile tików miało realną zmianę stanu przy
+ręcznym ruchu myszą, więc re-enumeracja nie degraduje tempa. Warto było to sprawdzić, bo zadanie
+mappera przeżywa przełączenie, ale endpoint jest po nim nowy.
+
 #### Pułapka budowania: nowa opcja Kconfig nie wchodzi do istniejącego `sdkconfig` wariantu
 
 Kosztowała jeden cichy zły build i jest groźniejsza niż sama funkcja. Po dodaniu
