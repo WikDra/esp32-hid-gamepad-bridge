@@ -31,7 +31,8 @@
 #if CONFIG_APP_ENABLE_GAMEPAD
 #include "ble_gamepad.h"
 #endif
-#if CONFIG_APP_ENABLE_HID_HOST && CONFIG_APP_ENABLE_GAMEPAD && !CONFIG_APP_GAMEPAD_SELFTEST
+#if !CONFIG_APP_GAMEPAD_SELFTEST && \
+    ((CONFIG_APP_ENABLE_HID_HOST && CONFIG_APP_ENABLE_GAMEPAD) || CONFIG_APP_USB_PAD)
 #include "input_mapper.h"
 #endif
 #if CONFIG_APP_ROLE_FAKE_KEYBOARD
@@ -168,9 +169,19 @@ void app_main(void)
     ESP_ERROR_CHECK(ble_gamepad_start());
 #endif
 
-#if CONFIG_APP_ENABLE_HID_HOST && CONFIG_APP_ENABLE_GAMEPAD && !CONFIG_APP_GAMEPAD_SELFTEST
-    /* The glue between the roles. With the selftest enabled the pad drives a test
-     * pattern, so the mapper would fight it over the same report. */
+/*
+ * The glue between input and pad. The condition must MIRROR the one in main/CMakeLists.txt
+ * that decides whether input_mapper.c is compiled at all - and until this was measured on
+ * hardware it did not: the file was built for APP_USB_PAD but the start below demanded the
+ * two BLE roles, so on the USB pad chip the mapper existed and never ran. Symptom: the pad
+ * enumerates, XInput sees it in slot 0, rumble works, and the sticks never move, because
+ * nothing turns input state into reports.
+ *
+ * With the selftest enabled the pad drives a test pattern, so the mapper would fight it
+ * over the same report.
+ */
+#if !CONFIG_APP_GAMEPAD_SELFTEST && \
+    ((CONFIG_APP_ENABLE_HID_HOST && CONFIG_APP_ENABLE_GAMEPAD) || CONFIG_APP_USB_PAD)
     ESP_ERROR_CHECK(input_mapper_start());
 #elif CONFIG_APP_GAMEPAD_SELFTEST
     ESP_LOGW(TAG, "pad selftest enabled - input mapping is INACTIVE");

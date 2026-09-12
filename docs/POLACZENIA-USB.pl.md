@@ -488,23 +488,32 @@ mapowania wspólną z wersją BLE (`README.pl.md`, sekcja o mapowaniu).
 
 ## 8. Stan weryfikacji
 
-**Kroki 1 i 2 zaliczone na sprzęcie.** Pad zgłasza się jako `USB\VID_045E&PID_028E\08FEC93`,
-Windows podpina **`Service=xusb22`** i nazywa go „Kontroler konsoli Xbox 360 dla systemu
-Windows”, `XInputGetState` widzi go w **slocie 0**, a `XInputSetState` dociera do urządzenia —
-trzy różne pary wartości dały trzy zgodne linie `rumble from host` w logu. Czyli pytanie, czy
-Windows zwiąże XUSB przy jednym zadeklarowanym interfejsie zamiast czterech, jest
-**rozstrzygnięte twierdząco**, a przy okazji potwierdzona jest ścieżka endpointu OUT. Konsola po
-CP2102 działa, heap 371 088 B niezmienny.
+**Kroki 1–4 zaliczone na sprzęcie, krok 5 częściowo.**
 
-Zostało do przejechania: **kroki 3–5** — host USB z dongle'ami, drut i całość.
+| Co | Dowód |
+|---|---|
+| pad wiązany przez XInput | `USB\VID_045E&PID_028E\08FEC93` → `Service=xusb22`, slot 0 `CONNECTED` |
+| ścieżka host → urządzenie | trzy różne pary wartości `XInputSetState` → trzy zgodne `rumble from host` |
+| host USB + hub + dongle | `usb ifaces 4 (kbd=1 mouse=1)`, `KBD report len=8`, `MOU report len=7` |
+| łącze UART | `sent 19884 frames (dropped 0)` |
+| **mysz → prawy analog** | 977 zmian stanu w 18 s, z gładkim opadaniem do `R=(0,0)` |
+| **WASD → lewy analog** | `w` → `L=(0,32767)`, `a` → `L=(-32767,0)` |
+| stabilność | heap płytki wejść 347 404 B (min 346 116 B) przez ~24 min |
+
+Zostały **przyciski i krzyżak**: kliknięcia myszy jako spusty (`LT`/`RT`, nie bity w `buttons`),
+Spacja/Tab/Esc jako przyciski, strzałki jako hat switch.
 
 Rozstrzygnięte pomiarem i **nie** wymagające już sprawdzania:
 
-- **VBUS gniazda USB-C** — jest 5 V, gdy płytka jest zasilona z pinu `5V` (§4). Host poda
-  urządzeniom zasilanie, przejściówka OTG od Pixela 7 je przepuszcza.
-- **Poziom logiczny przejściówki** — ten moduł CP2102 ma RX, TX i DTR na 3,3 V zgodnie ze
-  specyfikacją producenta, więc nie ma ryzyka przekroczenia maksimum na wejściach ESP32-S3.
-- **Interfejsy dongle'i** — oba wystawiają boot keyboard i boot mouse, odczytane z drzewa
-  urządzeń Windows (§7 krok 3). Razem pięć interfejsów HID.
-- **Cykl wgrywania** — `BOOT+RESET → wgranie → RESET`, bo `Hard resetting via RTS pin` nie
-  wyprowadza tej płytki z trybu download (§5).
+- **VBUS gniazda USB-C** — jest 5 V, gdy płytka jest zasilona z pinu `5V` (§4).
+- **Poziom logiczny przejściówki** — RX, TX i DTR na 3,3 V ze specyfikacji modułu.
+- **Interfejsy dongle'i** — oba wystawiają boot keyboard i boot mouse, pięć interfejsów razem.
+- **Cykl wgrywania** — `BOOT+RESET → wgranie → RESET` (§5). Wgrywanie po UART przez CP2102 też
+  działa, sprawdzone na płytce wejść, której USB-C zajmuje hub.
+
+**Uwaga do testowania, żeby nie wyciągnąć złego wniosku.** Windows Terminal **reaguje na pada**:
+wychylenie lewej gałki działa w nim jak strzałki (sprawdzone prawdziwym padem Xbox Series X).
+Skoro mostek mapuje WASD na lewą gałkę, naciśnięcie `W` poruszy kursorem w Terminalu — i wygląda
+to dokładnie tak, jakby klawiatura nadal należała do Windows, a mostek nic nie przekazywał. Jest
+odwrotnie: to dowód, że łańcuch działa. Nie oceniaj po Terminalu; rozstrzygają dwa logi czytane
+jednocześnie albo `XInputGetState`.

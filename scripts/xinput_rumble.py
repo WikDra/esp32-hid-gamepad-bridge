@@ -1,6 +1,7 @@
 """Reads an XInput pad and makes it rumble - the decisive test for the USB pad.
 
-    python scripts\\xinput_rumble.py [slot]
+    python scripts\\xinput_rumble.py [slot]              rumble test
+    python scripts\\xinput_rumble.py --watch [s] [slot]   live state, end-to-end test
 
 WHY THIS EXISTS. Two questions about the USB pad cannot be answered by looking at the device
 tree. Whether Windows BOUND the XInput driver is visible there (Service=xusb22), but whether
@@ -87,7 +88,16 @@ def rumble(slot, left, right):
     return rc
 
 
-wanted = int(sys.argv[1]) if len(sys.argv) > 1 else None
+wanted = None
+watch_secs = 0.0
+args = sys.argv[1:]
+if args and args[0] == "--watch":
+    watch_secs = float(args[1]) if len(args) > 1 else 15.0
+    if len(args) > 2:
+        wanted = int(args[2])
+elif args:
+    wanted = int(args[0])
+
 slots = [wanted] if wanted is not None else [0, 1, 2, 3]
 
 found = []
@@ -107,6 +117,33 @@ if not found:
     sys.exit(2)
 
 slot = found[0]
+
+if watch_secs:
+    # Watch mode is the end-to-end test for the whole bridge, taken from the side that
+    # matters: this is the same API a game reads. It needs no console on the pad chip, so
+    # the single USB-UART adapter can stay on the input chip while this runs.
+    #
+    # Only changes are printed, keyed on dwPacketNumber - XInput bumps it whenever the state
+    # differs, so a still pad produces no output and a moving one produces a readable trace
+    # rather than a wall of identical lines.
+    print(f"\n--- watching slot {slot} for {watch_secs:.0f}s; move the mouse, press keys ---",
+          flush=True)
+    last_packet = None
+    end = time.time() + watch_secs
+    changes = 0
+    while time.time() < end:
+        rc, st = read_slot(slot)
+        if rc != ERROR_SUCCESS:
+            print("  device went away", flush=True)
+            break
+        if st.dwPacketNumber != last_packet:
+            last_packet = st.dwPacketNumber
+            changes += 1
+            print(f"  [{changes:4d}] {describe(st)}", flush=True)
+        time.sleep(0.01)
+    print(f"\n{changes} state changes in {watch_secs:.0f}s", flush=True)
+    sys.exit(0)
+
 print(f"\n--- rumbling slot {slot}; watch the device log for 'rumble from host' ---", flush=True)
 
 # Left only, right only, then both at a middling level. Distinct values on purpose.

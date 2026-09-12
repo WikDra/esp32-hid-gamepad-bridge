@@ -107,6 +107,9 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | Płytka użyta do tego testu | ESP32-S3 (QFN56) rev v0.2, 4 MB flash (XMC), **2 MB PSRAM quad** (AP_3v3), MAC `90:da:72:49:a3:28`. Odczytane przez `esptool chip-id`; PSRAM nie jest w tym projekcie włączane |
 | **Rozstrzygający dowód dla pada USB: XInput z nami rozmawia w obie strony** | `XInputGetState` widzi go w **slocie 0** (`CONNECTED`), a `XInputSetState` dociera do urządzenia: `0xffff,0x0000` → `rumble from host: left=255 right=0`, `0x0000,0xffff` → `left=0 right=255`, `0x4000,0x4000` → `left=64 right=64`, zerowanie → `left=0 right=0`. Trzy **różne** wartości i trzy zgodne linie w tej samej kolejności, ze skalowaniem 16→8 bitów zgodnym z przewidywaniem. Dowodzi wiązania sterownika, obecności w slocie XInput **oraz** działania endpointu OUT (`scripts/xinput_rumble.py`) |
 
+| **Wersja USB: cały łańcuch na dwóch S3 SuperMini** | mierzone z dwóch stron jednocześnie. Płytka wejść: `usb ifaces 4 (kbd=1 mouse=1)`, `KBD report len=8 [00 00 1a 00]` (0x1a = `w`), `MOU report len=7 [00 ff ff 07]`, `link: sent 19884 frames (dropped 0)`. Pad w PC przez `XInputGetState`: `L=(0,32767)` po `w`, `L=(-32767,0)` po `a`, a ruch myszą daje **977 zmian stanu w 18 s** z gładkim opadaniem `R=(516,0) → (258,0) → (0,0)`, czyli filtrem z §4.22. W systemie **jeden** kontroler XInput, slot 0, więc pomiar nie może dotyczyć innego urządzenia |
+| Hub i dongle na sprzęcie | zasilany hub USB 3.0 z dwoma dongle'ami 2,4 GHz obsłużony poprawnie; heap płytki wejść `347 404 B (min 346 116 B)` stabilny przez ~24 min |
+
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
 
 | Ustalenie | Źródło |
@@ -1581,10 +1584,16 @@ odniesienia: na C3 komponenty USB nie są nawet zaciągane (reguły `rules:` w
    `0x4000,0x4000` → `left=64 right=64`; zerowanie → `left=0 right=0`. Skalowanie 16→8 bitów
    zgodne z przewidywaniem. Polecenia wibracji wysyła **wyłącznie** sterownik pada, więc to
    dowodzi zarazem wiązania sterownika, obecności w slocie XInput i działania endpointu OUT.
-3. **Sam host, bez pada.** Wgrać `s3input`, podłączyć **zasilany hub** z dwoma dongle'ami
-   2,4 GHz (interfejsy boot potwierdzone w §4.38). W logu: `USB host up`,
-   `external hubs: supported (multi-level)`, potem `HID connected` po jednym na **każdy
-   interfejs** i `KBD`/`MOU report len=…` przy używaniu.
+3. ~~**Sam host, bez pada.**~~ **PRZEJECHANE.** `s3input` z zasilanym hubem i dwoma dongle'ami
+   2,4 GHz: `usb ifaces 4 (kbd=1 mouse=1)`, `KBD report len=8 [00 00 1a 00]`,
+   `MOU report len=7 [00 ff ff 07]`, heap 347 404 B stabilny. Interfejsy boot potwierdzone
+   wcześniej z drzewa urządzeń Windows (§4.38).
+4. ~~**Drut.**~~ **PRZEJECHANE.** `s3input` TX = GPIO4 → `s3pad` RX = GPIO5, wspólna masa; piny
+   podane jawnie w wariantach, bo domyślne z Kconfig opisują płytkę BR (§4.38). Nadajnik
+   raportuje `sent 19884 frames (dropped 0)`, a dowodem na drugi koniec są ruszające się osie
+   pada. Rozpiska: [`docs/POLACZENIA-USB.pl.md`](docs/POLACZENIA-USB.pl.md).
+5. **Całość.** Ruch myszy → prawa gałka i WASD → lewa **potwierdzone** (`L=(0,32767)` po `w`,
+   `L=(-32767,0)` po `a`, 977 zmian stanu przy kręceniu myszą). Zostają przyciski i krzyżak.
 4. **Drut.** Połączyć UART: TX hosta → RX pada, wspólna masa. Piny są już ustawione jawnie
    w obu wariantach (`s3input` TX = GPIO4, `s3pad` RX = GPIO5, czyli piny z listwy
    18-pinowej) — patrz §4.38 i [`docs/POLACZENIA-USB.pl.md`](docs/POLACZENIA-USB.pl.md).
@@ -1811,6 +1820,58 @@ interfejsy klawiatury i myszy. Stan klawiatury jest absolutny i nadpisywany, wi�
 z interfejsu klawiatury *myszy* może na chwilę zwolnić trzymany klawisz. Bezczynny interfejs HID
 nic nie nadaje, więc w praktyce może to nigdy nie wystąpić — ale to jest objaw do wypatrywania,
 a nie do szukania potem w mapperze.
+
+#### Najważniejszy błąd tego uruchomienia: mapper na padzie USB nigdy nie startował
+
+Objaw był mylący, bo **wszystko po drodze działało**: pad się wyliczał, Windows wiązał `xusb22`,
+`XInputGetState` widział go w slocie 0, wibracje z hosta dochodziły, płytka wejść czytała
+klawiaturę i mysz i raportowała `sent N frames (dropped 0)`. A osie i przyciski pada stały
+w zerze.
+
+Przyczyna: warunek startu w `app_main.c` **nie odzwierciedlał** warunku kompilacji
+w `main/CMakeLists.txt`.
+
+```
+CMakeLists.txt:  (APP_ENABLE_HID_HOST AND APP_ENABLE_GAMEPAD) OR APP_USB_PAD   -> kompiluj
+app_main.c:       APP_ENABLE_HID_HOST && APP_ENABLE_GAMEPAD                    -> startuj
+```
+
+Czyli w wariancie `s3pad`, gdzie obie role BLE są wyłączone, `input_mapper.c` był kompilowany,
+ale `input_mapper_start()` nigdy nie było wołane — nie istniało zadanie, które zamienia stan
+wejść na raporty pada. Warunek jest teraz wspólny dla obu miejsc; przy okazji trzeba było
+poprawić także warunek `#include "input_mapper.h"`, bo bez prototypu build w `gnu23` jest
+błędem, a nie ostrzeżeniem.
+
+Potwierdzenie, że poprawka trafia w sedno, jest widoczne w rozmiarze binarki: `s3pad` urósł
+z `0x3a4e0` na `0x3ad00`, czyli o ~2 kB. Przy `-ffunction-sections` i `--gc-sections` linker
+wyrzucał wcześniej cały mapper jako nieosiągalny — to jest ta różnica.
+
+Wniosek do zapamiętania: **dwa warunki opisujące to samo są jednym błędem czekającym na
+okazję.** Tu okazją było pierwsze uruchomienie na sprzęcie, bo build nie miał jak tego wykryć —
+kod się kompilował, linkował i uruchamiał, tylko jedna funkcja nie była wołana. Gdyby
+`input_mapper_start()` było wołane bezwarunkowo z pustą implementacją dla nieużywanych
+konfiguracji, kompilator złapałby niezgodność sam.
+
+#### Pułapka: Windows Terminal traktuje lewą gałkę pada jak strzałki
+
+Warto to wiedzieć, zanim się na tym zbuduje wniosek. **Windows Terminal reaguje na pada:
+wychylenie lewej gałki działa w nim jak klawisze strzałek** — sprawdzone przez właściciela
+prawdziwym padem Xbox Series X, niezależnie od naszego mostka.
+
+Konsekwencja dla testów tego projektu jest zwodnicza. Mostek mapuje WASD na lewą gałkę, więc
+naciśnięcie `W` na klawiaturze obsługiwanej przez ESP **poruszy kursorem w Terminalu** — a to
+wygląda dokładnie tak, jakby klawiatura nadal należała do Windows i nic przez mostek nie
+przechodziło. Jest odwrotnie: to dowód, że cały łańcuch działa.
+
+Praktyczna reguła: **nie oceniaj po Terminalu, kto obsługuje klawiaturę.** Rozstrzygają dwa
+logi czytane jednocześnie albo `XInputGetState`. U nas rozstrzygnęło pierwsze: w chwili, gdy
+w konsoli płytki wejść pojawiło się `KBD report len=8 [00 00 1a 00]` (0x1a = `w`), pad w PC
+pokazał `L=(0,32767)`.
+
+Pierwszy przebieg testu end-to-end pokazał przy okazji ruch prawego analoga i zero na lewym,
+czego przyczyny nie ustaliliśmy — w drugim przebiegu, z tą samą konfiguracją, lewy analog
+wychylał się poprawnie. Odnotowane jako nierozstrzygnięte, żeby nie wpisywać domysłu w miejsce
+pomiaru.
 
 #### Otwarta decyzja: nasza kopia `esp_hid` przysłania naprawioną wersję z 6.1
 
