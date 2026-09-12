@@ -1,7 +1,8 @@
 # esp32-hid-gamepad-bridge
 
-A BLE bridge on an ESP32: **your Bluetooth keyboard and mouse become an Xbox controller
-that Windows exposes through XInput.**
+A bridge on an ESP32: **your keyboard and mouse become an Xbox controller that Windows exposes
+through XInput.** Two transports, both verified on hardware — over Bluetooth LE, or over USB
+with no pairing at all.
 
 ```
 BLE HID keyboard ─┐
@@ -13,6 +14,10 @@ One chip holds **three simultaneous BLE links**: two as central (receiving repor
 keyboard and the mouse) and one as peripheral (presenting the gamepad to the PC). Keystrokes
 and mouse motion are mapped onto sticks, triggers, a D-pad and buttons, so from the PC's
 point of view there is a single game controller.
+
+The USB variant swaps both radios for wires and presents a **wired Xbox 360 controller**
+instead, so it needs no pairing and works in firmware setup screens — see
+*Optional: USB instead of Bluetooth*.
 
 *Polish version of this document: [`README.pl.md`](README.pl.md). Engineering notes, findings
 and traps: [`AGENTS.md`](AGENTS.md).*

@@ -1,6 +1,8 @@
 # esp32-hid-gamepad-bridge
 
-Mostek BLE na ESP32: **klawiatura i mysz Bluetooth → pad (BLE HID Gamepad) widziany przez PC**.
+Mostek na ESP32: **klawiatura i mysz stają się padem Xbox, którego Windows udostępnia przez
+XInput**. Dwa transporty, oba zweryfikowane na sprzęcie — po Bluetooth LE albo po USB, bez
+żadnego parowania.
 
 ```
 AULA F99 Pro    (BLE HID keyboard) ─┐
