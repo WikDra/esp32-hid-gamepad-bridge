@@ -488,7 +488,7 @@ mapowania wspólną z wersją BLE (`README.pl.md`, sekcja o mapowaniu).
 
 ## 8. Stan weryfikacji
 
-**Kroki 1–4 zaliczone na sprzęcie, krok 5 częściowo.**
+**Wszystkie pięć kroków zaliczone.** Mostek USB działa end-to-end.
 
 | Co | Dowód |
 |---|---|
@@ -496,12 +496,10 @@ mapowania wspólną z wersją BLE (`README.pl.md`, sekcja o mapowaniu).
 | ścieżka host → urządzenie | trzy różne pary wartości `XInputSetState` → trzy zgodne `rumble from host` |
 | host USB + hub + dongle | `usb ifaces 4 (kbd=1 mouse=1)`, `KBD report len=8`, `MOU report len=7` |
 | łącze UART | `sent 19884 frames (dropped 0)` |
-| **mysz → prawy analog** | 977 zmian stanu w 18 s, z gładkim opadaniem do `R=(0,0)` |
-| **WASD → lewy analog** | `w` → `L=(0,32767)`, `a` → `L=(-32767,0)` |
+| mysz → prawy analog | 977 zmian stanu w 18 s, z gładkim opadaniem do `R=(0,0)` |
+| WASD → lewy analog | `w` → `L=(0,32767)`, `a` → `L=(-32767,0)` |
+| **przyciski, spusty, krzyżak** | potwierdzenie właściciela: **test kontrolera w Steam pokazuje wszystko poprawnie** |
 | stabilność | heap płytki wejść 347 404 B (min 346 116 B) przez ~24 min |
-
-Zostały **przyciski i krzyżak**: kliknięcia myszy jako spusty (`LT`/`RT`, nie bity w `buttons`),
-Spacja/Tab/Esc jako przyciski, strzałki jako hat switch.
 
 Rozstrzygnięte pomiarem i **nie** wymagające już sprawdzania:
 

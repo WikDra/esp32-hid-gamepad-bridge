@@ -109,6 +109,7 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 
 | **Wersja USB: cały łańcuch na dwóch S3 SuperMini** | mierzone z dwóch stron jednocześnie. Płytka wejść: `usb ifaces 4 (kbd=1 mouse=1)`, `KBD report len=8 [00 00 1a 00]` (0x1a = `w`), `MOU report len=7 [00 ff ff 07]`, `link: sent 19884 frames (dropped 0)`. Pad w PC przez `XInputGetState`: `L=(0,32767)` po `w`, `L=(-32767,0)` po `a`, a ruch myszą daje **977 zmian stanu w 18 s** z gładkim opadaniem `R=(516,0) → (258,0) → (0,0)`, czyli filtrem z §4.22. W systemie **jeden** kontroler XInput, slot 0, więc pomiar nie może dotyczyć innego urządzenia |
 | Hub i dongle na sprzęcie | zasilany hub USB 3.0 z dwoma dongle'ami 2,4 GHz obsłużony poprawnie; heap płytki wejść `347 404 B (min 346 116 B)` stabilny przez ~24 min |
+| **Wersja USB domknięta: test pada w Steam przechodzi w całości** | potwierdzenie właściciela (nie log): **test kontrolera w Steam pokazuje wszystko poprawnie** — osie, spusty, przyciski i krzyżak. To zamyka krok 5 planu z §4.37, czyli cały plan. Tym samym mostek działa w dwóch niezależnych wariantach transportu: BLE (§4.31, §4.32) i USB |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
 
@@ -1592,8 +1593,10 @@ odniesienia: na C3 komponenty USB nie są nawet zaciągane (reguły `rules:` w
    podane jawnie w wariantach, bo domyślne z Kconfig opisują płytkę BR (§4.38). Nadajnik
    raportuje `sent 19884 frames (dropped 0)`, a dowodem na drugi koniec są ruszające się osie
    pada. Rozpiska: [`docs/POLACZENIA-USB.pl.md`](docs/POLACZENIA-USB.pl.md).
-5. **Całość.** Ruch myszy → prawa gałka i WASD → lewa **potwierdzone** (`L=(0,32767)` po `w`,
-   `L=(-32767,0)` po `a`, 977 zmian stanu przy kręceniu myszą). Zostają przyciski i krzyżak.
+5. ~~**Całość.**~~ **PRZEJECHANE.** Ruch myszy → prawa gałka i WASD → lewa zmierzone
+   (`L=(0,32767)` po `w`, `L=(-32767,0)` po `a`, 977 zmian stanu przy kręceniu myszą), a resztę
+   domyka potwierdzenie właściciela: **test kontrolera w Steam pokazuje wszystko poprawnie** —
+   osie, spusty, przyciski i krzyżak. Cały plan zamknięty.
 4. **Drut.** Połączyć UART: TX hosta → RX pada, wspólna masa. Piny są już ustawione jawnie
    w obu wariantach (`s3input` TX = GPIO4, `s3pad` RX = GPIO5, czyli piny z listwy
    18-pinowej) — patrz §4.38 i [`docs/POLACZENIA-USB.pl.md`](docs/POLACZENIA-USB.pl.md).
