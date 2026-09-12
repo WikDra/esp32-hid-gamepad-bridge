@@ -105,6 +105,7 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | **XInput na scalonym `main`** | właściciel potwierdził, że **test pada w Steam pokazuje wejścia poprawnie** — czyli po scaleniu 29 commitów ze śledztwa §4.35 profil Xbox nadal działa i nic w deskryptorze ani w tożsamości nie ucierpiało |
 | **Wersja USB: pad XInput na ESP32-S3 SuperMini związany przez Windows** | `USB\VID_045E&PID_028E\08FEC93` → **`Service=xusb22`**, nazwa „Kontroler konsoli Xbox 360 dla systemu Windows”. `xusb22` to sterownik XInput, więc **Windows wiąże XUSB przy JEDNYM zadeklarowanym interfejsie** — to była jedyna otwarta niewiadoma §4.37 i jest zamknięta. Firmware w logu: `pad ready`, `heap 371 088 B` przez 6 min bez zmiany |
 | Płytka użyta do tego testu | ESP32-S3 (QFN56) rev v0.2, 4 MB flash (XMC), **2 MB PSRAM quad** (AP_3v3), MAC `90:da:72:49:a3:28`. Odczytane przez `esptool chip-id`; PSRAM nie jest w tym projekcie włączane |
+| **Rozstrzygający dowód dla pada USB: XInput z nami rozmawia w obie strony** | `XInputGetState` widzi go w **slocie 0** (`CONNECTED`), a `XInputSetState` dociera do urządzenia: `0xffff,0x0000` → `rumble from host: left=255 right=0`, `0x0000,0xffff` → `left=0 right=255`, `0x4000,0x4000` → `left=64 right=64`, zerowanie → `left=0 right=0`. Trzy **różne** wartości i trzy zgodne linie w tej samej kolejności, ze skalowaniem 16→8 bitów zgodnym z przewidywaniem. Dowodzi wiązania sterownika, obecności w slocie XInput **oraz** działania endpointu OUT (`scripts/xinput_rumble.py`) |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
 
@@ -1569,16 +1570,21 @@ odniesienia: na C3 komponenty USB nie są nawet zaciągane (reguły `rules:` w
 
 #### Plan testu na sprzęcie
 
-1. **Sam pad, bez drugiego układu.** Wgrać `s3pad`, podłączyć do PC. W logu (UART!) ma być
-   `USB XInput pad up: VID 0x045E PID 0x028E`, a potem `XInput interface open`. W Windows:
-   `joy.cpl` ma pokazać kontroler, a `Get-PnpDevice` identyfikator `USB\VID_045E&PID_028E`.
-   Bez drugiego układu pad będzie nieruchomy — to normalne, wejść nie ma.
-2. **Rozstrzygający dowód XInput:** uruchomić cokolwiek, co wibruje padem. W logu ma pojawić
-   się `rumble from host: left=… right=…`. Polecenia wibracji wysyła **wyłącznie** sterownik
-   pada, nie generyczna obsługa HID — to ten sam test, który rozstrzygnął §4.32 dla BLE.
-3. **Sam host, bez pada.** Wgrać `s3input`, podłączyć **zasilany hub** z klawiaturą i myszą.
-   W logu: `USB host up`, `external hubs: supported (multi-level)`, potem `HID connected` po
-   jednym na każde urządzenie i `KBD`/`MOU report len=…` przy używaniu.
+1. ~~**Sam pad, bez drugiego układu.**~~ **PRZEJECHANE.** `s3pad` na ESP32-S3 SuperMini:
+   `USB\VID_045E&PID_028E\08FEC93` z `Service=xusb22`, w logu `pad ready`, heap 371 088 B
+   niezmienny. Bez drugiego układu pad jest nieruchomy — tak ma być, wejść nie ma.
+2. ~~**Rozstrzygający dowód XInput.**~~ **PRZEJECHANE, i mocniej niż planowano.** Zamiast
+   szukać gry, która wibruje, `scripts/xinput_rumble.py` woła XInput wprost: `XInputGetState`
+   pokazuje pada w **slocie 0**, a `XInputSetState` z trzema **różnymi** parami wartości daje
+   w logu trzy zgodne linie w tej samej kolejności:
+   `0xffff,0x0000` → `rumble from host: left=255 right=0`; `0x0000,0xffff` → `left=0 right=255`;
+   `0x4000,0x4000` → `left=64 right=64`; zerowanie → `left=0 right=0`. Skalowanie 16→8 bitów
+   zgodne z przewidywaniem. Polecenia wibracji wysyła **wyłącznie** sterownik pada, więc to
+   dowodzi zarazem wiązania sterownika, obecności w slocie XInput i działania endpointu OUT.
+3. **Sam host, bez pada.** Wgrać `s3input`, podłączyć **zasilany hub** z dwoma dongle'ami
+   2,4 GHz (interfejsy boot potwierdzone w §4.38). W logu: `USB host up`,
+   `external hubs: supported (multi-level)`, potem `HID connected` po jednym na **każdy
+   interfejs** i `KBD`/`MOU report len=…` przy używaniu.
 4. **Drut.** Połączyć UART: TX hosta → RX pada, wspólna masa. Piny są już ustawione jawnie
    w obu wariantach (`s3input` TX = GPIO4, `s3pad` RX = GPIO5, czyli piny z listwy
    18-pinowej) — patrz §4.38 i [`docs/POLACZENIA-USB.pl.md`](docs/POLACZENIA-USB.pl.md).
@@ -1764,6 +1770,13 @@ pętlę paniki i skierowało uwagę na GPIO0.
 TinyUSB, więc bootloader ROM-u przestaje być widoczny — kolejne wgranie wymaga BOOT+RESET.
 Objawia się to jako `Could not open COM4, the port is busy or doesn't exist` przy próbie
 ponownego flashowania, co brzmi jak awaria, a jest dowodem, że pad działa.
+
+**3b. `Hard resetting via RTS pin` po wgraniu NIE wyprowadza tej płytki z trybu download.**
+Zmierzone dwa razy: po `Hash of data verified` konsola milczy, `VID_045E&PID_028E` się nie
+pojawia, a `VID_303A&PID_1001` trwa — i `--before no-reset` łączy się, czyli układ siedzi
+w bootloaderze. Ani `esptool run`, ani impuls RTS przy DTR = 0 tego nie zmieniły; pomogło
+naciśnięcie RESET. Pełny cykl to więc **BOOT+RESET → wgranie → RESET**, i warto to wiedzieć,
+bo objaw jest nieodróżnialny od martwego firmware'u dopóki nie zrobi się testu z tabeli wyżej.
 
 **4. Heartbeat drukował dwie linie na tik.** Znalezione w pierwszym logu z płytki:
 

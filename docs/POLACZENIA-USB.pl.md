@@ -273,6 +273,21 @@ dopiero przy **kolejnych** wgraniach.
 scripts\flash-win.ps1 COM<port_plytki> esp32s3 s3pad
 ```
 
+**Po wgraniu stuknij RESET palcem — i to nie jest opcjonalne.** Zmierzone dwa razy na tej
+płytce: `Hard resetting via RTS pin`, którym esptool kończy wgrywanie, **nie wyprowadza układu
+z trybu download**. Objaw jest zwodniczy, bo wygląda jak martwy firmware: konsola milczy,
+`VID_045E&PID_028E` nie pojawia się, a `VID_303A&PID_1001` trwa niewzruszony. Rozstrzyga jedno
+polecenie — jeśli `esptool --before no-reset flash-id` **przechodzi**, układ siedzi
+w bootloaderze i po prostu nie wykonuje aplikacji:
+
+```powershell
+python -m esptool --chip esp32s3 --port COM4 --before no-reset flash-id
+```
+
+Programowe próby wyjścia z tego stanu (`esptool run`, impuls RTS przy DTR = 0) też nie
+zadziałały, więc nie ma sensu ich powtarzać. Cały cykl wygląda tak: **BOOT+RESET → wgranie →
+RESET**.
+
 **Przez CP2102 też można**, bo protokół pobierania ROM-u chodzi po sprzętowym UART0, czyli po
 tych samych pinach `TX`/`RX`, do których podłączona jest konsola. Ta sama sekwencja przycisków,
 plus przełącznik, który mówi esptoolowi, żeby nie próbował resetować układu:
@@ -395,14 +410,36 @@ XInput interface open: IN 0x81, OUT 0x01
 W Windows: `joy.cpl` ma pokazać kontroler, a `Get-PnpDevice` identyfikator
 `USB\VID_045E&PID_028E`. Pad będzie nieruchomy — wejść jeszcze nie ma, to normalne.
 
-**2. Dowód, że to naprawdę XInput.** Uruchom cokolwiek, co wibruje padem. W logu ma być:
+**2. Dowód, że to naprawdę XInput — bez żadnej gry.** `scripts\xinput_rumble.py` woła XInput
+wprost przez `XInput1_4.dll`:
+
+```powershell
+python scripts\xinput_rumble.py
+```
+
+Skrypt czyta cztery sloty przez `XInputGetState`, a potem wysyła trzy serie wibracji o **różnych**
+wartościach i zeruje. Wynik na tej płytce:
 
 ```
-rumble from host: left=… right=…
+slot 0: CONNECTED, buttons=0x0000 LT=0 RT=0 L=(0,0) R=(0,0)
+  left full   -> XInputSetState(0xffff, 0x0000) rc=0
+  right full  -> XInputSetState(0x0000, 0xffff) rc=0
+  both ~25%   -> XInputSetState(0x4000, 0x4000) rc=0
 ```
 
-Polecenia wibracji wysyła **wyłącznie** sterownik pada, nie generyczna obsługa HID. Ten sam
-test rozstrzygnął sprawę dla wersji BLE (`AGENTS.md` §4.32).
+a w konsoli płytki:
+
+```
+I (21280) usb_pad: rumble from host: left=255 right=0
+I (22770) usb_pad: rumble from host: left=0 right=255
+I (24280) usb_pad: rumble from host: left=64 right=64
+I (25770) usb_pad: rumble from host: left=0 right=0
+```
+
+Trzy różne wartości i trzy zgodne linie w tej samej kolejności, ze skalowaniem 16→8 bitów
+(`0xFFFF` → 255, `0x4000` → 64). Polecenia wibracji wysyła **wyłącznie** sterownik pada, nie
+generyczna obsługa HID, więc to jednocześnie dowód wiązania sterownika, obecności w slocie
+XInput i działania endpointu OUT. Osie i przyciski są zerowe, bo wejść jeszcze nie ma.
 
 **3. Sam host, bez pada.** Wgraj `s3input`, podłącz hub, a do huba **dwa dongle 2,4 GHz**
 (klawiatury i myszy), z podświetleniem urządzeń wyłączonym.
@@ -451,17 +488,15 @@ mapowania wspólną z wersją BLE (`README.pl.md`, sekcja o mapowaniu).
 
 ## 8. Stan weryfikacji
 
-**Krok 1 zaliczony na sprzęcie.** Wgrany `s3pad` zgłasza się jako
-`USB\VID_045E&PID_028E\08FEC93`, a Windows podpina do niego **`Service=xusb22`** i nazywa go
-„Kontroler konsoli Xbox 360 dla systemu Windows”. `xusb22` to sterownik XInput, więc pytanie,
-czy zwiąże się przy jednym zadeklarowanym interfejsie zamiast czterech, jest **rozstrzygnięte
-twierdząco**. Konsola po CP2102 działa, firmware raportuje `pad ready` i stabilny heap 371 kB.
+**Kroki 1 i 2 zaliczone na sprzęcie.** Pad zgłasza się jako `USB\VID_045E&PID_028E\08FEC93`,
+Windows podpina **`Service=xusb22`** i nazywa go „Kontroler konsoli Xbox 360 dla systemu
+Windows”, `XInputGetState` widzi go w **slocie 0**, a `XInputSetState` dociera do urządzenia —
+trzy różne pary wartości dały trzy zgodne linie `rumble from host` w logu. Czyli pytanie, czy
+Windows zwiąże XUSB przy jednym zadeklarowanym interfejsie zamiast czterech, jest
+**rozstrzygnięte twierdząco**, a przy okazji potwierdzona jest ścieżka endpointu OUT. Konsola po
+CP2102 działa, heap 371 088 B niezmienny.
 
-Zostało do przejechania:
-
-- **krok 2** — rumble z hosta (`rumble from host: …` w logu). To dodatkowo dowodzi, że działa
-  ścieżka endpointu OUT, nie tylko wiązanie sterownika,
-- **kroki 3–5** — host USB z dongle'ami, drut i całość.
+Zostało do przejechania: **kroki 3–5** — host USB z dongle'ami, drut i całość.
 
 Rozstrzygnięte pomiarem i **nie** wymagające już sprawdzania:
 
@@ -471,3 +506,5 @@ Rozstrzygnięte pomiarem i **nie** wymagające już sprawdzania:
   specyfikacją producenta, więc nie ma ryzyka przekroczenia maksimum na wejściach ESP32-S3.
 - **Interfejsy dongle'i** — oba wystawiają boot keyboard i boot mouse, odczytane z drzewa
   urządzeń Windows (§7 krok 3). Razem pięć interfejsów HID.
+- **Cykl wgrywania** — `BOOT+RESET → wgranie → RESET`, bo `Hard resetting via RTS pin` nie
+  wyprowadza tej płytki z trybu download (§5).
