@@ -251,6 +251,23 @@ static void mapper_task(void *arg)
 {
     const TickType_t period = pdMS_TO_TICKS(1000 / CONFIG_APP_REPORT_RATE_HZ);
     TickType_t last_wake = xTaskGetTickCount();
+
+    /*
+     * pdMS_TO_TICKS() rounds DOWN to whole FreeRTOS ticks, so a rate faster than the tick
+     * rate silently collapses to one report per tick. MEASURED CONSEQUENCE: with
+     * APP_REPORT_RATE_HZ=250 and the default 100 Hz tick the pad updated at 100 Hz, not 250,
+     * even though its USB endpoint is polled every 4 ms - the number in menuconfig was simply
+     * unreachable. Say so in the log rather than let it lie; the fix is CONFIG_FREERTOS_HZ.
+     */
+    const unsigned achieved = (unsigned)configTICK_RATE_HZ / (unsigned)(period > 0 ? period : 1);
+    if (achieved < CONFIG_APP_REPORT_RATE_HZ) {
+        ESP_LOGW(TAG, "APP_REPORT_RATE_HZ=%d is not reachable with a %d Hz FreeRTOS tick - "
+                      "reports go out at %u Hz; raise CONFIG_FREERTOS_HZ",
+                 CONFIG_APP_REPORT_RATE_HZ, (int)configTICK_RATE_HZ, achieved);
+    } else {
+        ESP_LOGI(TAG, "mapping task at %u Hz (FreeRTOS tick %d Hz)", achieved,
+                 (int)configTICK_RATE_HZ);
+    }
     gamepad_state_t prev_logged = {0};
     int64_t last_log_us = 0;
 

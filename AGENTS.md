@@ -1876,6 +1876,37 @@ czego przyczyny nie ustaliliśmy — w drugim przebiegu, z tą samą konfiguracj
 wychylał się poprawnie. Odnotowane jako nierozstrzygnięte, żeby nie wpisywać domysłu w miejsce
 pomiaru.
 
+#### Pad aktualizował się 97 Hz, choć endpoint jest odpytywany co 4 ms
+
+Zmierzone od strony PC, `scripts/xinput_rumble.py --rate`, przy nieprzerwanym ruchu myszą:
+
+| Stan | Zmierzone tempo |
+|---|---|
+| `CONFIG_FREERTOS_HZ=100` (domyślny) | **97 Hz** |
+| `CONFIG_FREERTOS_HZ=1000` | **243 Hz** |
+
+Przyczyna: `pdMS_TO_TICKS()` zaokrągla **w dół** do całych tików. Przy tiku 100 Hz okres 4 ms,
+o który prosi `APP_REPORT_RATE_HZ=250`, wychodzi **zero tików**; `input_mapper.c` ma tam
+`period > 0 ? period : 1`, więc brał jeden tik, czyli 10 ms. Liczba w menuconfig była
+nieosiągalna i nikt o tym nie wiedział, bo nic tego nie zgłaszało — a pad chodził **niżej niż
+w wersji BLE** (133 Hz), mimo że USB miało być pod tym względem lepsze.
+
+Dwie zmiany. `sdkconfig.defaults.s3pad` ustawia `CONFIG_FREERTOS_HZ=1000`, przy którym 4 ms jest
+wyrażalne dokładnie i zostaje miejsce na 1 ms, gdyby passthrough tego kiedyś potrzebował. Oraz
+mapper **loguje tempo, które faktycznie osiąga**, i ostrzega, gdy żądane jest nieosiągalne:
+
+```
+mapping task at 250 Hz (FreeRTOS tick 1000 Hz)
+```
+
+Metodologicznie warto zapamiętać, jak to wyszło: pomiar musiał być zrobiony **narzędziem
+szybszym od mierzonego zjawiska**. Pierwszy podgląd (`--watch`) sypiał 10 ms na iterację, więc
+sam ograniczał się do ~100 Hz i pokazywał 97 Hz jako sufit — czyli dokładnie tę wartość, którą
+mierzył błędnie. Tryb `--rate` nie śpi wcale (415 000 odpytań na sekundę) i dopiero on rozdzielił
+„pad daje 97 Hz” od „mój licznik daje 97 Hz”. To trzeci raz w tym projekcie, gdy narzędzie
+pomiarowe kłamało spójnie i dlatego wiarygodnie — po `APP_DEBUG_SCAN_ONLY` i po drabince
+interwałów z §4.33.
+
 #### Otwarta decyzja: nasza kopia `esp_hid` przysłania naprawioną wersję z 6.1
 
 Dotyczy tylko ról BLE, ale trzeba to wiedzieć przed jakimkolwiek buildem BLE na 6.1.

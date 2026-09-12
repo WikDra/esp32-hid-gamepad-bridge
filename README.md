@@ -186,7 +186,17 @@ capture by `scripts/check_xinput_descriptor.py` on the built binary rather than 
 |---|---|---|
 | dongle → input chip | **~750 Hz** | the dongle's `bInterval`, i.e. 1 ms polling |
 | input chip → pad chip | 108 µs per frame at 921600 baud | not a limiter — ~8 % of the wire at 750 frames/s |
-| pad chip → PC | **250 Hz** | the IN endpoint's 4 ms interval, byte-for-byte the real pad's |
+| pad chip → PC | **243 Hz measured** | the IN endpoint's 4 ms interval, byte-for-byte the real pad's |
+
+The pad hop was measured from the PC with `scripts/xinput_rumble.py --rate`, counting XInput
+packet numbers in a poll loop fast enough not to be the limit itself (415 000 polls/s).
+
+**That number depends on the FreeRTOS tick, which is a trap worth knowing about.**
+`pdMS_TO_TICKS()` rounds down to whole ticks, so at the default 100 Hz tick the 4 ms period that
+250 Hz asks for resolves to zero ticks, the mapper falls back to one tick, and the pad updates at
+**97 Hz** — below what the Bluetooth build achieves, while its endpoint is polled at 250 Hz. The
+pad variant therefore sets `CONFIG_FREERTOS_HZ=1000`, and the mapper now logs the rate it
+actually achieves instead of the one that was requested.
 
 Nothing is lost where 750 Hz meets 250 Hz: the mapper **accumulates** mouse deltas between
 ticks, so the stick reflects the integral of every report rather than a sample of them. Raising
@@ -404,10 +414,10 @@ To exercise the HID descriptor without a keyboard and mouse, enable
 - ESP32-C3 has no USB-OTG, so a USB (rather than Bluetooth) XInput device is not possible on
   this chip.
 - **The USB pad reports at 250 Hz, not 1 kHz.** That is the IN endpoint's 4 ms interval, copied
-  byte-for-byte from a real Xbox 360 controller. The input side runs at ~750 Hz and the mapper
-  accumulates deltas between ticks, so no motion is discarded — but a game polling XInput sees
-  250 updates per second. Changing the interval would break the byte-for-byte match that makes
-  Windows bind its own driver.
+  byte-for-byte from a real Xbox 360 controller; **243 Hz measured** from the PC side. The input
+  side runs at ~750 Hz and the mapper accumulates deltas between ticks, so no motion is
+  discarded. Reaching that rate also needs `CONFIG_FREERTOS_HZ=1000` — at the default 100 Hz
+  tick the pad silently updates at 97 Hz instead.
 
 ## Diagnostics
 

@@ -2,6 +2,7 @@
 
     python scripts\\xinput_rumble.py [slot]              rumble test
     python scripts\\xinput_rumble.py --watch [s] [slot]   live state, end-to-end test
+    python scripts\\xinput_rumble.py --rate [s] [slot]    how often the pad really updates
 
 WHY THIS EXISTS. Two questions about the USB pad cannot be answered by looking at the device
 tree. Whether Windows BOUND the XInput driver is visible there (Service=xusb22), but whether
@@ -90,9 +91,14 @@ def rumble(slot, left, right):
 
 wanted = None
 watch_secs = 0.0
+rate_secs = 0.0
 args = sys.argv[1:]
 if args and args[0] == "--watch":
     watch_secs = float(args[1]) if len(args) > 1 else 15.0
+    if len(args) > 2:
+        wanted = int(args[2])
+elif args and args[0] == "--rate":
+    rate_secs = float(args[1]) if len(args) > 1 else 5.0
     if len(args) > 2:
         wanted = int(args[2])
 elif args:
@@ -117,6 +123,38 @@ if not found:
     sys.exit(2)
 
 slot = found[0]
+
+if rate_secs:
+    # Measures how often the pad ACTUALLY updates, which is not the same as its endpoint
+    # interval: the endpoint says how often the host asks, the firmware decides how often it
+    # has something new. dwPacketNumber is the right counter for this - XInput bumps it once
+    # per state delivered - and the loop deliberately does not sleep, because a sleeping poll
+    # loop measures itself rather than the device.
+    #
+    # The pad must be MOVING throughout, otherwise there is nothing to count: a state that
+    # does not change produces no new packets, by design.
+    print(f"\n--- measuring slot {slot} for {rate_secs:.0f}s; keep the mouse moving ---",
+          flush=True)
+    last_packet = None
+    packets = 0
+    polls = 0
+    start = time.time()
+    end = start + rate_secs
+    while time.time() < end:
+        rc, st = read_slot(slot)
+        polls += 1
+        if rc != ERROR_SUCCESS:
+            print("  device went away", flush=True)
+            break
+        if st.dwPacketNumber != last_packet:
+            if last_packet is not None:
+                packets += 1
+            last_packet = st.dwPacketNumber
+    elapsed = time.time() - start
+    print(f"  {packets} state updates in {elapsed:.2f}s = {packets / elapsed:.0f} Hz", flush=True)
+    print(f"  (polled {polls / elapsed:.0f} times per second, so the loop is not the limit)",
+          flush=True)
+    sys.exit(0)
 
 if watch_secs:
     # Watch mode is the end-to-end test for the whole bridge, taken from the side that

@@ -56,3 +56,14 @@ CONFIG_TINYUSB_VENDOR_COUNT=0
 # Report rate: the Xbox 360 IN endpoint is polled every 4 ms (250 Hz), so the mapper may as
 # well run faster than the 100 Hz the BLE build uses - there is no radio to share.
 CONFIG_APP_REPORT_RATE_HZ=250
+
+# --- task timing -------------------------------------------------------------------------
+# FreeRTOS tick raised from the default 100 Hz, and this is load-bearing rather than tidiness.
+# pdMS_TO_TICKS() rounds DOWN to whole ticks, so at 100 Hz the 4 ms period that 250 Hz asks for
+# resolves to ZERO ticks; the mapper falls back to one tick and the pad ends up updating at
+# 100 Hz while its USB endpoint is polled every 4 ms. Measured from the PC side, not assumed.
+#
+# At 1000 Hz the period is expressible exactly, and it also leaves room for a 1 ms period if a
+# passthrough mode ever needs one. The cost is one timer interrupt per millisecond on a chip
+# that otherwise runs a single 250 Hz task, which is not a real cost here.
+CONFIG_FREERTOS_HZ=1000

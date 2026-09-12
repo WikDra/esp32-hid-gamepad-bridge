@@ -151,7 +151,17 @@ nie na źródle.
 |---|---|---|
 | dongle → układ wejść | **~750 Hz** | `bInterval` dongle'a, czyli odpytywanie co 1 ms |
 | układ wejść → układ pada | 108 µs na ramkę przy 921600 bodach | nie jest ogranicznikiem — ~8 % drutu przy 750 ramkach/s |
-| układ pada → PC | **250 Hz** | interwał 4 ms endpointu IN, bajt w bajt jak w prawdziwym padzie |
+| układ pada → PC | **zmierzone 243 Hz** | interwał 4 ms endpointu IN, bajt w bajt jak w prawdziwym padzie |
+
+Odcinek pada zmierzony od strony PC przez `scripts/xinput_rumble.py --rate`, licząc numery
+pakietów XInput w pętli dość szybkiej, by sama nie była ograniczeniem (415 000 odpytań na sekundę).
+
+**Ta liczba zależy od tiku FreeRTOS i jest to pułapka warta zapamiętania.** `pdMS_TO_TICKS()`
+zaokrągla **w dół** do całych tików, więc przy domyślnym tiku 100 Hz okres 4 ms, o który prosi
+250 Hz, wychodzi **zero tików**; mapper bierze wtedy jeden tik i pad aktualizuje się **97 Hz** —
+czyli **niżej niż w wersji Bluetooth** — choć jego endpoint jest odpytywany co 4 ms. Dlatego
+wariant pada ustawia `CONFIG_FREERTOS_HZ=1000`, a mapper loguje teraz tempo, które **faktycznie
+osiąga**, a nie to, o które go poproszono.
 
 Na przejściu z 750 Hz na 250 Hz **nic nie ginie**: mapper **kumuluje** przyrosty myszy między
 tikami, więc gałka odzwierciedla całkę ze wszystkich raportów, a nie próbkę z nich. Podniesienie
@@ -381,10 +391,10 @@ raport).
 - ESP32-C3 nie ma USB-OTG, więc pad XInput po USB (zamiast po Bluetooth) na tym układzie nie
   jest możliwy.
 - **Pad USB raportuje 250 Hz, nie 1 kHz.** To interwał 4 ms endpointu IN, przepisany bajt
-  w bajt z prawdziwego pada Xbox 360. Strona wejść chodzi ~750 Hz, a mapper kumuluje przyrosty
-  między tikami, więc żaden ruch nie jest gubiony — ale gra odpytująca XInput widzi 250
-  aktualizacji na sekundę. Zmiana interwału zepsułaby zgodność bajt w bajt, dzięki której
-  Windows wiąże swój własny sterownik.
+  w bajt z prawdziwego pada Xbox 360; **zmierzone 243 Hz** od strony PC. Strona wejść chodzi
+  ~750 Hz, a mapper kumuluje przyrosty między tikami, więc żaden ruch nie jest gubiony.
+  Osiągnięcie tego tempa wymaga też `CONFIG_FREERTOS_HZ=1000` — przy domyślnym tiku 100 Hz pad
+  po cichu aktualizuje się 97 Hz.
 
 ## Diagnostyka
 
