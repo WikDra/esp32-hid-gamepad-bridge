@@ -56,6 +56,19 @@ void chip_link_send_keyboard(uint8_t modifiers, const uint8_t keys[6]);
  */
 void chip_link_set_presence(bool mouse, bool keyboard);
 
+/*
+ * Sender only: ask the pad chip to switch USB identity - gamepad or keyboard+mouse passthrough.
+ *
+ * Sent immediately and then repeated with every keepalive. The mode is ABSOLUTE state rather
+ * than a toggle command on the wire, which is what makes it robust: a frame lost to noise, or a
+ * reset of either chip, corrects itself within one keepalive period instead of leaving the two
+ * sides disagreeing about which device is on the bus.
+ */
+void chip_link_set_mode(bool passthrough);
+
+/* Sender only: the mode last set, so the caller can toggle without keeping its own copy. */
+bool chip_link_mode_is_passthrough(void);
+
 /* Receiver only: whether a frame arrived recently enough (APP_LINK_PEER_TIMEOUT_MS). */
 bool chip_link_peer_alive(void);
 

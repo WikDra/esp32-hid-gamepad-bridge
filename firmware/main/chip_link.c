@@ -37,6 +37,7 @@ static const char *TAG = "link";
 #define LINK_TYPE_MOUSE     0x01 /* buttons u8, dx i16, dy i16, wheel i8         */
 #define LINK_TYPE_KEEPALIVE 0x02 /* presence bitmask u8: bit0 mouse, bit1 keyboard */
 #define LINK_TYPE_KEYBOARD  0x03 /* modifiers u8, keycodes u8 x6                 */
+#define LINK_TYPE_MODE      0x04 /* 0 = gamepad, 1 = passthrough                 */
 
 #define LINK_PRESENT_MOUSE    0x01
 #define LINK_PRESENT_KEYBOARD 0x02
@@ -132,6 +133,33 @@ void chip_link_set_presence(bool mouse, bool keyboard)
                            (keyboard ? LINK_PRESENT_KEYBOARD : 0));
 }
 
+#if CONFIG_APP_USB_PASSTHROUGH
+static volatile uint8_t s_mode; /* 0 = gamepad, 1 = passthrough */
+
+void chip_link_set_mode(bool passthrough)
+{
+    s_mode = passthrough ? 1 : 0;
+    /*
+     * Sent immediately so the switch feels instant, and then repeated with every keepalive by
+     * the sender task. The repetition is what makes it robust: the mode is ABSOLUTE state, so
+     * a frame lost to line noise or to a reset of the other chip corrects itself within
+     * 250 ms instead of leaving the two chips disagreeing about which identity is on the bus.
+     */
+    if (s_tx_queue) {
+        link_evt_t evt = {.type = LINK_TYPE_MODE};
+        evt.kbd.modifiers = s_mode; /* reuse the byte; the frame carries one payload octet */
+        if (xQueueSend(s_tx_queue, &evt, 0) != pdTRUE) {
+            s_dropped++;
+        }
+    }
+}
+
+bool chip_link_mode_is_passthrough(void)
+{
+    return s_mode != 0;
+}
+#endif /* CONFIG_APP_USB_PASSTHROUGH */
+
 static int16_t clamp16(int32_t v)
 {
     if (v > INT16_MAX) {
@@ -213,6 +241,11 @@ static void sender_task(void *arg)
                 p[0] = evt.kbd.modifiers;
                 memcpy(&p[1], evt.kbd.keys, sizeof(evt.kbd.keys));
                 frame_send(LINK_TYPE_KEYBOARD, p, sizeof(p));
+#if CONFIG_APP_USB_PASSTHROUGH
+            } else if (evt.type == LINK_TYPE_MODE) {
+                const uint8_t p = evt.kbd.modifiers;
+                frame_send(LINK_TYPE_MODE, &p, 1);
+#endif
             }
         }
 
@@ -231,6 +264,13 @@ static void sender_task(void *arg)
             present = (uint8_t)(ble_hid_host_device_count() > 0 ? LINK_PRESENT_MOUSE : 0);
 #endif
             frame_send(LINK_TYPE_KEEPALIVE, &present, 1);
+#if CONFIG_APP_USB_PASSTHROUGH
+            /* Absolute state, resent with every keepalive - see chip_link_set_mode(). */
+            {
+                const uint8_t m = s_mode;
+                frame_send(LINK_TYPE_MODE, &m, 1);
+            }
+#endif
         }
 
         if (now - last_stat_us >= 10 * 1000 * 1000) {
@@ -275,6 +315,18 @@ static uint8_t s_peer_present;
 #define LINK_KEYBOARD_PRESENT(on)      input_state_set_keyboard_present((on))
 #endif
 
+/*
+ * The mode frame only means anything on a chip that owns a USB pad, because switching identity
+ * is what it asks for. Everywhere else it is accepted and discarded, so an input chip built with
+ * passthrough enabled can talk to a pad chip built without it.
+ */
+#if CONFIG_APP_USB_PASSTHROUGH && CONFIG_APP_USB_PAD
+#include "usb_pad.h"
+#define LINK_SET_MODE(pt) usb_pad_request_mode((pt))
+#else
+#define LINK_SET_MODE(pt) ((void)(pt))
+#endif
+
 bool chip_link_peer_alive(void)
 {
     int64_t last = s_last_frame_us;
@@ -307,6 +359,13 @@ static void handle_frame(uint8_t type, const uint8_t *p, uint8_t len)
             return;
         }
         LINK_SET_KEYBOARD(p[0], &p[1]);
+        break;
+
+    case LINK_TYPE_MODE:
+        if (len != 1) {
+            return;
+        }
+        LINK_SET_MODE(p[0] != 0);
         break;
 
     case LINK_TYPE_KEEPALIVE:

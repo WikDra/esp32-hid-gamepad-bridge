@@ -24,6 +24,8 @@
 
 #include "esp_err.h"
 #include "gamepad_state.h"
+#include "input_state.h"
+#include "sdkconfig.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -48,6 +50,40 @@ bool usb_pad_send(const gamepad_state_t *state);
  * that settled the BLE profile (AGENTS.md 4.32).
  */
 void usb_pad_get_rumble(uint8_t *left, uint8_t *right);
+
+#if CONFIG_APP_USB_PASSTHROUGH
+
+/*
+ * PASSTHROUGH MODE. The chip carries two USB identities and only one can be on the bus at a
+ * time, so switching means disconnecting and re-enumerating as the other one:
+ *
+ *   gamepad      VID 0x045E PID 0x028E   vendor XInput interface, bound by xusb22
+ *   passthrough  VID 0x303A PID 0x4004   one HID interface, keyboard + mouse by report ID
+ *
+ * WHY NOT ONE COMPOSITE DEVICE: xusb22 binds at DEVICE level, not per interface - the real
+ * Xbox 360 pad has four interfaces and the driver owns all of them. Keyboard and mouse
+ * interfaces under the same VID/PID would be swallowed by it and never reach Windows as input
+ * devices. The pad therefore disappears while passthrough is active.
+ */
+
+/* Asks for a mode. Safe from any task: it only records the request. */
+void usb_pad_request_mode(bool passthrough);
+
+/*
+ * Applies a pending request and returns the mode now in force. MUST be called from the same
+ * task that calls the send functions below - that is what keeps re-enumeration and report
+ * submission in one task, so neither needs a lock. Call once per tick.
+ */
+bool usb_pad_service_mode(void);
+
+/*
+ * Passthrough mode: turns raw input state into HID keyboard and mouse reports. Only one report
+ * fits in flight per tick, so keyboard and mouse take turns and unsent mouse motion is carried
+ * over rather than dropped.
+ */
+bool usb_pad_send_passthrough(const hid_input_state_t *state);
+
+#endif /* CONFIG_APP_USB_PASSTHROUGH */
 
 #ifdef __cplusplus
 }

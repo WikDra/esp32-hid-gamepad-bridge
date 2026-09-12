@@ -199,6 +199,30 @@ Tabela mapowania, krzywa myszy i wszystkie osobliwości wejść są **wspólne z
 `input_mapper` pobiera stan i wysyła raport, a wymieniane w czasie kompilacji są tylko te dwa
 końce.
 
+### Passthrough na skrót klawiaturowy
+
+`Ctrl+Alt+G` na klawiaturze przełącza układ pada między padem a zwykłą klawiaturą i myszą HID,
+żeby tych samych urządzeń dało się używać do pisania bez odłączania czegokolwiek. Zweryfikowane
+w obie strony:
+
+| Tryb | Tożsamość | Co wiąże Windows |
+|---|---|---|
+| gamepad | `045E:028E` | `xusb22`, slot 0 XInput |
+| passthrough | `303A:4004` | `kbdhid` i `mouhid` na dwóch kolekcjach raportów |
+
+**Muszą to być dwie tożsamości, a nie jedno urządzenie złożone**, i warto to rozumieć przed
+zmienianiem: `xusb22` wiąże się na poziomie *urządzenia*, nie interfejsu — prawdziwy pad Xbox 360
+ma cztery interfejsy i sterownik bierze je wszystkie. Interfejsy klawiatury i myszy pod tym samym
+VID/PID zostałyby przez niego zagarnięte i nigdy nie dotarłyby do Windows jako urządzenia
+wejściowe. Dlatego układ odłącza się, podmienia deskryptory i wylicza od nowa; **pad znika na
+czas passthrough** i to jest przyjęty koszt.
+
+Tryb idzie przez łącze jako stan absolutny, powtarzany z każdym keepalive, więc zgubiona ramka
+albo reset jednej z płytek naprawia się w 250 ms, zamiast zostawić strony niezgodne co do tego,
+które urządzenie jest na szynie. Sam skrót jest **zjadany**, a nie przekazywany dalej, i wyzwala
+się zboczem — trzymana kombinacja nie może wywołać kilkudziesięciu re-enumeracji USB na sekundę.
+Klawisz ustawia `APP_PASSTHROUGH_KEYCODE`, a całą funkcję wyłącza `APP_USB_PASSTHROUGH`.
+
 ## Wymagania po stronie PC
 
 - **ESP-IDF v5.5.1** (nie starszy — patrz `AGENTS.md`, sekcja o `GATTC_AUTO_PAIR`).

@@ -403,18 +403,260 @@ bool usb_pad_send(const gamepad_state_t *state)
 
 /* ----------------------------------------------------------------------- start */
 
-esp_err_t usb_pad_start(void)
+#if CONFIG_APP_USB_PASSTHROUGH
+
+/* ------------------------------------------------ passthrough identity (HID) */
+
+/*
+ * The second identity: a plain HID keyboard and mouse, so the real devices reach the PC
+ * unchanged. See usb_pad.h for why this cannot be the same USB device as the pad.
+ *
+ * VID 0x303A is Espressif's, and 0x4004 is what esp_tinyusb itself computes for a HID-only
+ * device (0x4000 with the HID class bit set). Picking a value from that scheme rather than
+ * inventing one avoids squatting on somebody else's product ID.
+ */
+#define PT_EP_IN            0x81 /* same address as the pad's IN endpoint - only one identity
+                                    is ever on the bus, so they cannot collide */
+#define PT_REPORT_ID_KBD    1
+#define PT_REPORT_ID_MOUSE  2
+
+static const uint8_t s_hid_report_desc[] = {
+    TUD_HID_REPORT_DESC_KEYBOARD(HID_REPORT_ID(PT_REPORT_ID_KBD)),
+    TUD_HID_REPORT_DESC_MOUSE(HID_REPORT_ID(PT_REPORT_ID_MOUSE)),
+};
+
+static const tusb_desc_device_t s_hid_device_desc = {
+    .bLength = sizeof(tusb_desc_device_t),
+    .bDescriptorType = TUSB_DESC_DEVICE,
+    .bcdUSB = 0x0200,
+    /* Class is declared per interface, not per device, so the host reads the HID interface. */
+    .bDeviceClass = 0x00,
+    .bDeviceSubClass = 0x00,
+    .bDeviceProtocol = 0x00,
+    .bMaxPacketSize0 = CFG_TUD_ENDPOINT0_SIZE,
+    .idVendor = 0x303A,
+    .idProduct = 0x4004,
+    .bcdDevice = 0x0100,
+    .iManufacturer = 0x01,
+    .iProduct = 0x02,
+    .iSerialNumber = 0x03,
+    .bNumConfigurations = 0x01,
+};
+
+/*
+ * Endpoint interval 1 ms, unlike the pad's 4 ms. Here nothing forces us to copy a real
+ * device byte for byte, and the FreeRTOS tick is 1 kHz on this variant, so 1 ms is both
+ * expressible and useful: a mouse passed through to the desktop benefits from it directly,
+ * whereas a stick position is a filtered value that does not.
+ */
+#define PT_CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN)
+
+static const uint8_t s_hid_config_desc[] = {
+    TUD_CONFIG_DESCRIPTOR(1, 1, 0, PT_CONFIG_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
+    TUD_HID_DESCRIPTOR(0, 0, HID_ITF_PROTOCOL_NONE, sizeof(s_hid_report_desc), PT_EP_IN,
+                       CFG_TUD_HID_EP_BUFSIZE, 1),
+};
+
+static const char *s_hid_strings[] = {
+    (const char[]){0x09, 0x04}, /* 0x0409 English (US) */
+    "esp32-hid-gamepad-bridge",
+    "Bridge passthrough",
+    "08FEC93",
+};
+
+/* TinyUSB asks for the report descriptor by instance; we declare exactly one. */
+uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance)
 {
+    (void)instance;
+    return s_hid_report_desc;
+}
+
+/* No feature reports are implemented - answering zero length is the correct refusal. */
+uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t type,
+                               uint8_t *buffer, uint16_t reqlen)
+{
+    (void)instance; (void)report_id; (void)type; (void)buffer; (void)reqlen;
+    return 0;
+}
+
+/* The host writes keyboard LED state here (Caps Lock and friends). We have no LEDs to set. */
+void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t type,
+                           uint8_t const *buffer, uint16_t bufsize)
+{
+    (void)instance; (void)report_id; (void)type; (void)buffer; (void)bufsize;
+}
+
+/* -------------------------------------------------------- mode switching */
+
+static volatile bool s_want_passthrough;
+static bool s_passthrough;
+
+/* Mouse motion that did not fit into a report yet. Carried over rather than dropped, so a
+ * fast flick is not truncated by the one-report-in-flight limit. */
+static int32_t s_pt_dx, s_pt_dy, s_pt_wheel;
+static uint8_t s_pt_buttons;
+static uint8_t s_pt_mods;
+static uint8_t s_pt_keys[HID_KEYS_MAX];
+static bool s_pt_kbd_dirty;
+
+void usb_pad_request_mode(bool passthrough)
+{
+    s_want_passthrough = passthrough;
+}
+
+#endif /* CONFIG_APP_USB_PASSTHROUGH - descriptors, callbacks and the mode request */
+
+/* ------------------------------------------------------------------ installation */
+
+/*
+ * The ONLY place that installs the USB device stack, used both at startup and by the identity
+ * switch. Deliberately one function: two copies of this configuration would be two descriptions
+ * of one thing, which is the exact shape of the bug in AGENTS.md 4.38 - the mapper that was
+ * compiled by one condition and started by another.
+ */
+static esp_err_t install_identity(bool passthrough)
+{
+#if !CONFIG_APP_USB_PASSTHROUGH
+    (void)passthrough;
+#endif
     const tinyusb_config_t cfg = {
+#if CONFIG_APP_USB_PASSTHROUGH
+        .device_descriptor = passthrough ? &s_hid_device_desc : &s_device_desc,
+        .string_descriptor = passthrough ? s_hid_strings : s_strings,
+        .string_descriptor_count =
+            passthrough ? (int)(sizeof(s_hid_strings) / sizeof(s_hid_strings[0]))
+                        : (int)(sizeof(s_strings) / sizeof(s_strings[0])),
+        .configuration_descriptor = passthrough ? s_hid_config_desc : s_config_desc,
+#else
         .device_descriptor = &s_device_desc,
         .string_descriptor = s_strings,
-        .string_descriptor_count = sizeof(s_strings) / sizeof(s_strings[0]),
-        .external_phy = false,
+        .string_descriptor_count = (int)(sizeof(s_strings) / sizeof(s_strings[0])),
         .configuration_descriptor = s_config_desc,
+#endif
+        .external_phy = false,
         .self_powered = false,
     };
+    return tinyusb_driver_install(&cfg);
+}
 
-    esp_err_t err = tinyusb_driver_install(&cfg);
+#if CONFIG_APP_USB_PASSTHROUGH
+
+bool usb_pad_service_mode(void)
+{
+    if (s_want_passthrough == s_passthrough) {
+        return s_passthrough;
+    }
+
+    const bool target = s_want_passthrough;
+    ESP_LOGI(TAG, "switching USB identity to %s", target ? "passthrough (HID)" : "gamepad (XInput)");
+
+    /*
+     * No neutral report is sent before tearing the pad down, and that is deliberate: a
+     * disconnect makes XInput report the controller as gone, so there is no last-known state
+     * for a game to act on. A report queued microseconds before the teardown would most likely
+     * not reach the host anyway, and pretending otherwise would be misleading.
+     */
+    esp_err_t err = tinyusb_driver_uninstall();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "tinyusb_driver_uninstall failed: %s - staying in the current mode",
+                 esp_err_to_name(err));
+        s_want_passthrough = s_passthrough; /* do not retry every tick */
+        return s_passthrough;
+    }
+
+    s_mounted = false;
+    err = install_identity(target);
+    if (err != ESP_OK) {
+        /*
+         * Both identities must not be down: that would leave the PC with no device at all and
+         * no way to ask for one, because the hotkey arrives over the link into this very chip.
+         * Fall back to the pad, which is the identity verified on hardware.
+         */
+        ESP_LOGE(TAG, "install of the %s identity failed: %s - falling back to the pad",
+                 target ? "passthrough" : "gamepad", esp_err_to_name(err));
+        if (install_identity(false) == ESP_OK) {
+            s_passthrough = false;
+            s_want_passthrough = false;
+        }
+        return s_passthrough;
+    }
+
+    s_passthrough = target;
+    memset(s_pt_keys, 0, sizeof(s_pt_keys));
+    s_pt_mods = 0;
+    s_pt_buttons = 0;
+    s_pt_dx = s_pt_dy = s_pt_wheel = 0;
+    s_pt_kbd_dirty = false;
+    return s_passthrough;
+}
+
+/* ------------------------------------------------------ passthrough reports */
+
+static int8_t clamp8(int32_t v)
+{
+    if (v > 127) {
+        return 127;
+    }
+    if (v < -127) {
+        return -127;
+    }
+    return (int8_t)v;
+}
+
+bool usb_pad_send_passthrough(const hid_input_state_t *state)
+{
+    /* Accumulate first, so nothing is lost while the endpoint is busy. */
+    s_pt_dx += state->mouse_dx;
+    s_pt_dy += state->mouse_dy;
+    s_pt_wheel += state->mouse_wheel;
+    if (state->mouse_buttons != s_pt_buttons) {
+        s_pt_buttons = state->mouse_buttons;
+    }
+    if (state->modifiers != s_pt_mods ||
+        memcmp(state->keys, s_pt_keys, sizeof(s_pt_keys)) != 0) {
+        s_pt_mods = state->modifiers;
+        memcpy(s_pt_keys, state->keys, sizeof(s_pt_keys));
+        s_pt_kbd_dirty = true;
+    }
+
+    if (!tud_mounted() || !tud_hid_ready()) {
+        return false;
+    }
+
+    /*
+     * One report may be in flight at a time, so the two classes take turns: the keyboard goes
+     * first because a keypress is an event that must not wait, while mouse motion is
+     * cumulative and loses nothing by being a tick late.
+     */
+    if (s_pt_kbd_dirty) {
+        s_pt_kbd_dirty = false;
+        return tud_hid_keyboard_report(PT_REPORT_ID_KBD, s_pt_mods, s_pt_keys);
+    }
+
+    static uint8_t last_buttons;
+    if (s_pt_dx || s_pt_dy || s_pt_wheel || s_pt_buttons != last_buttons) {
+        const int8_t dx = clamp8(s_pt_dx);
+        const int8_t dy = clamp8(s_pt_dy);
+        const int8_t wheel = clamp8(s_pt_wheel);
+        last_buttons = s_pt_buttons;
+        if (!tud_hid_mouse_report(PT_REPORT_ID_MOUSE, s_pt_buttons, dx, dy, wheel, 0)) {
+            return false;
+        }
+        /* Subtract only what was actually sent; a clamped remainder rides the next tick. */
+        s_pt_dx -= dx;
+        s_pt_dy -= dy;
+        s_pt_wheel -= wheel;
+    }
+    return true;
+}
+
+#endif /* CONFIG_APP_USB_PASSTHROUGH */
+
+/* ----------------------------------------------------------------------- start */
+
+esp_err_t usb_pad_start(void)
+{
+    esp_err_t err = install_identity(false);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "tinyusb_driver_install failed: %s", esp_err_to_name(err));
         return err;
@@ -423,5 +665,10 @@ esp_err_t usb_pad_start(void)
     ESP_LOGI(TAG, "USB XInput pad up: VID 0x045E PID 0x028E (Xbox 360 wired)");
     ESP_LOGI(TAG, "  config descriptor %u B, report %u B on EP 0x%02x every 4 ms",
              (unsigned)sizeof(s_config_desc), XINPUT_IN_REPORT_LEN, XINPUT_EP_IN);
+#if CONFIG_APP_USB_PASSTHROUGH
+    ESP_LOGI(TAG, "  passthrough identity available: VID 0x303A PID 0x4004 (HID kbd+mouse), "
+                  "hotkey Ctrl+Alt+0x%02x on the input chip",
+             CONFIG_APP_PASSTHROUGH_KEYCODE);
+#endif
     return ESP_OK;
 }

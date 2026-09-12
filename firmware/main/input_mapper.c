@@ -45,6 +45,19 @@
 #error "input_mapper needs a pad transport: APP_ENABLE_GAMEPAD or APP_USB_PAD"
 #endif
 
+/*
+ * Passthrough is the third end of the seam: in that mode the chip is a plain HID keyboard and
+ * mouse instead of a pad, so the mapping below is skipped entirely and the raw state goes out
+ * unchanged. Compiles to nothing when the feature or the USB pad is absent.
+ */
+#if CONFIG_APP_USB_PASSTHROUGH && CONFIG_APP_USB_PAD
+#define IO_SERVICE_MODE()      usb_pad_service_mode()
+#define IO_PASSTHROUGH_SEND(p) usb_pad_send_passthrough(p)
+#else
+#define IO_SERVICE_MODE()      false
+#define IO_PASSTHROUGH_SEND(p) ((void)(p))
+#endif
+
 
 #include <inttypes.h>
 #include <stdbool.h>
@@ -278,6 +291,16 @@ static void mapper_task(void *arg)
         /* Taking the state clears the mouse accumulators, so every delta ends up in
          * exactly one gamepad report. */
         IO_TAKE_STATE(&in);
+
+        /*
+         * Applies a pending identity switch and tells us which mode is now in force. Done here,
+         * in the task that also submits reports, so re-enumeration can never race a transfer -
+         * that is cheaper and easier to reason about than a lock around both.
+         */
+        if (IO_SERVICE_MODE()) {
+            IO_PASSTHROUGH_SEND(&in);
+            continue;
+        }
 
         gamepad_state_t out = {0};
         stick_from_wasd(&in, &out.lx, &out.ly);

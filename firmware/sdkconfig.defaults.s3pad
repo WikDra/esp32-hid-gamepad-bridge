@@ -45,11 +45,14 @@ CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
 # --- TinyUSB -----------------------------------------------------------------------------
-# No class is enabled: we register our own XInput class driver through TinyUSB's
-# usbd_app_driver_get_cb() hook, and supply the whole configuration descriptor ourselves.
+# The XInput identity registers its own class driver through TinyUSB's usbd_app_driver_get_cb()
+# hook and supplies the whole configuration descriptor itself, so no built-in class is needed
+# for it. HID_COUNT is 1 for the PASSTHROUGH identity: that one is an ordinary HID keyboard plus
+# mouse (two report IDs on one interface) and uses TinyUSB's own HID class driver. In pad mode
+# the configuration descriptor declares no HID interface, so that driver simply never matches.
 CONFIG_TINYUSB_CDC_ENABLED=n
 CONFIG_TINYUSB_MSC_ENABLED=n
-CONFIG_TINYUSB_HID_COUNT=0
+CONFIG_TINYUSB_HID_COUNT=1
 CONFIG_TINYUSB_MIDI_COUNT=0
 CONFIG_TINYUSB_VENDOR_COUNT=0
 

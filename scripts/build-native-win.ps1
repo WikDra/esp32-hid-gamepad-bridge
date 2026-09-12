@@ -57,8 +57,8 @@ Write-Host "== target $Target, build dir $buildDir"
 
 Push-Location $firmware
 try {
-    # The first run has to set the target: that is also what loads the sdkconfig.defaults
-    # chain, so it must carry the same -D arguments as the build itself.
+    # The first run has to set the target: that is also what creates the sdkconfig from the
+    # defaults chain.
     if (-not (Test-Path (Join-Path $buildDir 'CMakeCache.txt'))) {
         Write-Host "== first build: setting target $Target"
         idf.py -B $buildDir -D "SDKCONFIG=$sdkconfig" -D "SDKCONFIG_DEFAULTS=$defaultsArg" `
@@ -66,7 +66,14 @@ try {
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
 
-    idf.py -B $buildDir $Action
+    # Both -D arguments are repeated on EVERY build, not just the first, and that is
+    # load-bearing. Without them a plain rebuild leaves an existing per-variant sdkconfig
+    # untouched, so a Kconfig option added after that file was created never appears in it -
+    # the build then silently compiles WITHOUT the new feature while reporting success.
+    # Measured: adding APP_USB_PASSTHROUGH produced a byte-identical s3input image until the
+    # sdkconfig was deleted by hand. Values already present in sdkconfig still win, so this
+    # does not undo anything set through menuconfig.
+    idf.py -B $buildDir -D "SDKCONFIG=$sdkconfig" -D "SDKCONFIG_DEFAULTS=$defaultsArg" $Action
     exit $LASTEXITCODE
 }
 finally {

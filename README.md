@@ -235,6 +235,31 @@ The mapping table, the mouse curve and every input quirk are **shared with the B
 build**: `input_mapper` takes state and sends a report, and only those two ends are swapped at
 compile time.
 
+### Passthrough on a hotkey
+
+`Ctrl+Alt+G` on the keyboard switches the pad chip between the gamepad and a plain HID keyboard
+plus mouse, so the same devices can be used for typing without unplugging anything. Verified in
+both directions:
+
+| Mode | Identity | What Windows binds |
+|---|---|---|
+| gamepad | `045E:028E` | `xusb22`, XInput slot 0 |
+| passthrough | `303A:4004` | `kbdhid` and `mouhid` on two report collections |
+
+**It has to be two identities rather than one composite device**, and that is worth
+understanding before changing it: `xusb22` binds at *device* level, not per interface — the real
+Xbox 360 pad has four interfaces and the driver owns all of them. Keyboard and mouse interfaces
+under the same VID/PID would be swallowed by it and never reach Windows as input devices. So the
+chip disconnects, swaps descriptors and re-enumerates; **the pad disappears while passthrough is
+active**, which is the accepted cost.
+
+The mode travels over the link as absolute state, repeated with every keepalive, so a lost frame
+or a reset of either chip corrects itself within 250 ms instead of leaving the two sides
+disagreeing about which device is on the bus. The hotkey itself is consumed rather than
+forwarded, and it is edge-triggered — a held combination must not re-enumerate USB dozens of
+times a second. The key is `APP_PASSTHROUGH_KEYCODE`, and the whole feature can be turned off
+with `APP_USB_PASSTHROUGH`.
+
 ## Requirements
 
 - **ESP-IDF v5.5.1.** Not older: `CONFIG_BT_NIMBLE_GATTC_AUTO_PAIR` does not exist before

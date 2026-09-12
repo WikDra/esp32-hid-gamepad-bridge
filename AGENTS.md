@@ -110,6 +110,7 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | **Wersja USB: cały łańcuch na dwóch S3 SuperMini** | mierzone z dwóch stron jednocześnie. Płytka wejść: `usb ifaces 4 (kbd=1 mouse=1)`, `KBD report len=8 [00 00 1a 00]` (0x1a = `w`), `MOU report len=7 [00 ff ff 07]`, `link: sent 19884 frames (dropped 0)`. Pad w PC przez `XInputGetState`: `L=(0,32767)` po `w`, `L=(-32767,0)` po `a`, a ruch myszą daje **977 zmian stanu w 18 s** z gładkim opadaniem `R=(516,0) → (258,0) → (0,0)`, czyli filtrem z §4.22. W systemie **jeden** kontroler XInput, slot 0, więc pomiar nie może dotyczyć innego urządzenia |
 | Hub i dongle na sprzęcie | zasilany hub USB 3.0 z dwoma dongle'ami 2,4 GHz obsłużony poprawnie; heap płytki wejść `347 404 B (min 346 116 B)` stabilny przez ~24 min |
 | **Wersja USB domknięta: test pada w Steam przechodzi w całości** | potwierdzenie właściciela (nie log): **test kontrolera w Steam pokazuje wszystko poprawnie** — osie, spusty, przyciski i krzyżak. To zamyka krok 5 planu z §4.37, czyli cały plan. Tym samym mostek działa w dwóch niezależnych wariantach transportu: BLE (§4.31, §4.32) i USB |
+| **Passthrough na skrót działa w obie strony** | `Ctrl+Alt+G` na klawiaturze przełącza tożsamość USB układu pada. Odczytane z drzewa urządzeń: w passthrough `USB\VID_303A&PID_4004` z `Service=HidUsb` i dwiema kolekcjami — `COL01` → `kbdhid`, `COL02` → `mouhid`, a pad `045E:028E` **nieobecny** i XInput nie widzi nic w żadnym slocie; po powtórnym skrócie wraca `USB\VID_045E&PID_028E` z `Service=xusb22` i slot 0 `CONNECTED`. Szczegóły projektowe w §4.39 |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
 
@@ -1923,6 +1924,72 @@ Przy okazji: `scripts/check_local_esp_hid.py` patrzy tylko w `build.esp32c3` i
 `build.win.esp32c3`, więc dla innych targetów i wariantów nie odpowie na pytanie, czyja kopia
 weszła do builda.
 
+
+### 4.39 Passthrough na skrót: dwie tożsamości USB, nie jedno urządzenie złożone
+
+Skrót `Ctrl+Alt+G` przełącza układ pada między padem XInput a zwykłą klawiaturą i myszą HID,
+żeby te same urządzenia dały się używać do pisania bez odłączania czegokolwiek.
+
+#### Dlaczego dwie tożsamości, a nie jedno urządzenie z trzema interfejsami
+
+To jest rozstrzygające ustalenie tej funkcji i wynika wprost z tego, jak Windows wiąże `xusb22`:
+**na poziomie URZĄDZENIA, nie interfejsu.** Prawdziwy pad Xbox 360 ma cztery interfejsy i
+sterownik bierze je wszystkie; widać to w naszym własnym drzewie, gdzie `xusb22` siedzi na
+`USB\VID_045E&PID_028E`, a dziecko `IG_00` dostaje `HidUsb` od niego, a nie od hosta USB.
+
+Gdybyśmy więc dopisali interfejsy klawiatury i myszy pod tym samym VID/PID, `xusb22` zagarnąłby
+je razem z padem i Windows nigdy nie zobaczyłby urządzeń wejściowych. Dlatego układ **odłącza
+się i wylicza od nowa** z innym zestawem deskryptorów:
+
+| Tryb | Tożsamość | Co widzi Windows |
+|---|---|---|
+| gamepad | `045E:028E` | interfejs vendorowy XInput, `Service=xusb22` |
+| passthrough | `303A:4004` | jeden interfejs HID, dwa report ID → `kbdhid` + `mouhid` |
+
+Kosztem jest znikanie pada na czas passthrough — właściciel uznał to za akceptowalne, bo
+w większości gier nie przeszkadza. `0x303A` to VID Espressifu, a `0x4004` to wartość, którą sam
+`esp_tinyusb` wylicza dla urządzenia wyłącznie HID (`0x4000` z bitem klasy HID), więc nie
+squattujemy na cudzym numerze produktu.
+
+#### Trzy decyzje projektowe warte zapisania
+
+- **Tryb jest stanem absolutnym na drucie, nie komendą „przełącz".** Ramka `0x04 MODE` idzie
+  natychmiast po skrócie i jest **powtarzana z każdym keepalive**. Zgubiona ramka albo reset
+  jednej płytki naprawia się w 250 ms, zamiast zostawić układy niezgodne co do tego, które
+  urządzenie jest na szynie — a taka niezgodność byłaby trudna do rozpoznania, bo obie strony
+  raportowałyby, że działają.
+- **Przełączanie dzieje się w zadaniu, które wysyła raporty.** `usb_pad_service_mode()` jest
+  wołane raz na tik z pętli mappera, więc re-enumeracja nie ma jak wejść w kolizję z transferem
+  na endpoincie. Alternatywą był muteks wokół obu ścieżek; jedno zadanie jest tańsze i łatwiejsze
+  do uzasadnienia.
+- **Skrót jest wyzwalany zboczem i zjadany.** Klawiatura powtarza ten sam raport, dopóki klawisz
+  jest trzymany, więc przełączanie po stanie dałoby kilkadziesiąt re-enumeracji USB na sekundę.
+  Kombinacja nie jest przekazywana dalej, bo w passthrough `G` trafiłoby do PC jako znak.
+
+Instalacja sterownika TinyUSB jest w **jednym** miejscu (`install_identity()`), używanym i przy
+starcie, i przy przełączaniu. Dwie kopie tej konfiguracji byłyby dwoma opisami jednej rzeczy,
+czyli dokładnie kształtem błędu z §4.38.
+
+Ścieżka awaryjna: gdy instalacja drugiej tożsamości padnie, kod wraca do pada. Obie nie mogą
+leżeć, bo skrót przychodzi łączem **do tego właśnie układu** — bez urządzenia na szynie nie
+byłoby czym poprosić o powrót.
+
+#### Pułapka budowania: nowa opcja Kconfig nie wchodzi do istniejącego `sdkconfig` wariantu
+
+Kosztowała jeden cichy zły build i jest groźniejsza niż sama funkcja. Po dodaniu
+`APP_USB_PASSTHROUGH` wariant `s3input` zbudował się **bez niej**, zgłaszając sukces, z binarką
+bajt w bajt identyczną jak wcześniej (`0x497a0`). Opcji po prostu nie było w wygenerowanym
+`sdkconfig.win.esp32s3.s3input`, bo ten plik już istniał.
+
+Przyczyna: `scripts/build-native-win.ps1` podawał `-D SDKCONFIG=` i `-D SDKCONFIG_DEFAULTS=`
+**tylko przy pierwszym** wywołaniu (`set-target`). Teraz podaje je przy każdym buildzie.
+Sprawdzone tak, że usunąłem obie opcje z pliku ręcznie i uruchomiłem build — wróciły same,
+a rozmiar wzrósł do `0x49950`. Wartości ustawione przez menuconfig nadal wygrywają, więc to
+niczego nie nadpisuje.
+
+To ta sama klasa błędu co niestartujący mapper z §4.38: kompiluje się, linkuje, zgłasza sukces
+i robi coś innego niż się wydaje. Jedyną obroną jest czytanie **wygenerowanego** `sdkconfig`,
+a nie zakładanie, że Kconfig się zastosował.
 
 ### 4.36 Mostek rozdzielony na dwa układy płytki BR (branch `esp32-br-split`)
 

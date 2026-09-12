@@ -111,6 +111,41 @@ static void handle_keyboard(const uint8_t *data, size_t len)
 #endif
 }
 
+#if CONFIG_APP_USB_PASSTHROUGH && CONFIG_APP_LINK_SENDER
+/*
+ * Passthrough hotkey: Ctrl+Alt+<APP_PASSTHROUGH_KEYCODE>, either side of the keyboard.
+ *
+ * Returns true when the combination fired, and the caller then DROPS the report instead of
+ * forwarding it. That matters: without it the chosen key would also reach the PC, and in
+ * passthrough mode that means a stray character in whatever has focus.
+ *
+ * Edge-triggered on the key going down. A held combination must not toggle repeatedly - the
+ * keyboard sends the same report over and over while a key is held, and a toggle per report
+ * would flip identity dozens of times a second and re-enumerate USB each time.
+ */
+static bool hotkey_fired(const uint8_t *data)
+{
+    const uint8_t mods = data[0];
+    const bool ctrl = (mods & 0x11) != 0; /* LCtrl | RCtrl */
+    const bool alt = (mods & 0x44) != 0;  /* LAlt  | RAlt  */
+
+    bool key_down = false;
+    for (int i = 0; i < HID_KEYS_MAX; i++) {
+        if (data[2 + i] == CONFIG_APP_PASSTHROUGH_KEYCODE) {
+            key_down = true;
+            break;
+        }
+    }
+
+    const bool combo = ctrl && alt && key_down;
+
+    static bool was_down;
+    const bool fired = combo && !was_down;
+    was_down = combo;
+    return fired;
+}
+#endif /* passthrough hotkey */
+
 static void handle_mouse(const uint8_t *data, size_t len)
 {
     /*
@@ -163,6 +198,15 @@ static void iface_event_cb(hid_host_device_handle_t dev, const hid_host_interfac
             return;
         }
         if (params.proto == HID_PROTOCOL_KEYBOARD) {
+#if CONFIG_APP_USB_PASSTHROUGH && CONFIG_APP_LINK_SENDER
+            if (len >= 8 && hotkey_fired(data)) {
+                const bool pt = !chip_link_mode_is_passthrough();
+                chip_link_set_mode(pt);
+                ESP_LOGI(TAG, "hotkey: pad chip -> %s",
+                         pt ? "PASSTHROUGH (keyboard + mouse)" : "GAMEPAD");
+                break; /* consumed - the combination itself must not reach the PC */
+            }
+#endif
             handle_keyboard(data, len);
         } else if (params.proto == HID_PROTOCOL_MOUSE) {
             handle_mouse(data, len);

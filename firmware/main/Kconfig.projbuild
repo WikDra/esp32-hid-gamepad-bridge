@@ -270,6 +270,39 @@ menu "HID bridge (application configuration)"
 
             Same console caveat as above.
 
+    config APP_USB_PASSTHROUGH
+        bool "USB: hotkey switches between the pad and plain keyboard+mouse"
+        depends on APP_USB_PAD || APP_USB_HID_HOST
+        default y
+        help
+            A key combination toggles the pad chip between two USB identities: the XInput pad,
+            and a plain HID keyboard plus mouse that passes the real devices through to the PC.
+
+            WHY IT HAS TO BE TWO IDENTITIES rather than one composite device. xusb22 binds at
+            DEVICE level, not per interface - the real Xbox 360 pad has four interfaces and the
+            driver owns all of them. Adding keyboard and mouse interfaces under the same VID/PID
+            would hand them to xusb22 as well, and Windows would never see a keyboard. So the
+            chip disconnects, swaps its descriptors and re-enumerates; the pad disappears while
+            passthrough is active, which is the accepted cost of the feature.
+
+            Both chips need this enabled: the input chip detects the combination and sends it
+            over the link, the pad chip performs the switch.
+
+    config APP_PASSTHROUGH_KEYCODE
+        hex "Passthrough hotkey: USB HID keycode pressed with Ctrl+Alt"
+        depends on APP_USB_PASSTHROUGH
+        default 0x0A
+        help
+            USB HID Keyboard/Keypad usage ID of the key that toggles passthrough when held
+            together with Ctrl and Alt (either side of the keyboard counts).
+
+            0x0A is G. Values worth knowing: 0x04..0x1D are A..Z in alphabetical order, so
+            0x0A = G, 0x11 = N, 0x15 = R. The combination is consumed rather than passed on, so
+            whatever is chosen here never reaches the PC as a keystroke.
+
+            Ctrl+Alt was picked because both modifiers are visible in the boot-protocol report
+            and the pair is rare in games, where a stray toggle would be costly.
+
     config APP_MOUSE_SCALE_DIV
         int "Mapping: mouse sensitivity divisor"
         depends on (APP_ENABLE_GAMEPAD && APP_ENABLE_HID_HOST) || APP_USB_PAD
