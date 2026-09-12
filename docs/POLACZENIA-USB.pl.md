@@ -32,19 +32,20 @@ konsola po USB zamilknie, a objaw wygląda jak martwy firmware.
 
 ## 1. Listwa 18-pinowa — co jest czym
 
-Widok od góry, gniazdo USB-C u góry. To dokładnie te 18 pinów, które lutujesz:
+Rozpiska potwierdzona przez właściciela na fizycznej płytce. Widok od góry, gniazdo USB-C u góry,
+obie kolumny liczone od strony USB w dół:
 
 ```
                     ┌───── USB-C ─────┐
-         TX  (GPIO43)                   5V
-         RX  (GPIO44)                   GND
-             GPIO1     [BOOT]  [RESET]  3V3 (OUT)
-             GPIO2                      GPIO13
-             GPIO3                      GPIO12
-             GPIO4      ESP32-S3        GPIO11
-             GPIO5      SuperMini       GPIO10
-             GPIO6                      GPIO9
-             GPIO7                      GPIO8
+   konsola TX ->  TX (GPIO43)           5V           <- zasilanie plytki A
+   konsola RX ->  RX (GPIO44)           GND          <- masa, obowiazkowo
+                  GP1   [BOOT] [RESET]  3V3 (OUT)
+                  GP2                   GP13
+                  GP3                   GP12
+    lacze TX ->   GP4                   GP11
+    lacze RX ->   GP5                   GP10
+                  GP6                   GP9
+                  GP7                   GP8
                     └─────────────────┘
 ```
 
@@ -60,17 +61,28 @@ Widok od góry, gniazdo USB-C u góry. To dokładnie te 18 pinów, które lutuje
 | GPIO3 | lepiej zostawić wolny: pin strapping (wybór źródła JTAG) |
 | GPIO1, GPIO2, GPIO6–GPIO13 | wolne, nic ich nie używa |
 
+**Konsola zostaje na domyślnych pinach UART0**, czyli na tych oznaczonych `TX` i `RX`. Nie ma
+powodu jej przenosić, a zostawienie domyślnych daje dwie rzeczy, których własne piny by nas
+pozbawiły: bootloader ROM-u drukuje po tych pinach **niezależnie od konfiguracji**, co jest
+testem okablowania niezależnym od naszego firmware'u (§5), a protokół wgrywania ROM-u chodzi po
+nich, więc UART zostaje awaryjną drogą programowania. Gdyby te dwa piny kiedyś były potrzebne na
+co innego, konsolę przenosi się opcją `CONFIG_ESP_CONSOLE_UART_CUSTOM` — peryferium zostaje
+UART0, zmieniają się tylko numery pinów.
+
+Konsola i łącze **nie kolidują**, bo to dwa różne peryferia: konsola na UART0, łącze na UART1
+(`APP_LINK_UART_PORT=1`). Piny przypisuje matryca GPIO, więc numer pinu i numer peryferium to
+dwie niezależne rzeczy.
+
 Dlaczego łącze na GPIO4/GPIO5: to zwykłe GPIO, bez funkcji strapping (te są na GPIO0, 3, 45,
-46), nie są pinami USB (GPIO19/20), nie są flashem ani PSRAM (GPIO26–37) i nie kolidują
-z UART0, którego potrzebuje konsola. Leżą obok siebie na listwie, więc kabelek jest krótki.
+46), nie są pinami USB (GPIO19/20) ani flashem czy PSRAM (GPIO26–37), i nie zabierają pinów
+konsoli. Leżą obok siebie na listwie, więc kabelek jest krótki.
 
 **Czego na listwie nie ma**, a bywa potrzebne:
 
 - **GPIO19/GPIO20** — linie danych USB, idą wprost do gniazda USB-C. Dobrze, bo znaczy to, że
   nic ich przypadkiem nie zwarłeś.
 - **EN (reset) i GPIO0 (boot)** — tylko jako przyciski **RESET** i **BOOT** na płytce. Żadna
-  przejściówka ani drugi układ nie wprowadzi więc płytki w tryb wgrywania automatycznie
-  (patrz §5).
+  przejściówka ani drugi układ nie wprowadzi więc płytki w tryb wgrywania automatycznie (§5).
 - **GPIO26–GPIO32** — pamięć flash.
 - **GPIO14–GPIO18, GPIO21, GPIO33–GPIO42, GPIO45–GPIO48** — na dolnych padach płytki, nie na
   listwie. Trzymaj się listwy: GPIO33–37 są zajęte przy wersjach z ośmiobitowym PSRAM,
@@ -116,6 +128,9 @@ Mapowanie 1:1 po kolejności pinów na listwie, żeby nie było pomyłki:
 | 5 | **GND** | → | **GND** | obowiązkowo |
 | 6 | **3V3** | | *nie podłączać* | 3V3 płytki jest wyjściem jej stabilizatora |
 
+Fizycznie wszystko siedzi przy górnej krawędzi, po obu stronach gniazda USB-C: `TX` i `RX` to
+dwie pierwsze pozycje **lewej** kolumny, a `5V` i `GND` dwie pierwsze **prawej**.
+
 Etykiety na listwie są z punktu widzenia **modułu**, więc TXD i RXD krzyżują się z pinami
 płytki. To najczęstsza pomyłka przy pierwszym podłączeniu; jeśli w konsoli nie ma nic, zamień
 te dwa druty przed szukaniem czegokolwiek innego.
@@ -130,6 +145,18 @@ i ma stamtąd zasilanie, więc do niej podłącz z przejściówki **wyłącznie 
 
 Trzy diody na module to zasilanie oraz ruch na TXD i RXD — przy pracującej konsoli miga ta
 od RXD modułu, czyli od danych płynących z płytki.
+
+**Sterownik trzeba zainstalować ręcznie.** Windows nie ma CP210x w magazynie sterowników
+(`pnputil /enum-drivers` — zero wpisów SiLabs), więc po wetknięciu modułu **nie dostaniesz portu
+COM**. Urządzenie jest przy tym widoczne i „obecne”, tylko bezużyteczne:
+
+```
+USB\VID_10C4&PID_EA60\0001 | ConfigManagerErrorCode = 28
+```
+
+Kod 28 znaczy „sterowniki nie są zainstalowane”. Potrzebny jest **CP210x Universal Windows
+Driver** ze strony Silicon Labs. Diagnozuj tym kodem, nie brakiem portu — brak portu ma kilka
+możliwych przyczyn, a kod 28 tylko jedną.
 
 ---
 
@@ -236,38 +263,84 @@ warto to jednak zmierzyć, bo to jedyne miejsce, gdzie ta wersja może przebić 
 
 ## 5. Wgrywanie firmware'u
 
-**Najprościej: przez własne USB-C każdej płytki.** Trzymaj **BOOT**, stuknij **RESET**, puść
+**Najprościej przez własne USB-C każdej płytki.** Trzymaj **BOOT**, stuknij **RESET**, puść
 BOOT — układ wchodzi w bootloader ROM-u, zgłasza się jako port COM (USB Serial/JTAG) i można
-wgrywać. Działa niezależnie od tego, co aplikacja robi z USB, bo aplikacja jeszcze nie
-działa. Po wgraniu stuknij RESET.
-
-Alternatywnie przez CP2102 na UART0, ta sama sekwencja przycisków:
+wgrywać. Działa niezależnie od tego, co aplikacja robi z USB, bo aplikacja jeszcze nie działa.
+Po wgraniu stuknij RESET. Pusty układ wchodzi w ten tryb sam, więc przyciski są potrzebne
+dopiero przy **kolejnych** wgraniach.
 
 ```powershell
-scripts\flash-win.ps1 COM<n> esp32s3 s3pad -Uart
+scripts\flash-win.ps1 COM<port_plytki> esp32s3 s3pad
 ```
 
-Przełącznik `-Uart` mówi esptoolowi, żeby nie próbował resetować układu
-(`--before no-reset --after no-reset`).
+**Przez CP2102 też można**, bo protokół pobierania ROM-u chodzi po sprzętowym UART0, czyli po
+tych samych pinach `TX`/`RX`, do których podłączona jest konsola. Ta sama sekwencja przycisków,
+plus przełącznik, który mówi esptoolowi, żeby nie próbował resetować układu:
 
-**Twój moduł ma DTR wyprowadzony na listwę, ale nie ma go gdzie podłączyć.** Automatyczne
-wejście w bootloader wymaga sterowania **dwiema** liniami układu — EN (reset) i GPIO0 (boot) —
-a żadnej z nich nie ma na listwie 18-pinowej SuperMini; RTS jest w tym module dodatkowo tylko
-padem lutowniczym. Dałoby się przylutować druty wprost do padów przycisków BOOT i RESET, ale
-przy dwóch płytkach, które te przyciski mają pod palcem, to nakład bez zysku. Zostaw DTR
-niepodłączony — `monitor.py` i tak otwiera port z opuszczonym DTR/RTS, więc nic się przez
-przypadek nie zresetuje.
+```powershell
+scripts\flash-win.ps1 COM<cp2102> esp32s3 s3pad -Uart
+```
+
+Traktuj to jako drogę awaryjną — USB-C jest szybsze i nie wymaga niczego poza kablem.
+
+**DTR przejściówki zostaje niepodłączony.** Automatyczne wejście w bootloader wymaga sterowania
+**dwiema** liniami układu — EN (reset) i GPIO0 (boot) — a żadnej z nich nie ma na listwie
+18-pinowej; RTS jest w tym module dodatkowo tylko padem lutowniczym. Dałoby się przylutować
+druty do padów przycisków BOOT i RESET, ale przy dwóch płytkach, które te przyciski mają pod
+palcem, to nakład bez zysku. `monitor.py` i tak otwiera port z opuszczonym DTR/RTS, więc nic się
+przez przypadek nie zresetuje.
 
 **Dlaczego flashowanie jednej płytki przez drugą po UART nic tu nie daje**, mimo że drut i tak
-jest: do wprowadzenia celu w tryb wgrywania trzeba sterować **EN i GPIO0**, a tych na
-listwie 18-pinowej nie ma — więc przyciski wciskasz ręcznie w każdym wariancie, i przez USB-C,
-i przez UART. Poza tym w docelowej konfiguracji USB drugiej płytki jest już zajęte jej własną
-rolą, więc nie może udawać przejściówki CDC dla PC bez uprzedniego przeprogramowania. Byłby to
-objazd, nie skrót. Kanał powrotny z §2 zostaje jednak sensowny — ale jako **proxy konsoli**,
-nie jako droga wgrywania.
+jest: przyciski wciskasz ręcznie w każdym wariancie, bo EN i GPIO0 nie są wyprowadzone — więc
+druga płytka nie oszczędza ani jednego ruchu. Poza tym w docelowej konfiguracji jej USB jest już
+zajęte własną rolą, więc nie mogłaby udawać przejściówki CDC dla PC bez uprzedniego
+przeprogramowania. Kanał powrotny z §2 zostaje sensowny, ale jako **proxy konsoli**, nie droga
+wgrywania.
 
-**Jedna przejściówka, dwie płytki.** Konsola na obu siedzi na UART0 na stałe, więc CP2102 się
+**Jedna przejściówka, dwie płytki.** Konsola na obu siedzi na tych samych pinach, więc CP2102 się
 po prostu przekłada: trzy druty, bez rekompilacji. Debugujesz jedną płytkę naraz.
+
+### Dwa porty COM naraz i dwie pułapki
+
+Płytka jest podłączona **jednocześnie** kablem USB-C (zasilanie plus rola USB) i przejściówką
+do pinów konsoli. Nie kolidują, bo to dwie różne rzeczy w układzie: gniazdo USB-C to
+GPIO19/20, a konsola to GPIO43/44. W systemie widać wtedy dwa urządzenia:
+
+| Port | Co to |
+|---|---|
+| `USB JTAG/serial debug unit` (VID:PID `303a:1001`) | bootloader ROM-u samego układu — tym wgrywasz |
+| `Silicon Labs CP210x` | przejściówka — tym czytasz konsolę |
+
+**Port ESP-a znika po wgraniu i tak ma być.** Aplikacja zabiera GPIO19/20 na swoją rolę USB
+(pad XInput albo host), więc bootloader ROM-u przestaje być widoczny. Wygląda to jak zniknięcie
+płytki, a jest normalnym skutkiem tego, że USB Serial/JTAG i USB-OTG dzielą te piny. Żeby
+wgrać ponownie: przytrzymaj **BOOT**, stuknij **RESET** — port wraca.
+
+**Tryb `reset` monitora nie zadziała przez CP2102.** `reset_monitor.py` resetuje układ impulsem
+na RTS, co działa wyłącznie przez natywne USB, gdzie RTS steruje linią CHIP_EN. Przejściówka ma
+RTS tylko jako pad lutowniczy i nigdzie go nie prowadzimy, więc:
+
+```powershell
+scripts\monitor-win.bat COM<cp2102> 30          # tak
+scripts\monitor-win.bat COM<cp2102> 30 reset    # połączy się, ale NIE zresetuje
+```
+
+Żeby złapać log od pierwszej linii: uruchom monitor, a potem **stuknij RESET palcem**.
+
+**Sprawdzenie samego okablowania konsoli, niezależne od naszego firmware'u.** Bootloader ROM-u
+drukuje po UART0 przy każdym starcie, bez względu na to, co jest wgrane i jak skonfigurowane —
+i właśnie dlatego konsola została na pinach domyślnych. Uruchom monitor i stuknij RESET:
+
+```
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+...
+ESP-IDF v6.1 2nd stage bootloader
+```
+
+Jeśli widzisz choćby pierwszą linię, to `TX` płytki trafia do `RXD` przejściówki, masa jest
+wspólna, a prędkość się zgadza. Cisza w tym miejscu to błąd w tych trzech drutach, a nie
+w firmwarze — nie ma sensu szukać dalej, dopóki paplanina ROM-u nie dochodzi.
 
 ---
 
@@ -376,16 +449,19 @@ mapowania wspólną z wersją BLE (`README.pl.md`, sekcja o mapowaniu).
 
 ---
 
-## 8. Czego nie wiem
+## 8. Stan weryfikacji
 
-Po pomiarach została **jedna** rzecz, i jest po stronie Windows, nie sprzętu:
+**Krok 1 zaliczony na sprzęcie.** Wgrany `s3pad` zgłasza się jako
+`USB\VID_045E&PID_028E\08FEC93`, a Windows podpina do niego **`Service=xusb22`** i nazywa go
+„Kontroler konsoli Xbox 360 dla systemu Windows”. `xusb22` to sterownik XInput, więc pytanie,
+czy zwiąże się przy jednym zadeklarowanym interfejsie zamiast czterech, jest **rozstrzygnięte
+twierdząco**. Konsola po CP2102 działa, firmware raportuje `pad ready` i stabilny heap 371 kB.
 
-**Czy Windows zwiąże XUSB przy jednym zadeklarowanym interfejsie.** Prawdziwy pad ma cztery,
-my deklarujemy tylko interfejs 0 — bajt w bajt taki jak w prawdziwym padzie, a dopasowanie
-w `xusb22.inf` idzie po VID/PID, więc powinien. To jedyne miejsce, gdzie świadomie odbiegamy
-strukturalnie od pierwowzoru; jeśli nie zadziała, poprawka jest **wyłącznie w deskryptorze**
-(dopisać pozostałe trzy interfejsy, bajty są w komentarzu `usb_pad.c`) i nie rusza ani jednej
-linii logiki. Rozstrzyga to krok 1 i 2 z §7.
+Zostało do przejechania:
+
+- **krok 2** — rumble z hosta (`rumble from host: …` w logu). To dodatkowo dowodzi, że działa
+  ścieżka endpointu OUT, nie tylko wiązanie sterownika,
+- **kroki 3–5** — host USB z dongle'ami, drut i całość.
 
 Rozstrzygnięte pomiarem i **nie** wymagające już sprawdzania:
 
@@ -393,3 +469,5 @@ Rozstrzygnięte pomiarem i **nie** wymagające już sprawdzania:
   urządzeniom zasilanie, przejściówka OTG od Pixela 7 je przepuszcza.
 - **Poziom logiczny przejściówki** — ten moduł CP2102 ma RX, TX i DTR na 3,3 V zgodnie ze
   specyfikacją producenta, więc nie ma ryzyka przekroczenia maksimum na wejściach ESP32-S3.
+- **Interfejsy dongle'i** — oba wystawiają boot keyboard i boot mouse, odczytane z drzewa
+  urządzeń Windows (§7 krok 3). Razem pięć interfejsów HID.

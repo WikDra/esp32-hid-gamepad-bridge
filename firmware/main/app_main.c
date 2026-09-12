@@ -232,6 +232,11 @@ void app_main(void)
 #else
         const char *pad = "off";
 #endif
+#if CONFIG_APP_USB_HID_HOST && !CONFIG_APP_USB_PAD && !CONFIG_APP_ENABLE_HID_HOST
+        /* Input-only chip: it has no pad of its own to report, and its heartbeat line below
+         * says nothing about one. Every other role combination reads this. */
+        (void)pad;
+#endif
 
 #if CONFIG_APP_USB_PAD || CONFIG_APP_USB_HID_HOST
         /*
@@ -284,7 +289,15 @@ void app_main(void)
 #if CONFIG_APP_ENABLE_HID_HOST || CONFIG_APP_ENABLE_GAMEPAD
         log_link_intervals();
 #endif
-#else
+/*
+ * Fallback heartbeat line, for builds that have neither the BLE central above nor a USB role
+ * further up. The USB roles are excluded explicitly because they print their own, richer line;
+ * without that exclusion a USB build logs the same tick TWICE, which is exactly what the first
+ * hardware run of the pad chip showed:
+ *     alive 190 s | heap 371088 B (min 371088 B) | pad ready | inputs kbd=0 mouse=0 | rumble 0/0
+ *     alive 190 s | heap 371088 B | pad ready
+ */
+#elif !CONFIG_APP_USB_PAD && !CONFIG_APP_USB_HID_HOST
         ESP_LOGI(TAG, "alive %" PRIu32 " s | heap %" PRIu32 " B | pad %s",
                  tick, (uint32_t)esp_get_free_heap_size(), pad);
 #if CONFIG_APP_ENABLE_HID_HOST || CONFIG_APP_ENABLE_GAMEPAD

@@ -103,6 +103,8 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | **Dorobek śledztwa z §4.35 scalony do `main` i przejechany na C3** | po scaleniu: `roles: hid_host=on gamepad=on`, `TX power level: 15`, klawiatura i mysz **wracają same** z bondów (`OPEN d8:78:… 'AULA-F99Pro 5.0 '` z `enc=1 bond=1`, potem `f4:ee:…`), `inputs 2 (kbd=1 mouse=1)`, oba z maską `0x63`, w logu lecą `MOU … [00 1b 00 f5 ff 00 00]` i `KBD … [00 00 06 …]`. Heap 190 588 B |
 | **Cały łańcuch na scalonym `main`: wejścia → pad → PC** | `pad ready` plus mapowanie w logu: `pad: L(0,-127)` z klawisza, `pad: R(127,83)` z myszy, skos `L(-90,-90)` ze skalowaniem. Pad łączy się z PC sam z bondu — pierwsze podejrzenie, że wymaga ponownego sparowania, było błędne; w Windows był po prostu zapamiętany inny komputer |
 | **XInput na scalonym `main`** | właściciel potwierdził, że **test pada w Steam pokazuje wejścia poprawnie** — czyli po scaleniu 29 commitów ze śledztwa §4.35 profil Xbox nadal działa i nic w deskryptorze ani w tożsamości nie ucierpiało |
+| **Wersja USB: pad XInput na ESP32-S3 SuperMini związany przez Windows** | `USB\VID_045E&PID_028E\08FEC93` → **`Service=xusb22`**, nazwa „Kontroler konsoli Xbox 360 dla systemu Windows”. `xusb22` to sterownik XInput, więc **Windows wiąże XUSB przy JEDNYM zadeklarowanym interfejsie** — to była jedyna otwarta niewiadoma §4.37 i jest zamknięta. Firmware w logu: `pad ready`, `heap 371 088 B` przez 6 min bez zmiany |
+| Płytka użyta do tego testu | ESP32-S3 (QFN56) rev v0.2, 4 MB flash (XMC), **2 MB PSRAM quad** (AP_3v3), MAC `90:da:72:49:a3:28`. Odczytane przez `esptool chip-id`; PSRAM nie jest w tym projekcie włączane |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
 
@@ -1585,12 +1587,14 @@ odniesienia: na C3 komponenty USB nie są nawet zaciągane (reguły `rules:` w
 5. **Całość.** Ruch myszy → prawa gałka, WASD → lewa, klawisze i przyciski zgodnie z tabelą
    mapowania, która jest wspólna z wersją BLE.
 
-Czego **nie** wiemy do tego testu: czy Windows zwiąże XUSB przy zadeklarowanym jednym
-interfejsie zamiast czterech. Deskryptor interfejsu 0 jest identyczny, a dopasowanie idzie po
-VID/PID, więc powinien — ale to jedyne miejsce, gdzie świadomie odbiegamy strukturalnie od
-prawdziwego pada. Jeśli nie zadziała, poprawka jest **wyłącznie w deskryptorze**: dopisać
-pozostałe trzy interfejsy (bajty są w §4.37 w źródle, w komentarzu `usb_pad.c`), co nie rusza
-ani jednej linii logiki.
+Czego **nie** wiedzieliśmy do tego testu: czy Windows zwiąże XUSB przy zadeklarowanym jednym
+interfejsie zamiast czterech. **ROZSTRZYGNIĘTE NA SPRZĘCIE: zwiąże.** Wgrany `s3pad` zgłasza się
+jako `USB\VID_045E&PID_028E\08FEC93` z `Service=xusb22` i nazwą „Kontroler konsoli Xbox 360 dla
+systemu Windows”, czyli dostaje sterownik XInput, a nie generyczny. Deskryptor interfejsu 0 jest
+identyczny z prawdziwym padem, a dopasowanie idzie po VID/PID — pozostałe trzy interfejsy
+prawdziwego pada okazały się do wiązania niepotrzebne. Gdyby kiedyś jednak były, poprawka jest
+**wyłącznie w deskryptorze**: dopisać je (bajty są w komentarzu `usb_pad.c`), co nie rusza ani
+jednej linii logiki.
 
 ### 4.38 Wersja USB na dwóch ESP32-S3 SuperMini: piny łącza, IDF 6.1 i instalator EIM
 
@@ -1615,8 +1619,30 @@ pamiętać, że `default X if TARGET` przy dwóch rolach na **jednym** targecie 
 rozróżnić ról.
 
 Oba warianty podają teraz piny jawnie: **GPIO4 = TX, GPIO5 = RX**, kabel jest skrzyżowaniem.
-Wybór: zwykłe GPIO z listwy, bez funkcji strapping (GPIO0, 3, 45, 46), poza USB (GPIO19/20),
-poza flashem i PSRAM (GPIO26–37) i poza UART0 (GPIO43/44), którego potrzebuje konsola.
+Wybór: zwykłe GPIO z listwy, bez funkcji strapping (GPIO0, 3, 45, 46), poza USB (GPIO19/20)
+i poza flashem czy PSRAM (GPIO26–37).
+
+#### Konsola zostaje na domyślnych pinach UART0, bo są na listwie
+
+Rozpiska listwy 18-pinowej ESP32-S3 SuperMini, **potwierdzona przez właściciela na fizycznej
+płytce** (obie kolumny od strony USB w dół):
+
+| Lewa krawędź | Prawa krawędź |
+|---|---|
+| `TX` = GPIO43, `RX` = GPIO44, GPIO1…GPIO7 | `5V`, `GND`, `3V3`, GPIO13…GPIO8 |
+
+Czyli domyślne piny konsoli **są** dostępne i nie ma powodu jej przenosić. Zostawienie
+domyślnych daje dwie rzeczy, których `ESP_CONSOLE_UART_CUSTOM` by nas pozbawił:
+
+- **bootloader ROM-u drukuje po tych pinach niezależnie od konfiguracji**, bo jest w krzemie —
+  to test okablowania konsoli niezależny od naszego firmware'u,
+- **protokół wgrywania ROM-u chodzi po tych samych pinach**, więc UART zostaje awaryjną drogą
+  programowania obok USB-C.
+
+Zanotowane, bo przez jedną turę miałem tu błędnie, że GPIO43/44 są na tej płytce tylko padami
+lutowniczymi, i na tej podstawie przeniosłem konsolę na GPIO13/GPIO12. Zmiana została wycofana.
+Wniosek metodologiczny: rozpiskę listwy warto potwierdzić u kogoś, kto ma płytkę w ręku, zanim
+się na niej cokolwiek oprze — obrazek producenta nie rozróżnia otworu od padu.
 
 #### Sprzęt pomocniczy: co potwierdzone, co zostaje otwarte
 
@@ -1708,6 +1734,70 @@ Dwie pułapki warte zapamiętania, obie kosztowały po jednym nieudanym przebieg
 - W PowerShellu potok zwracający **jeden** element daje skalar, nie tablicę, więc `[0]` na
   ścieżce zwraca jej **pierwszy znak**. `flash-win.ps1` opakowuje wynik w `@( )`; objaw był
   taki: `Cannot find path 'F:\ai\...\F'`.
+
+#### Pierwsze uruchomienie na sprzęcie: cztery rzeczy, które kosztowały czas
+
+**1. „Nie ma portu COM” znaczyło „nie ma sterownika”.** CP2102 był w drzewie urządzeń jako
+`USB\VID_10C4&PID_EA60\0001` z `ConfigManagerErrorCode = 28`, czyli „sterowniki nie są
+zainstalowane”. `pnputil /enum-drivers` nie miał **ani jednego** wpisu SiLabs, więc Windows nie
+miał z czego go zainstalować — trzeba było pobrać CP210x Universal Windows Driver. Warto to
+sprawdzać tym kodem, a nie brakiem portu: urządzenie było widoczne i „obecne”, tylko bezużyteczne.
+
+**2. Firmware nie startował, bo układ siedział w trybie download.** Objaw: po `Hash of data
+verified` i twardym resecie **nie pojawiał się** `VID_045E&PID_028E`, a `VID_303A&PID_1001`
+(USB Serial/JTAG) trwał niewzruszony. Rozstrzygnął to jeden pomiar: **`esptool --before no-reset`
+połączyło się**, a to udaje się wyłącznie wtedy, gdy układ już jest w bootloaderze. Dwa
+programowe resety (`esptool run` oraz impuls RTS przy DTR = 0) nie wyprowadziły go z tego stanu;
+pomogło dopiero naciśnięcie RESET na płytce.
+
+Warto zapamiętać oba testy, bo rozdzielają stany, które z zewnątrz wyglądają identycznie:
+
+| Test | Co rozstrzyga |
+|---|---|
+| `esptool --before no-reset flash-id` | przechodzi → układ **jest** w trybie download; nie przechodzi → wykonuje aplikację |
+| kilka próbek obecności urządzenia USB po 1,5 s | miga → pętla restartów; stabilne → nie restartuje się |
+
+W naszym przebiegu USB Serial/JTAG był obecny w ośmiu próbkach z rzędu, co od razu wykluczyło
+pętlę paniki i skierowało uwagę na GPIO0.
+
+**3. Po starcie aplikacji port COM znika i tak ma być.** `s3pad` przejmuje GPIO19/20 przez
+TinyUSB, więc bootloader ROM-u przestaje być widoczny — kolejne wgranie wymaga BOOT+RESET.
+Objawia się to jako `Could not open COM4, the port is busy or doesn't exist` przy próbie
+ponownego flashowania, co brzmi jak awaria, a jest dowodem, że pad działa.
+
+**4. Heartbeat drukował dwie linie na tik.** Znalezione w pierwszym logu z płytki:
+
+```
+alive 190 s | heap 371088 B (min 371088 B) | pad ready | inputs kbd=0 mouse=0 | rumble 0/0
+alive 190 s | heap 371088 B | pad ready
+```
+
+Blok dla ról USB i gałąź `#else` dla „braku hosta BLE” nie wykluczały się wzajemnie, więc build
+USB trafiał w oba. Gałąź awaryjna ma teraz warunek `#elif !APP_USB_PAD && !APP_USB_HID_HOST`,
+a na układzie wejść, który nie ma pada, zmienna `pad` jest jawnie wyciszona — bez tego build
+`s3input` sypał ostrzeżeniem o nieużywanej zmiennej.
+
+#### Dongle 2,4 GHz: interfejsy odczytane z drzewa urządzeń Windows
+
+Pytanie „czy dongle wystawiają interfejsy **boot**, których nasz host wymaga” dało się
+rozstrzygnąć **bez** podłączania czegokolwiek do ESP — wystarczyło przeczytać `CompatibleID`
+dzieci urządzenia kompozytowego:
+
+| Dongle | Interfejs | SubClass / Prot | Znaczenie |
+|---|---|---|---|
+| AULA `3554:FA09` | MI00 | 01 / 01 | boot keyboard |
+| | MI01 | 01 / 02 | boot mouse (warstwa Fn, §4.16) |
+| AJAZZ `3151:402D` | MI00 | 01 / 02 | boot mouse |
+| | MI01 | 01 / 01 | boot keyboard (§4.36 — AJ159 deklaruje klawiaturę) |
+| | MI02 | 00 / 00 | vendorowy, nasz host go pomija |
+
+Trzy wnioski. **Plan działa**: `proto 1` i `proto 2` są obecne. **Pięć interfejsów HID razem**,
+czyli stary limit `USB_HID_MAX_IFACES = 4` przelałby się — podniesienie do 8 było koniecznością,
+nie ostrożnością. I trzeci, nowy: **każdy dongle wystawia obie klasy**, więc host zobaczy po dwa
+interfejsy klawiatury i myszy. Stan klawiatury jest absolutny i nadpisywany, więc raport
+z interfejsu klawiatury *myszy* może na chwilę zwolnić trzymany klawisz. Bezczynny interfejs HID
+nic nie nadaje, więc w praktyce może to nigdy nie wystąpić — ale to jest objaw do wypatrywania,
+a nie do szukania potem w mapperze.
 
 #### Otwarta decyzja: nasza kopia `esp_hid` przysłania naprawioną wersję z 6.1
 

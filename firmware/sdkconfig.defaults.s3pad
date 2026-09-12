@@ -32,8 +32,15 @@ CONFIG_APP_LINK_RX_GPIO=5
 # MUST be UART, and this is not a preference. On the ESP32-S3 the USB Serial/JTAG peripheral
 # and USB-OTG are wired to the SAME pins (GPIO19/20) and only one can drive them; TinyUSB
 # takes the pins, so a USB Serial/JTAG console would go silent - and worse, would look like a
-# crashed firmware. On an ESP32-S3-DevKitC-1 this is free: that board has a second USB socket
-# going through a USB-UART bridge to UART0.
+# crashed firmware.
+#
+# The DEFAULT UART0 pins are right here: on an ESP32-S3 SuperMini GPIO43 and GPIO44 are the top
+# two positions of the left header column, labelled TX and RX. Keeping the defaults buys two
+# things that custom pins would cost us: the first-stage ROM bootloader prints on these pins no
+# matter what is configured, which is a wiring test independent of our firmware, and the ROM
+# download protocol lives there too, so UART flashing stays available as a fallback.
+#
+# No clash with the inter-chip link: that runs on UART1 (APP_LINK_UART_PORT) over GPIO4/GPIO5.
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 

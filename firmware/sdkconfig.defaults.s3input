@@ -41,5 +41,9 @@ CONFIG_APP_LINK_RX_GPIO=-1
 # --- console -----------------------------------------------------------------------------
 # Same hard requirement as on the pad chip: USB Serial/JTAG and USB-OTG share GPIO19/20 on
 # the S3, and here USB-OTG is the host port. Console goes to UART.
+#
+# Default UART0 pins, which on an S3 SuperMini are the top two positions of the left header
+# column (labelled TX and RX, i.e. GPIO43/GPIO44). See the pad chip's defaults for why keeping
+# them beats custom pins. No clash with the link: that is UART1 on GPIO4/GPIO5.
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
