@@ -1,8 +1,9 @@
 # esp32-hid-gamepad-bridge
 
 **Your keyboard and mouse become an Xbox controller that Windows exposes through XInput.**
-Two transports, both verified on hardware. The USB one is a **USB Host → USB Device** bridge on
-two ESP32-S3 boards that runs **every hop at 1 ms**, with no pairing anywhere.
+Two transports, both verified on hardware: over **Bluetooth LE** on a single ESP32, with no wiring
+at all, or over **USB** as a USB Host → USB Device bridge on two ESP32-S3 boards, running every hop
+at 1 ms with no pairing anywhere.
 
 | | [Bluetooth LE](#bluetooth-le) | [USB](#usb) |
 |---|---|---|

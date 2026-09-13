@@ -1,8 +1,9 @@
 # esp32-hid-gamepad-bridge
 
 **Klawiatura i mysz stają się padem Xbox, którego Windows udostępnia przez XInput.**
-Dwa transporty, oba zweryfikowane na sprzęcie. Wariant USB to mostek **USB Host → USB Device**
-na dwóch płytkach ESP32-S3, w którym **każdy odcinek chodzi co 1 ms** i nie ma żadnego parowania.
+Dwa transporty, oba zweryfikowane na sprzęcie: po **Bluetooth LE** na jednym układzie ESP32, bez
+żadnego okablowania, albo po **USB** jako mostek USB Host → USB Device na dwóch płytkach ESP32-S3,
+w którym każdy odcinek chodzi co 1 ms i nie ma żadnego parowania.
 
 | | [Bluetooth LE](#bluetooth-le) | [USB](#usb) |
 |---|---|---|
