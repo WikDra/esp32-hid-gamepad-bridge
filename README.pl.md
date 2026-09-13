@@ -10,7 +10,7 @@ Dwa transporty, oba zweryfikowane na sprzęcie — i są alternatywami, nie funk
 | co widzi PC | bezprzewodowy pad **Xbox Series X** | przewodowy pad **Xbox 360** |
 | parowanie | klawiatura, mysz i pad raz każde | **żadne** |
 | działa przed startem Windows | nie | **tak**, także w ekranach konfiguracyjnych firmware'u |
-| tempo raportów pada | 133 Hz | do **830 Hz** |
+| tempo raportów pada | 133 Hz | do **1 kHz** |
 | dodatkowy sprzęt | żaden, jeden kabel USB-C | zasilany hub, przejściówka USB-UART, trzy druty |
 
 Naciśnięcia klawiszy i ruch myszy są mapowane na gałki, spusty, krzyżak i przyciski, więc
@@ -359,7 +359,7 @@ krótszy interwał:
 |---|---|---|
 | dongle → układ wejść | **~750 Hz** | `bInterval` dongle'a, czyli odpytywanie co 1 ms |
 | układ wejść → układ pada | 108 µs na ramkę przy 921600 bodach | nie jest ogranicznikiem — ~11 % drutu przy 1000 ramkach/s |
-| układ pada → PC | **997 Hz transportu, 830 Hz z realną myszą** | interwał 1 ms endpointu IN |
+| układ pada → PC | **997 Hz** sufitu transportu; 830 Hz *odczytane* z realną myszą | interwał 1 ms endpointu IN |
 
 Te dwie ostatnie liczby znaczą różne rzeczy i ta różnica jest ważna. Oba pomiary od strony PC przez
 `scripts/xinput_rumble.py --rate`, w pętli dość szybkiej, by sama nie była ograniczeniem

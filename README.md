@@ -11,7 +11,7 @@ an afterthought:
 | what the PC sees | wireless **Xbox Series X** pad | wired **Xbox 360** pad |
 | pairing | keyboard, mouse and pad each pair once | **none at all** |
 | works before Windows boots | no | **yes**, including firmware setup screens |
-| pad update rate | 133 Hz | up to **830 Hz** |
+| pad update rate | 133 Hz | up to **1 kHz** |
 | extra hardware | none, one USB-C cable | powered hub, USB-UART adapter, three wires |
 
 Keystrokes and mouse motion are mapped onto sticks, triggers, a D-pad and buttons, so from the
@@ -364,7 +364,7 @@ initiate a shorter interval:
 |---|---|---|
 | dongle → input chip | **~750 Hz** | the dongle's `bInterval`, i.e. 1 ms polling |
 | input chip → pad chip | 108 µs per frame at 921600 baud | not a limiter — ~11 % of the wire at 1000 frames/s |
-| pad chip → PC | **997 Hz transport, 830 Hz with a real mouse** | the IN endpoint's 1 ms interval |
+| pad chip → PC | **997 Hz** transport ceiling; 830 Hz *observed* with a real mouse | the IN endpoint's 1 ms interval |
 
 Those last two numbers mean different things and the difference matters. Both were measured from
 the PC with `scripts/xinput_rumble.py --rate`, in a poll loop fast enough not to be the limit
