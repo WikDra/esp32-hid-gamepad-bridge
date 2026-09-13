@@ -1593,14 +1593,14 @@ odniesienia: na C3 komponenty USB nie są nawet zaciągane (reguły `rules:` w
 4. ~~**Drut.**~~ **PRZEJECHANE.** `s3input` TX = GPIO4 → `s3pad` RX = GPIO5, wspólna masa; piny
    podane jawnie w wariantach, bo domyślne z Kconfig opisują płytkę BR (§4.38). Nadajnik
    raportuje `sent 19884 frames (dropped 0)`, a dowodem na drugi koniec są ruszające się osie
-   pada. Rozpiska: [`docs/POLACZENIA-USB.pl.md`](docs/POLACZENIA-USB.pl.md).
+   pada. Rozpiska: [`docs/WIRING-USB.pl.md`](docs/WIRING-USB.pl.md).
 5. ~~**Całość.**~~ **PRZEJECHANE.** Ruch myszy → prawa gałka i WASD → lewa zmierzone
    (`L=(0,32767)` po `w`, `L=(-32767,0)` po `a`, 977 zmian stanu przy kręceniu myszą), a resztę
    domyka potwierdzenie właściciela: **test kontrolera w Steam pokazuje wszystko poprawnie** —
    osie, spusty, przyciski i krzyżak. Cały plan zamknięty.
 4. **Drut.** Połączyć UART: TX hosta → RX pada, wspólna masa. Piny są już ustawione jawnie
    w obu wariantach (`s3input` TX = GPIO4, `s3pad` RX = GPIO5, czyli piny z listwy
-   18-pinowej) — patrz §4.38 i [`docs/POLACZENIA-USB.pl.md`](docs/POLACZENIA-USB.pl.md).
+   18-pinowej) — patrz §4.38 i [`docs/WIRING-USB.pl.md`](docs/WIRING-USB.pl.md).
    Host ma raportować `sent N frames (dropped 0)`, pad `received N frames (CRC errors 0)` i
    `peer serves: mouse keyboard`.
 5. **Całość.** Ruch myszy → prawa gałka, WASD → lewa, klawisze i przyciski zgodnie z tabelą
@@ -1617,7 +1617,7 @@ jednej linii logiki.
 
 ### 4.38 Wersja USB na dwóch ESP32-S3 SuperMini: piny łącza, IDF 6.1 i instalator EIM
 
-Rozpiska połączeń do lutowania: [`docs/POLACZENIA-USB.pl.md`](docs/POLACZENIA-USB.pl.md).
+Rozpiska połączeń do lutowania: [`docs/WIRING-USB.pl.md`](docs/WIRING-USB.pl.md).
 Tu tylko ustalenia, które wyszły przy przygotowaniu tego montażu. **Nic z tego nie było
 jeszcze uruchomione na sprzęcie** — płytki są w trakcie lutowania listew.
 

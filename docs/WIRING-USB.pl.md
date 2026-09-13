@@ -28,6 +28,20 @@ preferencja. Na ESP32-S3 peryferium USB Serial/JTAG i USB-OTG są podłączone d
 pinów GPIO19/20** i tylko jedno może nimi sterować; gdy TinyUSB albo host USB je zabiera,
 konsola po USB zamilknie, a objaw wygląda jak martwy firmware.
 
+*English version of this document: [`WIRING-USB.md`](WIRING-USB.md). Przegląd projektu:
+[`../README.pl.md`](../README.pl.md).*
+
+## Spis treści
+
+1. [Listwa 18-pinowa](#1-listwa-18-pinowa--co-jest-czym)
+2. [Płytka A ↔ Płytka B: łącze](#2-płytka-a--płytka-b-łącze)
+3. [Przejściówka CP2102 → płytka: konsola](#3-przejściówka-cp2102--płytka-konsola)
+4. [Zasilanie i hub](#4-zasilanie-i-hub)
+5. [Wgrywanie firmware'u](#5-wgrywanie-firmwareu)
+6. [Środowisko i komendy](#6-środowisko-i-komendy)
+7. [Kolejność uruchamiania](#7-kolejność-uruchamiania)
+8. [Stan weryfikacji](#8-stan-weryfikacji)
+
 ---
 
 ## 1. Listwa 18-pinowa — co jest czym
@@ -499,7 +513,9 @@ mapowania wspólną z wersją BLE (`README.pl.md`, sekcja o mapowaniu).
 | mysz → prawy analog | 977 zmian stanu w 18 s, z gładkim opadaniem do `R=(0,0)` |
 | WASD → lewy analog | `w` → `L=(0,32767)`, `a` → `L=(-32767,0)` |
 | **przyciski, spusty, krzyżak** | potwierdzenie właściciela: **test kontrolera w Steam pokazuje wszystko poprawnie** |
+| **w grze** | potwierdzenie właściciela: **Apex Legends działa bez zarzutu** |
 | stabilność | heap płytki wejść 347 404 B (min 346 116 B) przez ~24 min |
+| passthrough | `Ctrl+Alt+G` przełącza tożsamość w obie strony; szczegóły w [`../README.pl.md`](../README.pl.md#passthrough-na-skrót-klawiaturowy) |
 
 Rozstrzygnięte pomiarem i **nie** wymagające już sprawdzania:
 
