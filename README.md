@@ -1,22 +1,40 @@
 # esp32-hid-gamepad-bridge
 
 **Your keyboard and mouse become an Xbox controller that Windows exposes through XInput.**
-Two transports, both verified on hardware — and they are alternatives, not a main feature and
-an afterthought:
+Two transports, both verified on hardware. The USB one is a **USB Host → USB Device** bridge on
+two ESP32-S3 boards that runs **every hop at 1 ms**, with no pairing anywhere.
 
 | | [Bluetooth LE](#bluetooth-le) | [USB](#usb) |
 |---|---|---|
+| architecture | 2× BLE central + 1× BLE peripheral, one chip | USB host → UART → USB device, two chips |
 | chips | **one** ESP32 | **two** ESP32-S3 |
 | input devices | BLE keyboard and mouse | any USB keyboard and mouse, or their 2.4 GHz dongles |
 | what the PC sees | wireless **Xbox Series X** pad | wired **Xbox 360** pad |
 | pairing | keyboard, mouse and pad each pair once | **none at all** |
 | works before Windows boots | no | **yes**, including firmware setup screens |
-| pad update rate | 133 Hz | up to **1 kHz** |
+| pad update rate | 133 Hz | **1 kHz** (997 Hz measured) |
+| latency added by the bridge | ≤ 15 ms | **≤ 2 ms** |
 | extra hardware | none, one USB-C cable | powered hub, USB-UART adapter, three wires |
 
+**Measured on hardware, not claimed:**
+
+- **Played in Apex Legends**, and Rocket League and Steam's controller test see the pad as an
+  ordinary XInput controller. Windows loads *its own* Xbox driver in both transports and sends
+  rumble back to us — which only that driver does.
+- **1 kHz end to end over USB.** The dongle is polled every 1 ms, the UART link needs 108 µs per
+  frame, and the pad's IN endpoint is polled every 1 ms; **997 Hz** measured through
+  `XInputGetState` with an instrument that removes the hand from the measurement. Added latency
+  is one task period plus one poll, so **≤ 2 ms**.
+- **Zero pairing on USB**, and the pad works before Windows boots — it is a plain wired
+  controller as far as the machine is concerned.
+
+The **66 Hz / 133 Hz** figures further down are the **Bluetooth** transport's, where the interval
+is negotiated over the air and the controller refuses to go below 15 ms as central
+([why](#known-limitations)). USB is not bound by any of that.
+
 Keystrokes and mouse motion are mapped onto sticks, triggers, a D-pad and buttons, so from the
-PC's point of view there is a single game controller. The mapping, the mouse curve and every
-input quirk are shared by both transports; only the two ends are swapped at compile time.
+PC's point of view there is a single game controller. The mapping, the mouse curve and every input
+quirk are shared by both transports; only the two ends are swapped at compile time.
 
 *Polish version of this document: [`README.pl.md`](README.pl.md). Engineering notes, findings
 and traps, with the evidence behind every decision: [`AGENTS.md`](AGENTS.md).*
@@ -42,8 +60,7 @@ and traps, with the evidence behind every decision: [`AGENTS.md`](AGENTS.md).*
 
 ## Status
 
-A working proof of concept, verified on hardware and confirmed both by device logs and by
-games — Apex Legends, Rocket League and Steam's controller test all see the pad and use it.
+Both transports are verified end to end. The evidence behind each claim, transport by transport:
 
 **Bluetooth LE:**
 
@@ -67,7 +84,8 @@ games — Apex Legends, Rocket League and Steam's controller test all see the pa
 - **The whole chain measured from both ends at once:** `usb ifaces 4 (kbd=1 mouse=1)` and
   `link: sent 19884 frames (dropped 0)` on the input chip, against `w` → `L=(0,32767)` and
   `a` → `L=(-32767,0)` read through XInput on the PC.
-- **Buttons, triggers and D-pad** confirmed by Steam's controller test.
+- **Buttons, triggers and D-pad** confirmed by Steam's controller test, and the whole thing
+  played in **Apex Legends**.
 
 Getting there required fixing nine separate defects in ESP-IDF's `esp_hid` component and
 working around two limitations in NimBLE's bundled services. All of it is in

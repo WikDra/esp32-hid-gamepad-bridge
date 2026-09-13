@@ -1,17 +1,36 @@
 # esp32-hid-gamepad-bridge
 
 **Klawiatura i mysz stają się padem Xbox, którego Windows udostępnia przez XInput.**
-Dwa transporty, oba zweryfikowane na sprzęcie — i są alternatywami, nie funkcją główną i dodatkiem:
+Dwa transporty, oba zweryfikowane na sprzęcie. Wariant USB to mostek **USB Host → USB Device**
+na dwóch płytkach ESP32-S3, w którym **każdy odcinek chodzi co 1 ms** i nie ma żadnego parowania.
 
 | | [Bluetooth LE](#bluetooth-le) | [USB](#usb) |
 |---|---|---|
+| architektura | 2× central BLE + 1× peripheral BLE, jeden układ | host USB → UART → urządzenie USB, dwa układy |
 | układy | **jeden** ESP32 | **dwa** ESP32-S3 |
 | urządzenia wejściowe | klawiatura i mysz BLE | dowolna klawiatura i mysz USB albo ich dongle 2,4 GHz |
 | co widzi PC | bezprzewodowy pad **Xbox Series X** | przewodowy pad **Xbox 360** |
 | parowanie | klawiatura, mysz i pad raz każde | **żadne** |
 | działa przed startem Windows | nie | **tak**, także w ekranach konfiguracyjnych firmware'u |
-| tempo raportów pada | 133 Hz | do **1 kHz** |
+| tempo raportów pada | 133 Hz | **1 kHz** (zmierzone 997 Hz) |
+| opóźnienie dodane przez mostek | ≤ 15 ms | **≤ 2 ms** |
 | dodatkowy sprzęt | żaden, jeden kabel USB-C | zasilany hub, przejściówka USB-UART, trzy druty |
+
+**Zmierzone na sprzęcie, nie deklarowane:**
+
+- **Ogrywane w Apex Legends**, a Rocket League i test kontrolera w Steam widzą pada jako zwyczajny
+  kontroler XInput. Windows ładuje w obu transportach **własny** sterownik pada Xbox i przysyła nam
+  wibracje — co robi wyłącznie ten sterownik.
+- **1 kHz na całej drodze po USB.** Dongle jest odpytywany co 1 ms, ramka na łączu UART zajmuje
+  108 µs, a endpoint IN pada jest odpytywany co 1 ms; **997 Hz** zmierzone przez `XInputGetState`
+  przyrządem, który usuwa z pomiaru rękę. Dodane opóźnienie to jeden okres zadania plus jedno
+  odpytanie, czyli **≤ 2 ms**.
+- **Zero parowania po USB**, a pad działa przed startem Windows — dla komputera jest zwyczajnym
+  przewodowym kontrolerem.
+
+Liczby **66 Hz / 133 Hz**, które pojawiają się dalej, dotyczą transportu **Bluetooth**, gdzie
+interwał jest negocjowany w eterze, a kontroler w roli centrala odmawia zejścia poniżej 15 ms
+([dlaczego](#znane-ograniczenia)). USB nie jest tym w żaden sposób ograniczone.
 
 Naciśnięcia klawiszy i ruch myszy są mapowane na gałki, spusty, krzyżak i przyciski, więc
 z punktu widzenia PC jest to jeden kontroler. Tabela mapowania, krzywa myszy i wszystkie
@@ -42,8 +61,8 @@ i pułapki, z dowodem przy każdej decyzji: [`AGENTS.md`](AGENTS.md).*
 
 ## Stan projektu
 
-Działający proof of concept, zweryfikowany na sprzęcie i potwierdzony zarówno logami z płytki, jak
-i grami — Apex Legends, Rocket League i test kontrolera w Steam widzą pada i z niego korzystają.
+Oba transporty są zweryfikowane end-to-end. Dowód przy każdym twierdzeniu, transport po
+transporcie:
 
 **Bluetooth LE:**
 
@@ -67,7 +86,8 @@ i grami — Apex Legends, Rocket League i test kontrolera w Steam widzą pada i 
 - **Cały łańcuch zmierzony z dwóch stron jednocześnie:** `usb ifaces 4 (kbd=1 mouse=1)` oraz
   `link: sent 19884 frames (dropped 0)` na układzie wejść, wobec `w` → `L=(0,32767)` i
   `a` → `L=(-32767,0)` odczytanych przez XInput w PC.
-- **Przyciski, spusty i krzyżak** potwierdzone testem kontrolera w Steam.
+- **Przyciski, spusty i krzyżak** potwierdzone testem kontrolera w Steam, a całość **ogrywana
+  w Apex Legends**.
 
 Dojście do tego wymagało naprawienia dziewięciu osobnych wad w komponencie `esp_hid` z ESP-IDF
 i obejścia dwóch ograniczeń gotowych usług NimBLE. Wszystko jest w [`AGENTS.md`](AGENTS.md)
