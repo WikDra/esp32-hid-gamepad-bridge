@@ -98,6 +98,18 @@ uint8_t chip_link_mode_bits(void);
 bool chip_link_peer_alive(void);
 
 /*
+ * Link counters and the pins in force, for diagnosis without a serial adapter.
+ *
+ * Added because a firmware push over the link failed and there was no way to tell "this chip is not
+ * transmitting" from "the wire does not carry it" - the only console available was the other chip's.
+ * sent counts frames this chip wrote, received counts frames it parsed, and crc_errors counts frames
+ * that arrived damaged. A sender that climbs while the peer's receiver stays at zero points at the
+ * cable; both at zero points at this chip.
+ */
+void chip_link_stats(uint32_t *sent, uint32_t *received, uint32_t *crc_errors, int *tx_pin,
+                     int *rx_pin);
+
+/*
  * Pushes a firmware image to the peer chip, for the end that has a network.
  *
  * Exists because the input chip's USB port is the host side and its console needs the USB-UART

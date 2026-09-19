@@ -881,6 +881,38 @@ static void receiver_task(void *arg)
 
 /* -------------------------------------------------------------------------- start */
 
+void chip_link_stats(uint32_t *sent, uint32_t *received, uint32_t *crc_errors, int *tx_pin,
+                     int *rx_pin)
+{
+    if (sent) {
+#if LINK_CAN_TX
+        *sent = s_sent_frames;
+#else
+        *sent = 0;
+#endif
+    }
+    if (received) {
+#if LINK_CAN_RX
+        *received = s_rx_frames;
+#else
+        *received = 0;
+#endif
+    }
+    if (crc_errors) {
+#if LINK_CAN_RX
+        *crc_errors = s_crc_errors;
+#else
+        *crc_errors = 0;
+#endif
+    }
+    if (tx_pin) {
+        *tx_pin = CONFIG_APP_LINK_TX_GPIO;
+    }
+    if (rx_pin) {
+        *rx_pin = CONFIG_APP_LINK_RX_GPIO;
+    }
+}
+
 esp_err_t chip_link_start(void)
 {
 #if CONFIG_APP_LINK_DISABLED

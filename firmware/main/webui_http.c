@@ -592,6 +592,14 @@ static esp_err_t h_state(httpd_req_t *req)
     jw_str(&w, webui_url());
     /* The stored network name, so the panel can show what it will try to join. The password is not
      * exposed: it has no use to the panel and every reason not to leave the device. */
+    {
+        uint32_t ls = 0, lr = 0, lc = 0;
+        int ltx = -1, lrx = -1;
+        chip_link_stats(&ls, &lr, &lc, &ltx, &lrx);
+        jw_fmt(&w, ",\"link\":{\"sent\":%u,\"recv\":%u,\"crc_err\":%u,\"tx\":%d,\"rx\":%d,\"peer\":%s}",
+               (unsigned)ls, (unsigned)lr, (unsigned)lc, ltx, lrx,
+               chip_link_peer_alive() ? "true" : "false");
+    }
     jw_raw(&w, ",\"sta_ssid\":");
     jw_str(&w, webui_sta_ssid());
     jw_raw(&w, ",\"version\":");
