@@ -97,6 +97,29 @@ uint8_t chip_link_mode_bits(void);
 /* Receiver only: whether a frame arrived recently enough (APP_LINK_PEER_TIMEOUT_MS). */
 bool chip_link_peer_alive(void);
 
+/*
+ * Pushes a firmware image to the peer chip, for the end that has a network.
+ *
+ * Exists because the input chip's USB port is the host side and its console needs the USB-UART
+ * adapter, so a firmware change there otherwise means holding BOOT and RESET on the board. The cable
+ * was already crossed on both pairs, so the reverse direction cost no rewiring.
+ *
+ * Call begin, then data as many times as needed, then end. All three BLOCK: the peer acknowledges
+ * each window of frames and that is what stops the sender outrunning its flash writes. Any of them
+ * returning an error means the transfer is over - abandon it and let the operator upload again. The
+ * peer verifies the image's SHA256 before switching to it, so a failed transfer cannot brick it.
+ *
+ * Only built where both link directions exist and this chip is the pad; elsewhere these are absent.
+ */
+#if CONFIG_APP_USB_PAD && CONFIG_APP_LINK_TX_GPIO >= 0 && CONFIG_APP_LINK_RX_GPIO >= 0
+esp_err_t chip_link_fw_begin(uint32_t total);
+esp_err_t chip_link_fw_data(const uint8_t *data, size_t len);
+esp_err_t chip_link_fw_end(void);
+#define CHIP_LINK_HAS_FW_PUSH 1
+#else
+#define CHIP_LINK_HAS_FW_PUSH 0
+#endif
+
 #ifdef __cplusplus
 }
 #endif

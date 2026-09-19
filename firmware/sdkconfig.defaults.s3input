@@ -58,3 +58,29 @@ CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 # and the other acts on it. Set on only one of them, the feature looks present and does nothing -
 # which is exactly the class of fault AGENTS.md 4.38 and 4.39 record.
 CONFIG_APP_WEBUI=y
+
+
+# --- Reverse link direction, so firmware can arrive from the pad chip ---
+# The cable is crossed on both pairs: this chip's GPIO4 goes to the pad's GPIO5, and its GPIO5 to the
+# pad's GPIO4. So each chip has TX on 4 and RX on 5, and the link is full duplex with no rewiring.
+#
+# What this chip gains is an OTA path. Its console needs the USB-UART adapter and its USB port is the
+# host side, so until now every firmware change here meant holding BOOT and RESET. Direction is
+# derived from these pins alone - see LINK_CAN_TX / LINK_CAN_RX in chip_link.c - so setting RX is the
+# whole change on the transport side.
+CONFIG_APP_LINK_RX_GPIO=5
+
+# --- Partitions: two application slots, so firmware can be received over the link ---
+# Same table as the pad variant, and the same caveat: this MOVES NVS, so the first flash with it
+# wipes whatever was stored. Nothing here is worth keeping - no bonds, no profiles, the whole
+# configuration lives on the pad chip.
+#
+# THIS CHANGE CANNOT ARRIVE BY OTA, because the OTA it enables does not exist yet. One last flash
+# over BOOT+RESET, and after that updates come over the wire.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Start a freshly received image as PENDING_VERIFY and roll back unless it confirms itself. app_main
+# confirms after 30 s of uptime. That matters more here than on the pad: this chip has no network of
+# its own, so a bad image could only be recovered by hand.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

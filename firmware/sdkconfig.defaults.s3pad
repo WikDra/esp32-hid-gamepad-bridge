@@ -126,3 +126,14 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # boot-loops recovers with nothing to press - which matters here because the only way in is over a
 # network that a broken image would not bring up.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# --- Reverse link direction, so this chip can push firmware to its peer ---
+# The cable is crossed on both pairs, so each chip has TX on GPIO4 and RX on GPIO5 and the link is
+# full duplex with no rewiring.
+#
+# Setting TX here does NOT make this chip a link sender in the role sense: it must never emit a mode
+# octet or a presence keepalive, because those are absolute state owned by the input chip and two
+# chips asserting them at each other would fight. Direction and role are separate conditions in
+# chip_link.c for exactly this reason - LINK_CAN_TX gates the frame writer, APP_LINK_SENDER gates the
+# content.
+CONFIG_APP_LINK_TX_GPIO=4

@@ -229,7 +229,7 @@ menu "HID bridge (application configuration)"
 
     config APP_LINK_PEER_TIMEOUT_MS
         int "Link: treat the peer as gone after this long without a frame [ms]"
-        depends on APP_LINK_RECEIVER
+        depends on !APP_LINK_DISABLED
         range 200 10000
         default 1500
         help

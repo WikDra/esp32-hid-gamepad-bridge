@@ -321,6 +321,15 @@ td select{width:100%;padding:7px 8px;min-height:38px}
       <button id="fwsend" class="primary" disabled>Update</button>
     </div>
     <div class="bar" style="margin-top:10px"><i id="fwbar"></i></div>
+    <div class="row" style="margin-top:16px">
+      <input type="file" id="fwfile2" accept=".bin" class="grow">
+      <button id="fwsend2" disabled>Update the input chip</button>
+    </div>
+    <div class="bar" style="margin-top:10px"><i id="fwbar2"></i></div>
+    <p class="hint">The second one relays the image to the <b>input chip</b> over the wire between
+    the boards, because that chip has no network of its own — its USB port is the host side. Takes a
+    few seconds. It verifies the image before switching, and confirms only after staying up for
+    30&nbsp;s, so a bad one rolls back there too.</p>
     <p class="hint">Upload <span class="mono">hid_gamepad_bridge.bin</span> for the pad chip. The
     image is written to the spare slot and verified before anything reboots, and it is only
     confirmed after the new firmware has stayed up for half a minute — so one that crashes or
@@ -814,41 +823,51 @@ $("forgetwifi").addEventListener("click", async () => {
 });
 
 /* ---- OTA ------------------------------------------------------------- */
-$("fwfile").addEventListener("change", () => {
-  $("fwsend").disabled = !$("fwfile").files[0];
-});
-$("fwsend").addEventListener("click", () => {
-  const f = $("fwfile").files[0];
-  if (!f) return;
-  if (!confirm(`Write ${f.name} (${f.size} bytes) and reboot into it?`)) return;
+/*
+ * One routine for both targets. The only differences are the endpoint and what the success message
+ * has to say, so duplicating it would be two descriptions of one thing.
+ */
+function wireOta(fileId, buttonId, barId, url, what) {
+  $(fileId).addEventListener("change", () => {
+    $(buttonId).disabled = !$(fileId).files[0];
+  });
+  $(buttonId).addEventListener("click", () => {
+    const f = $(fileId).files[0];
+    if (!f) return;
+    if (!confirm(`Write ${f.name} (${f.size} bytes) to the ${what} and reboot it?`)) return;
 
-  /* XHR rather than fetch, for upload progress - a firmware upload with no feedback is
-     indistinguishable from a hung one. */
-  const xhr = new XMLHttpRequest();
-  xhr.open("POST", "/api/ota");
-  xhr.setRequestHeader("Content-Type", "application/octet-stream");
-  $("fwsend").disabled = true;
+    /* XHR rather than fetch, for upload progress - a firmware upload with no feedback is
+       indistinguishable from a hung one. */
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.timeout = 120000;
+    $(buttonId).disabled = true;
 
-  xhr.upload.onprogress = ev => {
-    if (ev.lengthComputable) {
-      $("fwbar").style.width = Math.round(ev.loaded * 100 / ev.total) + "%";
-    }
-  };
-  xhr.onload = () => {
-    if (xhr.status === 200) {
-      toast("Written — rebooting. Reconnect in a few seconds.", "ok");
-      $("fwbar").style.width = "100%";
-    } else {
-      toast("Rejected: " + xhr.responseText, "bad");
-      $("fwsend").disabled = false;
-    }
-  };
-  xhr.onerror = () => {
-    toast("Transfer failed — nothing was changed", "bad");
-    $("fwsend").disabled = false;
-  };
-  xhr.send(f);
-});
+    xhr.upload.onprogress = ev => {
+      if (ev.lengthComputable) {
+        $(barId).style.width = Math.round(ev.loaded * 100 / ev.total) + "%";
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status === 200) {
+        toast(`Written to the ${what} — rebooting.`, "ok");
+        $(barId).style.width = "100%";
+      } else {
+        toast("Rejected: " + xhr.responseText, "bad");
+        $(buttonId).disabled = false;
+      }
+    };
+    xhr.onerror = xhr.ontimeout = () => {
+      toast("Transfer failed — nothing was changed", "bad");
+      $(buttonId).disabled = false;
+    };
+    xhr.send(f);
+  });
+}
+
+wireOta("fwfile", "fwsend", "fwbar", "/api/ota", "pad chip");
+wireOta("fwfile2", "fwsend2", "fwbar2", "/api/ota/peer", "input chip");
 
 /* ---- start ----------------------------------------------------------- */
 async function loadConfig() {

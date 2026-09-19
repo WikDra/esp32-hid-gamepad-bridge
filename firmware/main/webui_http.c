@@ -34,6 +34,7 @@
 #include <string.h>
 
 #include "bridge_config.h"
+#include "chip_link.h"
 #include "esp_app_desc.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -746,8 +747,77 @@ static esp_err_t h_ota(httpd_req_t *req)
     return ESP_OK; /* not reached */
 }
 
-/* ---------------------------------------------------------------- lifecycle */
+#if CHIP_LINK_HAS_FW_PUSH
+/*
+ * Firmware update for the OTHER chip, relayed over the inter-chip link.
+ *
+ * The input chip has no network of its own: its USB port is the host side and its console needs the
+ * USB-UART adapter, so a firmware change there used to mean holding BOOT and RESET on the board.
+ * The cable was already crossed on both pairs, so the reverse direction was free.
+ *
+ * Streamed rather than buffered - a 300 kB image would not fit in RAM alongside Wi-Fi, and it does
+ * not need to. Backpressure comes from the link acknowledging each window, so reading from the socket
+ * only as fast as the wire drains is automatic.
+ */
+static esp_err_t h_ota_peer(httpd_req_t *req)
+{
+    if (!authorised(req)) {
+        return ESP_OK;
+    }
+    if (req->content_len == 0) {
+        return send_err(req, "400 Bad Request", "empty image");
+    }
+    if (!chip_link_peer_alive()) {
+        return send_err(req, "503 Service Unavailable",
+                        "the other chip is not answering on the link");
+    }
 
+    ESP_LOGW(TAG, "peer OTA: relaying %d B over the link", req->content_len);
+
+    esp_err_t err = chip_link_fw_begin((uint32_t)req->content_len);
+    if (err != ESP_OK) {
+        return send_err(req, "502 Bad Gateway", "the other chip refused to start");
+    }
+
+    char *chunk = malloc(OTA_CHUNK);
+    if (!chunk) {
+        return send_err(req, "500 Internal Server Error", "out of memory");
+    }
+
+    int remaining = req->content_len;
+    while (remaining > 0 && err == ESP_OK) {
+        const int want = (remaining < OTA_CHUNK) ? remaining : OTA_CHUNK;
+        const int n = httpd_req_recv(req, chunk, want);
+        if (n == HTTPD_SOCK_ERR_TIMEOUT) {
+            continue;
+        }
+        if (n <= 0) {
+            err = ESP_FAIL;
+            break;
+        }
+        err = chip_link_fw_data((const uint8_t *)chunk, (size_t)n);
+        remaining -= n;
+        webui_touch(); /* a multi-second relay must not trip the idle timeout */
+    }
+    free(chunk);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "peer OTA failed mid-transfer: %s", esp_err_to_name(err));
+        return send_err(req, "502 Bad Gateway", "transfer failed - the other chip is unchanged");
+    }
+
+    err = chip_link_fw_end();
+    if (err != ESP_OK) {
+        return send_err(req, "400 Bad Request", "the other chip rejected the image");
+    }
+
+    ESP_LOGW(TAG, "peer OTA accepted - the other chip is rebooting into it");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true,\"peer_rebooting\":true}");
+}
+#endif /* CHIP_LINK_HAS_FW_PUSH */
+
+/* ---------------------------------------------------------------- lifecycle */
 static void build_auth(const char *password)
 {
     /*
@@ -813,6 +883,9 @@ esp_err_t webui_http_start(const char *password)
         {.uri = "/api/export", .method = HTTP_GET, .handler = h_export},
         {.uri = "/api/wifi", .method = HTTP_POST, .handler = h_wifi},
         {.uri = "/api/ota", .method = HTTP_POST, .handler = h_ota},
+#if CHIP_LINK_HAS_FW_PUSH
+        {.uri = "/api/ota/peer", .method = HTTP_POST, .handler = h_ota_peer},
+#endif
     };
 
     for (unsigned i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {

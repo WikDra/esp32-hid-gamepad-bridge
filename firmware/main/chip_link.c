@@ -25,6 +25,27 @@
 
 #if !CONFIG_APP_LINK_DISABLED
 
+/*
+ * DIRECTION IS DERIVED FROM THE PINS, ROLE FROM KCONFIG, and keeping those two apart is what makes
+ * a bidirectional link possible without disturbing what already works.
+ *
+ *   - LINK_CAN_TX / LINK_CAN_RX say what the wiring permits. They gate the MACHINERY: the frame
+ *     writer, the parser, the tasks.
+ *   - APP_LINK_SENDER / APP_LINK_RECEIVER say what this chip is FOR. They gate the CONTENT: who
+ *     produces mouse and keyboard frames, who generates the keepalive and the mode octet, and who
+ *     feeds the input accumulator.
+ *
+ * The distinction matters because the pad chip must be able to SEND (firmware images to its peer)
+ * without ever sending a mode octet - two chips asserting absolute state at each other would fight,
+ * and the loser would be whichever spoke last.
+ *
+ * On the USB split both chips now have TX=GPIO4 and RX=GPIO5 with the cable crossed, so both
+ * directions exist. On the BLE split the pins are one-way and these conditions reduce to exactly
+ * the old behaviour.
+ */
+#define LINK_CAN_TX (CONFIG_APP_LINK_TX_GPIO >= 0)
+#define LINK_CAN_RX (CONFIG_APP_LINK_RX_GPIO >= 0)
+
 static const char *TAG = "link";
 
 /*
@@ -38,12 +59,39 @@ static const char *TAG = "link";
 #define LINK_TYPE_MOUSE     0x01 /* buttons u8, dx i16, dy i16, wheel i8         */
 #define LINK_TYPE_KEEPALIVE 0x02 /* presence bitmask u8: bit0 mouse, bit1 keyboard */
 #define LINK_TYPE_KEYBOARD  0x03 /* modifiers u8, keycodes u8 x6                 */
-#define LINK_TYPE_MODE      0x04 /* 0 = gamepad, 1 = passthrough                 */
+#define LINK_TYPE_MODE      0x04 /* mode bitmask: passthrough, panel, profile     */
+
+/*
+ * Firmware transfer, from the chip that has a network to the one that does not.
+ *
+ * WHY THIS EXISTS. The input chip's USB port is the host side and its console needs the USB-UART
+ * adapter, so every firmware change there meant holding BOOT and RESET. The cable was already
+ * crossed on both pairs, so the reverse direction cost nothing to enable.
+ *
+ * NO RETRANSMISSION, deliberately. The ACK is FLOW CONTROL - it stops the sender outrunning the
+ * receiver's flash writes - not reliability. Reliability comes from two places that are already
+ * there: every frame carries a CRC, and esp_ota_end() verifies the image's SHA256 before it can
+ * ever be booted. A transfer that goes wrong is abandoned and the browser can upload again; what
+ * cannot happen is a corrupt image being booted.
+ */
+#define LINK_TYPE_FW_BEGIN 0x05 /* total size u32                                */
+#define LINK_TYPE_FW_DATA  0x06 /* image bytes, in order                         */
+#define LINK_TYPE_FW_END   0x07 /* no payload: finish, verify and switch          */
+#define LINK_TYPE_FW_ACK   0x08 /* bytes accepted so far u32, status u8           */
 
 #define LINK_PRESENT_MOUSE    0x01
 #define LINK_PRESENT_KEYBOARD 0x02
 
-#define LINK_PAYLOAD_MAX 8
+/*
+ * Raised from 8 to carry firmware chunks. The control frames need seven bytes at most; this size is
+ * chosen for throughput, because at eight bytes a 300 kB image would be 37 500 frames and the
+ * per-frame round trips, not the wire, would set the pace. At 192 it is about 1 600 frames and
+ * roughly three and a half seconds at 921600 baud.
+ *
+ * The cost is stack: the parser and the writer each keep a buffer this size. The len field is a
+ * single octet, so 255 is the ceiling regardless.
+ */
+#define LINK_PAYLOAD_MAX 192
 #define LINK_FRAME_MAX   (2 + 1 + 1 + LINK_PAYLOAD_MAX + 1)
 
 #define LINK_KEEPALIVE_MS 250
@@ -78,7 +126,7 @@ static esp_err_t link_uart_init(void)
      * of spinning until the FIFO drains. The sender task must never sit in the driver: it
      * is fed from the BLE event path.
      */
-    esp_err_t err = uart_driver_install(CONFIG_APP_LINK_UART_PORT, 512, 512, 0, NULL, 0);
+    esp_err_t err = uart_driver_install(CONFIG_APP_LINK_UART_PORT, 2048, 2048, 0, NULL, 0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "uart_driver_install failed: %s", esp_err_to_name(err));
         return err;
@@ -103,6 +151,235 @@ static esp_err_t link_uart_init(void)
 
 #endif /* !CONFIG_APP_LINK_DISABLED */
 
+/* ------------------------------------------------------------- frame writer (any direction) */
+
+#if LINK_CAN_TX
+
+static uint32_t s_sent_frames;
+
+/*
+ * Writes one framed, CRC-protected frame. Available to both roles, because sending is now a property
+ * of the wiring rather than of what the chip is for: the pad chip uses this to push a firmware image
+ * to its peer without taking on any of the sender role's content.
+ */
+static void frame_send(uint8_t type, const uint8_t *payload, uint8_t len)
+{
+    uint8_t buf[LINK_FRAME_MAX];
+    buf[0] = LINK_SYNC0;
+    buf[1] = LINK_SYNC1;
+    buf[2] = type;
+    buf[3] = len;
+    if (len) {
+        memcpy(&buf[4], payload, len);
+    }
+    buf[4 + len] = crc8(&buf[2], (size_t)len + 2);
+    uart_write_bytes(CONFIG_APP_LINK_UART_PORT, (const char *)buf, (size_t)len + 5);
+    s_sent_frames++;
+}
+
+#endif /* LINK_CAN_TX */
+
+/* ----------------------------------------------------------- firmware over the link */
+
+/*
+ * Which end does what. Derived from the USB roles rather than from the link role, because that is
+ * what it actually depends on: the pad chip is the one with a network and a panel, the input chip is
+ * the one that is otherwise only reachable by holding BOOT and RESET.
+ */
+#define LINK_FW_SOURCE (CONFIG_APP_USB_PAD && LINK_CAN_TX && LINK_CAN_RX)
+#define LINK_FW_TARGET (CONFIG_APP_USB_HID_HOST && LINK_CAN_RX && LINK_CAN_TX)
+
+#if LINK_FW_TARGET
+#include "esp_ota_ops.h"
+
+/* One window of frames is acknowledged at a time. Four times 192 bytes is 768 in flight, against a
+ * 2 kB UART receive buffer - enough margin that a slow flash write cannot overrun it. */
+#define LINK_FW_ACK_EVERY 4
+
+static esp_ota_handle_t s_fw_ota;
+static const esp_partition_t *s_fw_part;
+static uint32_t s_fw_total;
+static uint32_t s_fw_got;
+static uint32_t s_fw_frames;
+static bool s_fw_failed;
+
+static void fw_ack(uint8_t status)
+{
+    uint8_t p[5];
+    p[0] = (uint8_t)(s_fw_got & 0xFF);
+    p[1] = (uint8_t)((s_fw_got >> 8) & 0xFF);
+    p[2] = (uint8_t)((s_fw_got >> 16) & 0xFF);
+    p[3] = (uint8_t)((s_fw_got >> 24) & 0xFF);
+    p[4] = status;
+    frame_send(LINK_TYPE_FW_ACK, p, sizeof(p));
+}
+
+static void fw_abort(const char *why)
+{
+    if (s_fw_ota) {
+        esp_ota_abort(s_fw_ota);
+        s_fw_ota = 0;
+    }
+    s_fw_failed = true;
+    ESP_LOGE(TAG, "firmware over the link failed: %s", why);
+    fw_ack(1);
+}
+
+static void fw_begin(const uint8_t *p, uint8_t len)
+{
+    if (len != 4) {
+        return;
+    }
+    if (s_fw_ota) {
+        esp_ota_abort(s_fw_ota);
+        s_fw_ota = 0;
+    }
+
+    s_fw_total = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+                 ((uint32_t)p[3] << 24);
+    s_fw_got = 0;
+    s_fw_frames = 0;
+    s_fw_failed = false;
+
+    s_fw_part = esp_ota_get_next_update_partition(NULL);
+    if (!s_fw_part) {
+        fw_abort("no spare OTA partition on this chip");
+        return;
+    }
+    if (esp_ota_begin(s_fw_part, s_fw_total, &s_fw_ota) != ESP_OK) {
+        s_fw_ota = 0;
+        fw_abort("esp_ota_begin");
+        return;
+    }
+
+    ESP_LOGW(TAG, "firmware over the link: receiving %" PRIu32 " B into '%s'", s_fw_total,
+             s_fw_part->label);
+    fw_ack(0);
+}
+
+static void fw_data(const uint8_t *p, uint8_t len)
+{
+    if (s_fw_failed || !s_fw_ota) {
+        return;
+    }
+    if (esp_ota_write(s_fw_ota, p, len) != ESP_OK) {
+        fw_abort("esp_ota_write");
+        return;
+    }
+    s_fw_got += len;
+
+    /* Acknowledge a window, not every frame: the point is to bound how much the sender may have in
+     * flight, and one round trip per 768 bytes costs far less than one per 192. */
+    if ((++s_fw_frames % LINK_FW_ACK_EVERY) == 0) {
+        fw_ack(0);
+    }
+}
+
+static void fw_end(void)
+{
+    if (s_fw_failed || !s_fw_ota) {
+        fw_ack(1);
+        return;
+    }
+
+    /* This is where the image is verified. A truncated or corrupt transfer dies here and the running
+     * firmware is untouched - which is why the transfer itself needs no retransmission. */
+    const esp_err_t err = esp_ota_end(s_fw_ota);
+    s_fw_ota = 0;
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "firmware over the link rejected: %s", esp_err_to_name(err));
+        fw_ack(1);
+        return;
+    }
+    if (esp_ota_set_boot_partition(s_fw_part) != ESP_OK) {
+        fw_ack(1);
+        return;
+    }
+
+    ESP_LOGW(TAG, "firmware over the link accepted (%" PRIu32 " B) - rebooting into '%s'", s_fw_got,
+             s_fw_part->label);
+    fw_ack(0);
+    /* Let the acknowledgement reach the other chip before the UART goes away. */
+    vTaskDelay(pdMS_TO_TICKS(100));
+    esp_restart();
+}
+#endif /* LINK_FW_TARGET */
+
+#if LINK_FW_SOURCE
+/* Set by the parser when an acknowledgement arrives, consumed by the push functions. */
+static volatile uint32_t s_fw_ack_bytes;
+static volatile uint8_t s_fw_ack_status;
+static volatile bool s_fw_ack_seen;
+
+/* Bytes handed to the wire so far, and how many frames since the last acknowledged window. */
+static uint32_t s_fw_pushed;
+static uint32_t s_fw_window;
+
+static esp_err_t fw_wait_ack(uint32_t expect_bytes, int timeout_ms)
+{
+    for (int waited = 0; waited < timeout_ms; waited += 5) {
+        if (s_fw_ack_seen) {
+            s_fw_ack_seen = false;
+            if (s_fw_ack_status != 0) {
+                ESP_LOGE(TAG, "peer refused the firmware at %" PRIu32 " B", s_fw_ack_bytes);
+                return ESP_FAIL;
+            }
+            if (s_fw_ack_bytes != expect_bytes) {
+                ESP_LOGE(TAG, "peer accepted %" PRIu32 " B, expected %" PRIu32, s_fw_ack_bytes,
+                         expect_bytes);
+                return ESP_ERR_INVALID_STATE;
+            }
+            return ESP_OK;
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    ESP_LOGE(TAG, "peer did not acknowledge within %d ms", timeout_ms);
+    return ESP_ERR_TIMEOUT;
+}
+
+esp_err_t chip_link_fw_begin(uint32_t total)
+{
+    uint8_t p[4] = { (uint8_t)total, (uint8_t)(total >> 8), (uint8_t)(total >> 16),
+                     (uint8_t)(total >> 24) };
+    s_fw_ack_seen = false;
+    s_fw_pushed = 0;
+    s_fw_window = 0;
+    frame_send(LINK_TYPE_FW_BEGIN, p, sizeof(p));
+    return fw_wait_ack(0, 3000);
+}
+
+esp_err_t chip_link_fw_data(const uint8_t *data, size_t len)
+{
+    while (len) {
+        const uint8_t chunk = (len > LINK_PAYLOAD_MAX) ? LINK_PAYLOAD_MAX : (uint8_t)len;
+        frame_send(LINK_TYPE_FW_DATA, data, chunk);
+        data += chunk;
+        len -= chunk;
+        s_fw_pushed += chunk;
+
+        if ((++s_fw_window % 4) == 0) {
+            const esp_err_t err = fw_wait_ack(s_fw_pushed, 2000);
+            if (err != ESP_OK) {
+                return err;
+            }
+        }
+    }
+    return ESP_OK;
+}
+
+esp_err_t chip_link_fw_end(void)
+{
+    /* Drain whatever the last partial window left unacknowledged, so a failure is reported here
+     * rather than looking like a rejected image. */
+    if ((s_fw_window % 4) != 0) {
+        s_fw_window = 0;
+    }
+    frame_send(LINK_TYPE_FW_END, NULL, 0);
+    return fw_wait_ack(s_fw_pushed, 10000);
+}
+#endif /* LINK_FW_SOURCE */
+
+
 /* ------------------------------------------------------------------------ sender */
 
 #if CONFIG_APP_LINK_SENDER
@@ -124,7 +401,6 @@ typedef struct {
 } link_evt_t;
 
 static QueueHandle_t s_tx_queue;
-static uint32_t s_sent_frames;
 static uint32_t s_dropped;
 static volatile uint8_t s_presence;
 
@@ -214,21 +490,6 @@ void chip_link_send_mouse(uint8_t buttons, int32_t dx, int32_t dy, int32_t wheel
     }
 }
 
-static void frame_send(uint8_t type, const uint8_t *payload, uint8_t len)
-{
-    uint8_t buf[LINK_FRAME_MAX];
-    buf[0] = LINK_SYNC0;
-    buf[1] = LINK_SYNC1;
-    buf[2] = type;
-    buf[3] = len;
-    if (len) {
-        memcpy(&buf[4], payload, len);
-    }
-    buf[4 + len] = crc8(&buf[2], (size_t)len + 2);
-    uart_write_bytes(CONFIG_APP_LINK_UART_PORT, (const char *)buf, (size_t)len + 5);
-    s_sent_frames++;
-}
-
 static void sender_task(void *arg)
 {
     (void)arg;
@@ -301,7 +562,7 @@ static void sender_task(void *arg)
 
 /* ---------------------------------------------------------------------- receiver */
 
-#if CONFIG_APP_LINK_RECEIVER
+#if LINK_CAN_RX
 
 static volatile int64_t s_last_frame_us;
 static uint32_t s_rx_frames;
@@ -423,6 +684,29 @@ static void handle_frame(uint8_t type, const uint8_t *p, uint8_t len)
             }
         }
         break;
+
+#if LINK_FW_TARGET
+    case LINK_TYPE_FW_BEGIN:
+        fw_begin(p, len);
+        break;
+    case LINK_TYPE_FW_DATA:
+        fw_data(p, len);
+        break;
+    case LINK_TYPE_FW_END:
+        fw_end();
+        break;
+#endif
+
+#if LINK_FW_SOURCE
+    case LINK_TYPE_FW_ACK:
+        if (len == 5) {
+            s_fw_ack_bytes = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+                             ((uint32_t)p[3] << 24);
+            s_fw_ack_status = p[4];
+            s_fw_ack_seen = true;
+        }
+        break;
+#endif
 
     default:
         break;
@@ -593,7 +877,7 @@ static void receiver_task(void *arg)
 #endif /* CONFIG_APP_LINK_PROBE_RX */
 }
 
-#endif /* CONFIG_APP_LINK_RECEIVER */
+#endif /* LINK_CAN_RX */
 
 /* -------------------------------------------------------------------------- start */
 
@@ -618,7 +902,7 @@ esp_err_t chip_link_start(void)
     ESP_LOGI(TAG, "mode: sender (mouse -> host chip)");
 #endif
 
-#if CONFIG_APP_LINK_RECEIVER
+#if LINK_CAN_RX
     /* Priority above the mapper so an arriving frame is parsed before the next pad tick
      * consumes the state - that is the whole point of the split. */
     if (xTaskCreate(receiver_task, "link_rx", 3072, NULL, 6, NULL) != pdPASS) {
