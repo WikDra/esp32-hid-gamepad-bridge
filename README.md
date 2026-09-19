@@ -463,6 +463,13 @@ silently changed the feel; the fixed-point accumulator was too coarse and stalle
 the result was truncated to whole mouse counts per tick, which at 1 kHz left three usable levels.
 Before-and-after numbers are in `AGENTS.md` §4.40.
 
+**The configuration panel costs nothing measurable.** The mapping loop was measured at **1000.0 Hz**
+with Wi-Fi up, the access point serving and a browser polling the live state (6105 iterations in
+6.105 s), and at **1000 Hz** again with the bridge joined to a home network. That number counts loop
+iterations rather than state changes, so it does not depend on anyone's hand — which is what makes
+it comparable across configurations at all. Wi-Fi with the server costs about 125 kB of heap,
+leaving 242–248 kB free.
+
 **Two traps worth knowing if you change these settings.** `pdMS_TO_TICKS()` rounds down to whole
 ticks, so a report period shorter than one FreeRTOS tick silently becomes one tick — at the
 default 100 Hz tick a 1 ms period becomes 10 ms. The USB pad variant therefore sets

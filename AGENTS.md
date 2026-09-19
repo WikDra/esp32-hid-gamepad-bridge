@@ -110,6 +110,10 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | **Wersja USB: cały łańcuch na dwóch S3 SuperMini** | mierzone z dwóch stron jednocześnie. Płytka wejść: `usb ifaces 4 (kbd=1 mouse=1)`, `KBD report len=8 [00 00 1a 00]` (0x1a = `w`), `MOU report len=7 [00 ff ff 07]`, `link: sent 19884 frames (dropped 0)`. Pad w PC przez `XInputGetState`: `L=(0,32767)` po `w`, `L=(-32767,0)` po `a`, a ruch myszą daje **977 zmian stanu w 18 s** z gładkim opadaniem `R=(516,0) → (258,0) → (0,0)`, czyli filtrem z §4.22. W systemie **jeden** kontroler XInput, slot 0, więc pomiar nie może dotyczyć innego urządzenia |
 | Hub i dongle na sprzęcie | zasilany hub USB 3.0 z dwoma dongle'ami 2,4 GHz obsłużony poprawnie; heap płytki wejść `347 404 B (min 346 116 B)` stabilny przez ~24 min |
 | **Wersja USB domknięta: test pada w Steam przechodzi w całości** | potwierdzenie właściciela (nie log): **test kontrolera w Steam pokazuje wszystko poprawnie** — osie, spusty, przyciski i krzyżak. To zamyka krok 5 planu z §4.37, czyli cały plan. Tym samym mostek działa w dwóch niezależnych wariantach transportu: BLE (§4.31, §4.32) i USB |
+| **Panel konfiguracyjny po Wi-Fi działa w całości** | zmierzone z komputera: strona 32 462 B HTTP 200, `/api/state` bez hasła **401**, z hasłem pełny stan; 20 domyślnych przypisań zgodnych z tablicą; przycinanie `div_x` 9999→512 i `anti_dz` 200→80; sanityzacja nazwy `a"<b>c\d;e` → `a__b_c_d_e`; profile zapisane i odczytane z NVS **przez restart** (`apex`, div 96/72, tau 60); eksport 707 B. Szczegóły i pułapki w §4.41 |
+| **Wi-Fi na żądanie nie kosztuje tempa** | licznik `ticks` w oknie z `uptime_ms`: **1000,0 Hz** przy podniesionym AP i odpytywanym panelu (6105 przebiegów w 6,105 s) oraz **1000 Hz** w trybie klienta (okno 8,191 s). Heap 242–248 kB wolne, czyli radio z serwerem kosztuje ~125 kB |
+| **OTA i wycofanie zweryfikowane** | trzy obiegi aktualizacji, każdy `HTTP 200` i każdy wstał. Wycofanie udowodnione obrazem z `abort()`, kryptograficznie poprawnym: przyjęty, uruchomiony, panika, bootloader wrócił do poprzedniego bez niczyjego udziału — po 87 s panel odpowiada z `pad_ready=True` |
+| **Dołączenie do sieci domowej** | `net=station`, `http://192.168.1.32`, `sta_ssid='PLAY_Swiatlowod_D4C0'`. Lista DHCP routera go **nie pokazywała** — znaleziony skanem LAN po MAC `90:da:72:49:a3:28` (klient używa bazowego MAC, AP inkrementowanego) |
 | **Passthrough na skrót działa w obie strony** | `Ctrl+Alt+G` na klawiaturze przełącza tożsamość USB układu pada. Odczytane z drzewa urządzeń: w passthrough `USB\VID_303A&PID_4004` z `Service=HidUsb` i dwiema kolekcjami — `COL01` → `kbdhid`, `COL02` → `mouhid`, a pad `045E:028E` **nieobecny** i XInput nie widzi nic w żadnym slocie; po powtórnym skrócie wraca `USB\VID_045E&PID_028E` z `Service=xusb22` i slot 0 `CONNECTED`. Szczegóły projektowe w §4.39 |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
@@ -2176,17 +2180,100 @@ stała czasowa jest czasem, i że kompensacja martwej strefy jest monotoniczna, 
 przestrzeliwuje na skosach. Dzielenie w modelu obcina **w stronę zera**, jak w C — pomyłka w tym
 miejscu zmienia zachowanie tylko dla ujemnych przyrostów, czyli niewykrywalnie wyczuciem.
 
-#### Stan weryfikacji
+#### Stan weryfikacji: PRZEJECHANE NA SPRZĘCIE W CAŁOŚCI
 
-Zbudowane: sześć konfiguracji, zero ostrzeżeń. Pad `0xe5990` (940 kB) w slocie 1856 kB, 51 % wolne.
-Tablica partycji odczytana z binarki i zgodna z projektem. Strona potwierdzona w obrazie przez
-szukanie ciągów. C3 urósł o 224 B, H2 i `s3input` bez zmian.
+Zbudowane: sześć konfiguracji, zero ostrzeżeń. Pad `0xe5f20` (941 kB) w slocie 1856 kB, 50 % wolne.
 
-**Nie zweryfikowane na sprzęcie, do przejechania:** koszt heapu po podniesieniu Wi-Fi; tempo pada
-przyrządem `APP_DEBUG_PAD_RATE_PROBE` przy radiu włączonym i przy otwartym panelu (to jest
-najważniejszy pomiar tej funkcji); oba skróty; dołączenie do sieci i awaryjny powrót do AP;
-zapis i odczyt profilu; pełny obieg OTA wraz z **celowo zepsutym obrazem**, żeby potwierdzić
-wycofanie.
+Zmierzone przez WiFi, z komputera podłączonego najpierw do AP mostka, potem po kablu do tej samej
+sieci:
+
+| Co | Dowód |
+|---|---|
+| strona i uwierzytelnianie | 32 462 B, HTTP 200; `/api/state` bez hasła → **401**, z hasłem → pełny stan |
+| domyślne przypisania | 20, zgodne co do wiersza: `1:4→1` (A → lewa gałka w lewo), `1:26→3` (W → w górę) |
+| częściowa aktualizacja nie wymazuje reszty | po wysłaniu samego `div_x` zostało `div_y=64` i `binds=20` |
+| przycinanie wartości | `div_x` 9999→512, `div_y` 0→1, `tau` 1→5, `anti_dz` 200→80 |
+| sanityzacja nazwy | `a"<b>c\d;e` → `a__b_c_d_e` |
+| profile | zapis do slotu 2, reset do domyślnych, odczyt slotu 2 z powrotem wszystkich pól |
+| **trwałość NVS przez restart** | po OTA wczytał się aktywny slot: `apex`, div 96/72, tau 60, anti_dz 18 |
+| eksport | 707 B z `Content-Disposition` |
+| **OTA** | trzy obiegi, każdy `HTTP 200`, każdy wstał |
+| **AP wraca sam po restarcie pada** | bez naciskania skrótu — układ wejść powtarza bit, pad podnosi go z łącza w ciągu keepalive |
+| **dołączenie do sieci zewnętrznej** | `net=station`, `http://192.168.1.32`, znalezione w LAN po MAC `90:da:72:49:a3:28` |
+
+**POMIAR, KTÓRY USPRAWIEDLIWIA CAŁY PROJEKT „WI-FI NA ŻĄDANIE".** Tempo pętli mapującej, licznik
+`ticks` w oknie liczonym z `uptime_ms`:
+
+| Stan | Zmierzone |
+|---|---|
+| AP w górze, panel odpytywany | **1000,0 Hz** (6105 przebiegów w 6,105 s) |
+| w trybie klienta, w sieci domowej | **1000 Hz** (okno 8,191 s) |
+
+Czyli panel nie podkrada zadaniu 1 kHz **nic mierzalnego**, w żadnym trybie sieci. Heap w tym
+stanie 242–248 kB wolne, więc Wi-Fi z serwerem kosztuje ~125 kB z ~371 kB, które ma pad bez radia.
+
+#### Wycofanie OTA: udowodnione, nie zaprojektowane
+
+Ostatnia nieudowodniona obietnica tej funkcji. Obraz z `abort()` na początku `app_main`:
+**kryptograficznie poprawny**, więc przechodzi `esp_ota_end()` i faktycznie się uruchamia, ale
+panikuje natychmiast. To istotne — uszkodzenie bajtów zostałoby odrzucone przy zapisie i
+powiedziałoby coś o sumie kontrolnej, a nic o rollbacku.
+
+Obraz wyszedł 172 kB zamiast 941 kB, bo `abort()` jest `noreturn`, kompilator uznał resztę
+`app_main` za nieosiągalną, a linker ją wyrzucił. To **wzmacnia** dowód: w zepsutym obrazie nie ma
+ani Wi-Fi, ani serwera, więc odpowiadający panel nie może być nim.
+
+Łańcuch: `HTTP 200 {"ok":true,"rebooting":true}` znaczy, że `esp_ota_end()` przyjął obraz i
+`esp_ota_set_boot_partition()` go ustawił, czyli **został uruchomiony**. Po 87 s panel odpowiada,
+ma pole `sta_ssid`, `pad_ready=True`, `ticks=86425` w 87 s. Przyjęty, uruchomiony, wywalił się,
+bootloader wrócił do poprzedniego — nikt niczego nie dotykał.
+
+Wymuszony AP (`Ctrl+Alt+P`) przeżywa restarty pada, bo bit siedzi na układzie wejść, i **to właśnie
+umożliwiło bezpieczne wykonanie tego testu**: gdyby mostek po restarcie dołączał do sieci domowej,
+nie byłoby jak stwierdzić, czy wycofanie zadziałało, czy tylko zniknął z widoku.
+
+#### Trzy wady znalezione dopiero przez uruchomienie, wszystkie ciche
+
+Żadnej nie mógł złapać kompilator i każda milczała, co jest wspólnym mianownikiem: **odrzucone pole
+formularza jest nie do odróżnienia od nieobecnego**, więc objaw brzmi „panel ignoruje to okienko"
+i nie wskazuje nigdzie blisko przyczyny.
+
+1. **Licznik raportów mierzył co innego, niż obiecywał.** `usb_pad_send()` zwraca `true` także gdy
+   stan się nie zmienił i nic nie poszło na szynę, więc zliczanie jego wyniku dawało tempo
+   **zadania**, nie raportów. Panel pokazywał 990 „raportów/s" na bezczynnym padzie, którego
+   `dwPacketNumber` w XInput w ogóle się nie ruszał. Szósty raz w tym projekcie, gdy przyrząd kłamał
+   spójnie. Teraz są dwa liczniki o rozdzielnych znaczeniach, a potwierdzenie naprawy jest najlepsze
+   z możliwych: na bezczynnym padzie `ticks=50375, reports=0`.
+
+2. **Bufor pola musiał pomieścić postać zakodowaną procentowo, nie zdekodowaną.**
+   `httpd_query_key_value()` kopiuje wartość wciąż zakodowaną i zawodzi, gdy się nie mieści, a każdy
+   bajt może stać się trzema znakami. Zmierzone: nazwa `abc def` (9 zakodowanych) zapisywała się,
+   a `aa bb cc dd ee` (22 zakodowane) przepadała bez słowa — przy limicie 15 znaków w panelu znaczy
+   to, że zwyczajna nazwa z dwiema spacjami nic nie robiła.
+
+3. **Naprawiając (2), wprowadziłem trzecią:** wartownik `out_size * 3 >= sizeof(scratch)` wygląda na
+   ostrożny i po cichu wyłączył **największe pole** — tablica przypisań ma cel 560 bajtów, więc
+   `1680 >= 256` odrzucało ją w całości i edytor mapowania nie robił nic. Wykryte jednym testem:
+   wysłałem cztery przypisania, wróciło dwadzieścia.
+
+Naprawa: scratch mieści to, co klient może legalnie przysłać (720 znaków dla tablicy przypisań),
+a cokolwiek dłuższego jest odrzucane **z logiem**. To ostatnie jest ważniejsze od samego rozmiaru.
+
+#### Dane sieci były zapisywane poprawnie, ale nie stosowane
+
+Właściciel zgłosił, że wpisał hasło i mostek nie dołączył. Zapis działał — odczyt z NVS pokazał
+`PLAY_Swiatlowod_D4C0`. Dane były jednak czytane **wyłącznie przy podnoszeniu interfejsu**, więc
+zapisanie ich przy stojącym AP nic nie zmieniało do następnego skrótu. „Wpisałem hasło i nie
+dołączył" było trafnym opisem. `/api/wifi` restartuje teraz sieć, z restartem odłożonym do zadania
+kontrolnego, żeby odpowiedź HTTP zdążyła dojść przed zniknięciem sieci, którą przyszła.
+
+Przy okazji wyjaśniła się obserwacja wyglądająca na usterkę: po resecie układu **wejść** panel nie
+wraca. Poprawnie — bit „panel włączony" żyje tam i jest powtarzany z keepalive, więc jego reset
+zeruje maskę i pad słusznie trzyma radio wyłączone.
+
+I jeszcze jedno, czego lista DHCP routera nie pokazała, a skan pokazał: mostek **był** w sieci pod
+`192.168.1.32`. Adres klienta używa **bazowego** MAC (`…a3:28`), a AP inkrementowanego (`…a3:29`) —
+warto wiedzieć, szukając go w tablicy ARP.
 
 ### 4.39 Passthrough na skrót: dwie tożsamości USB, nie jedno urządzenie złożone
 
