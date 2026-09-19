@@ -98,7 +98,9 @@ td,th{padding:6px 4px;text-align:left;vertical-align:middle;border-bottom:1px so
 th{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
 td select{width:100%;padding:7px 8px;min-height:38px}
 .keycell{white-space:nowrap}
-.keybtn{min-height:38px;padding:7px 10px;font-family:ui-monospace,Menlo,Consolas,monospace}
+.keybtn{min-height:38px;padding:7px 10px;font-family:ui-monospace,Menlo,Consolas,monospace;
+  border-color:var(--accent);width:100%;text-align:left}
+.keybtn .pen{float:right;opacity:.55;font-family:system-ui}
 .keybtn.listening{border-color:var(--warn);color:var(--warn)}
 .del{min-height:38px;padding:7px 10px;line-height:1}
 
@@ -222,10 +224,11 @@ td select{width:100%;padding:7px 8px;min-height:38px}
 <section id="tab-map" hidden>
   <div class="card">
     <h2>Key and button mapping</h2>
-    <p class="hint" style="margin-top:0">Press <b>Listen</b> and then the key on the keyboard
-    attached to the bridge — not the one you are holding this phone with. Mouse buttons and
-    modifiers are picked from the list instead, because they cannot be told apart reliably from a
-    single report.</p>
+    <p class="hint" style="margin-top:0"><b>Tap the key name</b> in the Input column — it turns into
+    <i>press a key now…</i> — then press that key on the keyboard <b>attached to the bridge</b>, not
+    the one you are holding this phone with. Tap it again to cancel.</p>
+    <p class="hint">Mouse buttons and modifiers are chosen from a list instead: a single HID report
+    cannot tell left Ctrl from right Ctrl reliably enough to capture it this way.</p>
     <div style="overflow-x:auto">
       <table>
         <thead><tr><th style="width:38%">Input</th><th>Does</th><th style="width:44px"></th></tr></thead>
@@ -585,7 +588,7 @@ function renderMap() {
 
     let input;
     if (b.src === SRC.KEY) {
-      input = `<button class="keybtn" data-listen="${i}">${sourceLabel(b)}</button>`;
+      input = `<button class="keybtn" data-listen="${i}" title="tap, then press a key on the bridge's keyboard">${sourceLabel(b)}<span class="pen">&#9998;</span></button>`;
     } else {
       const list = b.src === SRC.MOD ? MODS : MOUSE_BTNS;
       input = `<select data-code="${i}">` + list
@@ -638,7 +641,7 @@ $("maprows").addEventListener("click", e => {
     listening = i;
     for (const b of $("maprows").querySelectorAll(".keybtn")) b.classList.remove("listening");
     lis.classList.add("listening");
-    lis.textContent = "press a key…";
+    lis.textContent = "press a key now...";
   }
 });
 

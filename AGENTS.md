@@ -2259,7 +2259,45 @@ i nie wskazuje nigdzie blisko przyczyny.
 Naprawa: scratch mieści to, co klient może legalnie przysłać (720 znaków dla tablicy przypisań),
 a cokolwiek dłuższego jest odrzucane **z logiem**. To ostatnie jest ważniejsze od samego rozmiaru.
 
-#### Dane sieci były zapisywane poprawnie, ale nie stosowane
+#### PUŁAPKA PROCESOWA: `Copy-Item` zachowuje czas modyfikacji, więc ninja nie przebudowuje
+
+Kosztowała jeden mylący obieg OTA i jest przenośna na każdy build sterowany czasem plików.
+
+Test wycofania wymagał tymczasowego `abort()` w `app_main.c`. Źródło było odkładane i przywracane
+przez `Copy-Item` w bloku `finally`, co zadziałało — treść wróciła, `abort()` zniknął, `git status`
+był czysty. Ale **`Copy-Item` w Windows zachowuje `LastWriteTime` pliku źródłowego**, więc
+przywrócony `app_main.c` miał czas *starszy* niż obiekt zbudowany z zepsutej wersji. Ninja uznał go
+za aktualny i nie przebudował, a w katalogu build został **zepsuty obraz**.
+
+Mój komunikat kontrolny to przegapił, i to w sposób wart zapamiętania: wyciągałem ostatnią linię
+zawierającą `binary size`, a przy nieprzebudowanej aplikacji `check_sizes.py` dla niej nie odpala —
+więc dopasowała się linia rozmiaru **bootloadera** i całość wyglądała na udaną odbudowę. Siódmy raz
+w tym projekcie, gdy przyrząd kłamał spójnie.
+
+Skutek: wgrałem przez OTA zepsuty obraz, mostek **znowu wycofał się sam**, a objawem była strona bez
+moich zmian i identyczna co do bajta. Niezamierzony drugi dowód, że rollback działa — i dokładnie ten
+rodzaj objawu, który bez rollbacku byłby ceglaną płytką.
+
+Dwie reguły z tego:
+
+1. Po ręcznej podmianie źródła **odświeżyć czas modyfikacji** (`(Get-Item f).LastWriteTime = Get-Date`),
+   a nie polegać na tym, że przywrócenie treści wystarczy.
+2. **Sprawdzać ZAWARTOŚĆ binarki przed wgraniem**, nie komunikat builda: rozmiar plus szukanie ciągu,
+   który ma być w nowej wersji. Zepsuty obraz miał 172 864 B wobec 942 224 B, a nowa strona zawiera
+   `Tap the key name` — obie rzeczy są sprawdzalne w sekundę i obie były wystarczające, żeby to
+   złapać przed wysłaniem.
+
+#### Panel opisywał przycisk, którego nie zbudowałem
+
+Zgłoszone przez właściciela z panelu na telefonie: tekst pomocy mówił „Press **Listen** and then the
+key", a przycisku `Listen` nigdzie nie było. Klikalny jest sam przycisk z **nazwą klawisza** w
+kolumnie *Input*; kliknięcie zmienia go w `press a key now...`. Dokumentacja w panelu opisywała
+interfejs, którego nie ma.
+
+Poprawione w obie strony: tekst mówi teraz „tap the key name", a przycisk dostał ikonę edycji, pełną
+szerokość kolumny i obramowanie w kolorze akcentu, żeby wyglądał na klikalny. Wniosek ogólny: opis
+w interfejsie jest kodem i podlega tej samej regule co reszta — **dwa opisy jednej rzeczy to jeden
+błąd czekający na okazję**, a tu drugim opisem był akapit pomocy.
 
 Właściciel zgłosił, że wpisał hasło i mostek nie dołączył. Zapis działał — odczyt z NVS pokazał
 `PLAY_Swiatlowod_D4C0`. Dane były jednak czytane **wyłącznie przy podnoszeniu interfejsu**, więc
