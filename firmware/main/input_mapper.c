@@ -62,6 +62,7 @@
 
 
 #include <inttypes.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -422,7 +423,37 @@ static struct {
     int64_t denom_y;
     int32_t anti_dz; /* in axis units, not percent */
     bool invert_y;
+    bool curve_on;
 } s_tune = { .gen = UINT32_MAX, .ema_ticks = 1, .denom_x = 1, .denom_y = 1 };
+
+/*
+ * Response curve as a lookup table: output magnitude for each input magnitude 0..AXIS_MAX.
+ *
+ * A TABLE, NOT A CALCULATION, and that is the whole point. The exponent has to be applied to the
+ * magnitude of the stick vector on every tick, up to a thousand times a second, on a chip family
+ * that includes one with no floating-point unit at all. powf() in that loop would be absurd; powf()
+ * 128 times whenever the setting changes costs nothing anybody can measure.
+ *
+ * 128 bytes, rebuilt from tune_refresh(), and only consulted when the exponent is not 1.0.
+ */
+static uint8_t s_curve_lut[AXIS_MAX + 1];
+
+static void curve_build(uint16_t curve_hundredths)
+{
+    const float e = (float)curve_hundredths / 100.0f;
+    for (int m = 0; m <= AXIS_MAX; m++) {
+        const float norm = (float)m / (float)AXIS_MAX;
+        const float out = powf(norm, e) * (float)AXIS_MAX;
+        int v = (int)(out + 0.5f);
+        if (v < 0) {
+            v = 0;
+        }
+        if (v > AXIS_MAX) {
+            v = AXIS_MAX;
+        }
+        s_curve_lut[m] = (uint8_t)v;
+    }
+}
 
 static void tune_refresh(void)
 {
@@ -452,6 +483,13 @@ static void tune_refresh(void)
 
     s_tune.anti_dz = ((int32_t)cfg->mouse_anti_deadzone * AXIS_MAX) / 100;
     s_tune.invert_y = cfg->mouse_invert_y != 0;
+
+    /* Linear means "do nothing", not "apply an identity table": skipping the step keeps the default
+     * path exactly the arithmetic that was measured on hardware. */
+    s_tune.curve_on = (cfg->mouse_curve != BRIDGE_CURVE_LINEAR);
+    if (s_tune.curve_on) {
+        curve_build(cfg->mouse_curve);
+    }
 
     s_tune.gen = gen;
 }
@@ -497,6 +535,35 @@ static uint32_t isqrt32(uint32_t v)
 }
 
 /*
+ * Reshapes the magnitude through the curve table, keeping the direction.
+ *
+ * Radial, like the deadzone compensation, and for the same reason: per axis it would bend
+ * diagonals, because each component of a diagonal is smaller than its magnitude and a non-linear
+ * function of a component is not the component of the function.
+ *
+ * At or beyond full deflection nothing changes - the curve has reached its maximum there and the
+ * axes are about to be clamped anyway.
+ */
+static void apply_curve(int32_t *x, int32_t *y)
+{
+    if (!s_tune.curve_on || (*x == 0 && *y == 0)) {
+        return;
+    }
+
+    const uint32_t mag = isqrt32((uint32_t)(*x * *x) + (uint32_t)(*y * *y));
+    if (mag == 0 || mag >= (uint32_t)AXIS_MAX) {
+        return;
+    }
+
+    const uint32_t out = s_curve_lut[mag];
+    if (out == mag) {
+        return;
+    }
+    *x = (int32_t)(((int64_t)*x * out) / (int32_t)mag);
+    *y = (int32_t)(((int64_t)*y * out) / (int32_t)mag);
+}
+
+/*
  * Lifts a non-zero deflection to at least the anti-deadzone magnitude and compresses the rest
  * of the range into what is left, so the mapping stays continuous and still reaches full scale.
  *
@@ -538,11 +605,20 @@ static void stick_from_mouse(const hid_input_state_t *st, int8_t *out_x, int8_t 
         y = -y;
     }
 
-    /* Clamp before the deadzone so the magnitude it works on is the one that will actually be
-     * reported, and skip the whole thing when the feature is off - the default path then costs
-     * exactly what it did before. */
+    /*
+     * Clamp first, then shape, then lift. The order matters and is not arbitrary:
+     *
+     *   - the curve reshapes the useful range, so it has to see a magnitude that is already
+     *     the one that will be reported;
+     *   - the anti-deadzone comes LAST because it is an offset that must survive. Curving after it
+     *     would squash the very offset whose job is to clear the game's dead region.
+     *
+     * Both steps are skipped entirely at their neutral settings, so the default path costs exactly
+     * what it did before either existed.
+     */
     x = clamp_axis(x);
     y = clamp_axis(y);
+    apply_curve(&x, &y);
     apply_anti_deadzone(&x, &y, s_tune.anti_dz);
 
     *out_x = clamp_axis(x);
@@ -575,6 +651,14 @@ static void mapper_task(void *arg)
 
     while (true) {
         vTaskDelayUntil(&last_wake, period > 0 ? period : 1);
+
+        /*
+         * A pending profile change, applied here rather than where it arrives: the request comes in
+         * on the link receive task and loading it involves a flash read, which has no business
+         * stalling the path that carries mouse reports. Same reasoning as servicing the USB identity
+         * switch from this task.
+         */
+        bridge_config_service();
 
         hid_input_state_t in;
         /* Taking the state clears the mouse accumulators, so every delta ends up in

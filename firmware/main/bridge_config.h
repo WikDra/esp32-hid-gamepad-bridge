@@ -35,8 +35,10 @@ extern "C" {
  * Bumped whenever the struct layout changes. A stored blob with a different version is IGNORED
  * rather than migrated or partially read: a configuration that decides how a gamepad behaves is
  * not worth guessing at, and falling back to the documented defaults is always safe.
+ *
+ * 2: added mouse_curve.
  */
-#define BRIDGE_CONFIG_VERSION 1
+#define BRIDGE_CONFIG_VERSION 2
 
 #define BRIDGE_PROFILE_COUNT    4
 #define BRIDGE_PROFILE_NAME_MAX 16
@@ -48,6 +50,15 @@ extern "C" {
 #define BRIDGE_MOUSE_TAU_MIN 5
 #define BRIDGE_MOUSE_TAU_MAX 500
 #define BRIDGE_ANTI_DZ_MAX   80 /* percent; above this the usable range gets silly */
+
+/*
+ * Response curve exponent, in hundredths. 100 is linear and is the default, so the feature costs
+ * nothing until asked for. 25..400 covers everything useful: below 100 boosts small movements,
+ * above 100 damps them.
+ */
+#define BRIDGE_CURVE_MIN     25
+#define BRIDGE_CURVE_MAX     400
+#define BRIDGE_CURVE_LINEAR  100
 
 /* Smoothing time constant default: the value tuned by hand at 100 Hz (AGENTS.md 4.22). */
 #define BRIDGE_MOUSE_TAU_DEFAULT 80
@@ -82,6 +93,26 @@ typedef struct {
     uint8_t mouse_anti_deadzone;
 
     uint8_t mouse_invert_y;
+
+    /*
+     * Response curve exponent in hundredths, applied to the magnitude of the stick vector:
+     * out = full * (in / full) ^ (curve / 100).
+     *
+     * WHAT THIS IS FOR. Several games apply their own curve to stick input and do not let you turn
+     * it off - small deflections are damped so that a thumbstick feels controllable. A mouse does
+     * not need that help, and the damping fights precise aiming. Setting the exponent below 1.0
+     * pre-compensates: if the game raises input to the power 2, an exponent of 0.5 here makes the
+     * combination linear again.
+     *
+     * WHAT IT IS NOT. It cannot undo acceleration that builds up over TIME, the kind where holding
+     * a direction makes the turn rate ramp. That is a function of history, not of the current
+     * value, and inverting it would mean modelling the game's ramp.
+     *
+     * 100 means linear, which is the default, and the code skips the whole step in that case - so
+     * the arithmetic that the 997 Hz and 830 Hz measurements were taken with is untouched unless
+     * somebody asks for a curve.
+     */
+    uint16_t mouse_curve;
 
     /* Binding table. bind_count rows of binds[] are in force. */
     uint8_t bind_count;
@@ -126,6 +157,25 @@ esp_err_t bridge_config_load(uint8_t slot);
 
 /* Which slot was last saved or loaded. */
 uint8_t bridge_config_active_slot(void);
+
+/*
+ * Asks for a profile to be loaded. Cheap and non-blocking: it only records the request.
+ *
+ * Called from the link receive task on every mode frame - four times a second - so it must not read
+ * flash there. Reading NVS in that task would stall frame reception for as long as the read takes,
+ * which on a path carrying 1 kHz mouse reports is the wrong place to spend milliseconds.
+ *
+ * bridge_config_service() does the actual work, from the mapping task, which is the same place the
+ * USB identity switch happens for the same reason.
+ */
+void bridge_config_request_profile(uint8_t slot);
+
+/*
+ * Applies a pending profile request, if any. Call once per tick from the mapping task. Returns true
+ * when a profile was actually loaded, which is rare - only when the request differs from what is
+ * already in force.
+ */
+bool bridge_config_service(void);
 
 /* Whether a slot holds a valid stored profile, and its name if so. Used by the UI to list them. */
 bool bridge_config_slot_name(uint8_t slot, char out[BRIDGE_PROFILE_NAME_MAX]);

@@ -141,6 +141,11 @@ enum {
     HOTKEY_PASSTHROUGH,
     HOTKEY_WEBUI,
     HOTKEY_WEBUI_AP,
+    /* Profile 0..3. Kept contiguous so the handler can subtract the base instead of switching. */
+    HOTKEY_PROFILE_0,
+    HOTKEY_PROFILE_1,
+    HOTKEY_PROFILE_2,
+    HOTKEY_PROFILE_3,
 };
 
 static const struct {
@@ -154,6 +159,18 @@ static const struct {
     { CONFIG_APP_WEBUI_HOTKEY_KEYCODE, HOTKEY_WEBUI },
     { CONFIG_APP_WEBUI_AP_HOTKEY_KEYCODE, HOTKEY_WEBUI_AP },
 #endif
+    /*
+     * Ctrl+Alt+1..4 select a configuration profile. The number row, not the keypad: 0x1E..0x21 are
+     * the digits 1..4 in the USB HID table, and a keyboard without a numeric pad is the common case.
+     *
+     * Present regardless of APP_WEBUI, because profiles are a property of the pad chip's
+     * configuration store and not of the panel - they can be populated over the panel and then used
+     * with the radio switched off, which is the intended way to run.
+     */
+    { 0x1E, HOTKEY_PROFILE_0 },
+    { 0x1F, HOTKEY_PROFILE_1 },
+    { 0x20, HOTKEY_PROFILE_2 },
+    { 0x21, HOTKEY_PROFILE_3 },
 };
 
 #define HOTKEY_COUNT (sizeof(s_hotkeys) / sizeof(s_hotkeys[0]))
@@ -219,6 +236,23 @@ static void hotkey_act(uint8_t id)
         ESP_LOGI(TAG, "hotkey: config panel -> ON, forced to its own access point");
         break;
 #endif
+
+    case HOTKEY_PROFILE_0:
+    case HOTKEY_PROFILE_1:
+    case HOTKEY_PROFILE_2:
+    case HOTKEY_PROFILE_3: {
+        const uint8_t slot = (uint8_t)(id - HOTKEY_PROFILE_0);
+        bits = (uint8_t)((bits & ~LINK_MODE_PROFILE_MASK) |
+                         ((slot << LINK_MODE_PROFILE_SHIFT) & LINK_MODE_PROFILE_MASK));
+        /*
+         * Logged as a request, not as a fact: this chip has no idea whether that slot holds anything.
+         * The pad chip owns the configuration store and says what actually happened - it keeps the
+         * current profile and warns when the slot is empty.
+         */
+        ESP_LOGI(TAG, "hotkey: asking the pad chip for profile %u", slot);
+        break;
+    }
+
     default:
         return;
     }

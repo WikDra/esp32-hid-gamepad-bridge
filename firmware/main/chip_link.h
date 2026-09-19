@@ -78,6 +78,17 @@ void chip_link_set_presence(bool mouse, bool keyboard);
 #define LINK_MODE_WEBUI       0x02 /* bring Wi-Fi and the configuration panel up */
 #define LINK_MODE_WEBUI_AP    0x04 /* serve an access point rather than joining a network */
 
+/*
+ * Which configuration profile is in force, as a two-bit index in bits 3..4.
+ *
+ * It rides the mode octet rather than getting a frame of its own because it is the same KIND of
+ * thing: absolute state that the input chip owns and repeats. The payoff is the same too - the
+ * profile survives a reset of the pad chip, because the input chip re-asserts it within a keepalive.
+ * Two bits is exactly BRIDGE_PROFILE_COUNT, so nothing is wasted and nothing is missing.
+ */
+#define LINK_MODE_PROFILE_MASK  0x18
+#define LINK_MODE_PROFILE_SHIFT 3
+
 void chip_link_set_mode_bits(uint8_t bits);
 
 /* Sender only: the bits last set, so a caller can toggle one without keeping its own copy. */

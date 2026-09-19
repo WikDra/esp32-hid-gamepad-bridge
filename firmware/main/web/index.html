@@ -223,6 +223,22 @@ td select{width:100%;padding:7px 8px;min-height:38px}
       responds.</div>
     </div>
 
+    <div class="tune">
+      <div class="head"><label for="curve">Response curve</label>
+        <span class="val" id="curve_v"></span></div>
+      <input type="range" id="curve" min="25" max="400" step="5">
+      <canvas id="curveplot" width="260" height="130"
+              style="width:100%;max-width:260px;margin-top:8px;background:#0d1117;
+                     border:1px solid var(--line);border-radius:8px"></canvas>
+      <div class="hint">Several games apply their own curve to stick input and will not let you turn
+      it off: small deflections get damped so a thumbstick feels controllable. A mouse does not need
+      that, and the damping fights precise aiming. Set this <b>below 1.00</b> to pre-compensate — if
+      the game squares its input, 0.50 here makes the pair linear again. 1.00 is off.</div>
+      <div class="hint">It cannot undo acceleration that builds up over <i>time</i>, the kind where
+      holding a direction makes the turn rate ramp. That depends on history, not on the current
+      value.</div>
+    </div>
+
     <div class="row">
       <input type="checkbox" id="invert_y" style="min-height:auto;width:20px;height:20px">
       <label for="invert_y" style="margin:0">Invert vertical aiming</label>
@@ -409,7 +425,7 @@ const post = p => api(p, {method: "POST"});
 const configToForm = c => ({
   name: c.name || "",
   div_x: c.div_x, div_y: c.div_y, tau_ms: c.tau_ms,
-  anti_dz: c.anti_dz, invert_y: c.invert_y ? 1 : 0,
+  anti_dz: c.anti_dz, invert_y: c.invert_y ? 1 : 0, curve: c.curve,
   binds: (c.binds || []).map(b => `${b.src}:${b.code}:${b.action}`).join(","),
 });
 
@@ -561,12 +577,13 @@ function bindSlider(id, fmt) {
     cfg[id] = +el.value;
     renderTuning();
     if (id === "anti_dz") drawDeadzoneRing();
+    if (id === "curve") drawCurve();
     pushConfig();
   });
   bindSlider[id] = fmt;
 }
 function renderTuning() {
-  for (const id of ["div_x", "div_y", "tau_ms", "anti_dz"]) {
+  for (const id of ["div_x", "div_y", "tau_ms", "anti_dz", "curve"]) {
     $(id).value = cfg[id];
     $(id + "_v").textContent = bindSlider[id](cfg[id]);
   }
@@ -575,11 +592,46 @@ function renderTuning() {
   $("div_y_h").textContent = speed(cfg.div_y);
   $("invert_y").checked = !!cfg.invert_y;
   $("pname").value = cfg.name || "";
+  drawCurve();
+}
+
+/*
+ * Draws what the exponent does, because nobody can picture "0.65" and a wrong guess here is felt as
+ * bad aim rather than seen as a wrong number. The dashed line is linear, for comparison.
+ */
+function drawCurve() {
+  const cv = $("curveplot");
+  if (!cv || !cfg) return;
+  const g = cv.getContext("2d");
+  const w = cv.width, h = cv.height, pad = 6;
+  g.clearRect(0, 0, w, h);
+
+  g.strokeStyle = "#3a434f";
+  g.setLineDash([4, 4]);
+  g.beginPath();
+  g.moveTo(pad, h - pad);
+  g.lineTo(w - pad, pad);
+  g.stroke();
+  g.setLineDash([]);
+
+  const e = cfg.curve / 100;
+  g.strokeStyle = "#4a9eff";
+  g.lineWidth = 2;
+  g.beginPath();
+  for (let i = 0; i <= 100; i++) {
+    const nx = i / 100;
+    const ny = Math.pow(nx, e);
+    const px = pad + nx * (w - 2 * pad);
+    const py = (h - pad) - ny * (h - 2 * pad);
+    i ? g.lineTo(px, py) : g.moveTo(px, py);
+  }
+  g.stroke();
 }
 bindSlider("div_x",   v => v);
 bindSlider("div_y",   v => v);
 bindSlider("tau_ms",  v => v + " ms");
 bindSlider("anti_dz", v => v + " %");
+bindSlider("curve",   v => (v / 100).toFixed(2) + (v == 100 ? " (off)" : ""));
 $("invert_y").addEventListener("change", () => {
   cfg.invert_y = $("invert_y").checked ? 1 : 0;
   pushConfig();

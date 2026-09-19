@@ -316,9 +316,9 @@ static void write_config(jw_t *w, const bridge_config_t *cfg)
 {
     jw_raw(w, "{\"name\":");
     jw_str(w, cfg->name);
-    jw_fmt(w, ",\"div_x\":%u,\"div_y\":%u,\"tau_ms\":%u,\"anti_dz\":%u,\"invert_y\":%u",
+    jw_fmt(w, ",\"div_x\":%u,\"div_y\":%u,\"tau_ms\":%u,\"anti_dz\":%u,\"invert_y\":%u,\"curve\":%u",
            cfg->mouse_div_x, cfg->mouse_div_y, cfg->mouse_tau_ms, cfg->mouse_anti_deadzone,
-           cfg->mouse_invert_y);
+           cfg->mouse_invert_y, cfg->mouse_curve);
     jw_raw(w, ",\"binds\":[");
     for (unsigned i = 0; i < cfg->bind_count; i++) {
         jw_fmt(w, "%s{\"src\":%u,\"code\":%u,\"action\":%u}", i ? "," : "", cfg->binds[i].src,
@@ -386,6 +386,7 @@ static void config_from_form(const char *body, bridge_config_t *cfg)
     cfg->mouse_tau_ms = (uint16_t)form_int(body, "tau_ms", cfg->mouse_tau_ms);
     cfg->mouse_anti_deadzone = (uint8_t)form_int(body, "anti_dz", cfg->mouse_anti_deadzone);
     cfg->mouse_invert_y = form_int(body, "invert_y", cfg->mouse_invert_y) ? 1 : 0;
+    cfg->mouse_curve = (uint16_t)form_int(body, "curve", cfg->mouse_curve);
 
     /* Decoded table: 40 rows of "255:255:255," is 480 characters plus a terminator. */
     char binds[520];

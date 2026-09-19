@@ -344,6 +344,20 @@ static uint8_t s_peer_present;
 #define LINK_SET_IDENTITY(pt) ((void)(pt))
 #endif
 
+/*
+ * The profile index only means something where the configuration lives, which is the chip that runs
+ * the mapper. The condition MIRRORS the one guarding input_mapper.c and bridge_config.c in
+ * CMakeLists.txt; elsewhere the index is accepted and discarded, so an input chip can talk to a chip
+ * built without profiles at all.
+ */
+#if !CONFIG_APP_GAMEPAD_SELFTEST && \
+    ((CONFIG_APP_ENABLE_HID_HOST && CONFIG_APP_ENABLE_GAMEPAD) || CONFIG_APP_USB_PAD)
+#include "bridge_config.h"
+#define LINK_SET_PROFILE(s) bridge_config_request_profile((s))
+#else
+#define LINK_SET_PROFILE(s) ((void)(s))
+#endif
+
 bool chip_link_peer_alive(void)
 {
     int64_t last = s_last_frame_us;
@@ -386,6 +400,7 @@ static void handle_frame(uint8_t type, const uint8_t *p, uint8_t len)
          * "non-zero means passthrough" would switch identity whenever the panel was asked for. */
         LINK_SET_IDENTITY((p[0] & LINK_MODE_PASSTHROUGH) != 0);
         webui_request((p[0] & LINK_MODE_WEBUI) != 0, (p[0] & LINK_MODE_WEBUI_AP) != 0);
+        LINK_SET_PROFILE((uint8_t)((p[0] & LINK_MODE_PROFILE_MASK) >> LINK_MODE_PROFILE_SHIFT));
         break;
 
     case LINK_TYPE_KEEPALIVE:

@@ -319,6 +319,7 @@ this firmware rather than about the radio.
 |---|---|
 | `Ctrl+Alt+W` | Wi-Fi and the panel on / off |
 | `Ctrl+Alt+P` | force the bridge's own access point, and bring Wi-Fi up if it was off |
+| `Ctrl+Alt+1`…`4` | load configuration profile 0–3, with no panel and no Wi-Fi needed |
 
 Without stored credentials it serves an access point named `hid-bridge-XXXX`, where `XXXX` comes
 from the MAC. **The password is printed in the console at startup** and, unless you set
@@ -333,6 +334,7 @@ to would otherwise need a serial adapter to diagnose.
 
 What it can change:
 
+- **A response curve**, to cancel one a game applies and will not let you disable. Several games damp small stick deflections so a thumbstick feels controllable; a mouse does not need that and the damping fights precise aiming. Setting the exponent below 1.00 pre-compensates — against a game that squares its input, 0.50 makes the pair linear again. It cannot undo acceleration that builds up over *time*, which depends on history rather than on the current value. Drawn as a graph in the panel, because nobody can picture "0.65".
 - **Mouse to right stick:** sensitivity per axis, smoothing time constant, Y inversion, and
   deadzone compensation — which lifts any non-zero deflection above the inner deadzone that games
   discard, applied to the *length* of the vector so diagonals do not overshoot. Changes apply

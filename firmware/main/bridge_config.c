@@ -54,6 +54,10 @@ void bridge_config_defaults(bridge_config_t *out)
     out->mouse_anti_deadzone = 0;
     out->mouse_invert_y = 0;
 
+    /* Linear. The mapper skips the curve step entirely at this value, so the default path is the
+     * arithmetic the 997 Hz and 830 Hz figures were measured with. */
+    out->mouse_curve = BRIDGE_CURVE_LINEAR;
+
     input_bind_t binds[INPUT_BIND_MAX];
     size_t n = input_mapper_default_binds(binds, INPUT_BIND_MAX);
     if (n > INPUT_BIND_MAX) {
@@ -132,6 +136,12 @@ bool bridge_config_validate(bridge_config_t *cfg)
     }
     cfg->mouse_invert_y = cfg->mouse_invert_y ? 1 : 0;
 
+    v = clamp_u16(cfg->mouse_curve, BRIDGE_CURVE_MIN, BRIDGE_CURVE_MAX);
+    if (v != cfg->mouse_curve) {
+        cfg->mouse_curve = v;
+        ok = false;
+    }
+
     if (cfg->bind_count > INPUT_BIND_MAX) {
         cfg->bind_count = INPUT_BIND_MAX;
         ok = false;
@@ -197,6 +207,38 @@ uint32_t bridge_config_generation(void)
 uint8_t bridge_config_active_slot(void)
 {
     return s_active_slot;
+}
+
+/* 0xFF means "nothing pending". */
+static volatile uint8_t s_wanted_slot = 0xFF;
+
+void bridge_config_request_profile(uint8_t slot)
+{
+    if (slot < BRIDGE_PROFILE_COUNT) {
+        s_wanted_slot = slot;
+    }
+}
+
+bool bridge_config_service(void)
+{
+    const uint8_t want = s_wanted_slot;
+    if (want == 0xFF || want == s_active_slot) {
+        return false;
+    }
+
+    /*
+     * Cleared before the attempt, not after, so a slot that cannot be loaded is not retried on every
+     * tick. The request repeats on the wire anyway - the input chip resends it with each keepalive -
+     * but that is four times a second rather than a thousand.
+     */
+    s_wanted_slot = 0xFF;
+
+    if (bridge_config_load(want) != ESP_OK) {
+        ESP_LOGW(TAG, "profile %u requested but that slot is empty - keeping profile %u", want,
+                 s_active_slot);
+        return false;
+    }
+    return true;
 }
 
 static void slot_key(uint8_t slot, char out[8])
@@ -351,8 +393,10 @@ esp_err_t bridge_config_init(void)
     }
 
     const bridge_config_t *a = bridge_config_get();
-    ESP_LOGI(TAG, "profile %u '%s': mouse div %u/%u, tau %u ms, anti-deadzone %u%%, %u bindings",
+    ESP_LOGI(TAG,
+             "profile %u '%s': mouse div %u/%u, tau %u ms, anti-deadzone %u%%, curve %u.%02u, "
+             "%u bindings",
              slot, a->name, a->mouse_div_x, a->mouse_div_y, a->mouse_tau_ms,
-             a->mouse_anti_deadzone, a->bind_count);
+             a->mouse_anti_deadzone, a->mouse_curve / 100, a->mouse_curve % 100, a->bind_count);
     return ESP_OK;
 }

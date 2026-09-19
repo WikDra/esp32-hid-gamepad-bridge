@@ -280,12 +280,102 @@ def check_filter_behaviour():
     return problems
 
 
+def curve_lut(curve_hundredths):
+    """Mirrors curve_build() in input_mapper.c: powf() once per entry, rounded to nearest."""
+    e = curve_hundredths / 100.0
+    lut = []
+    for m in range(AXIS_MAX + 1):
+        out = (m / AXIS_MAX) ** e * AXIS_MAX
+        lut.append(max(0, min(AXIS_MAX, int(out + 0.5))))
+    return lut
+
+
+def apply_curve(x, y, lut):
+    """Mirrors apply_curve(): radial, and a no-op at or beyond full deflection."""
+    if lut is None or (x == 0 and y == 0):
+        return x, y
+    mag = isqrt32(x * x + y * y)
+    if mag == 0 or mag >= AXIS_MAX:
+        return x, y
+    out = lut[mag]
+    if out == mag:
+        return x, y
+    return cdiv(x * out, mag), cdiv(y * out, mag)
+
+
+def check_curve():
+    """
+    The curve exists to cancel a game's own response curve, so the properties that matter are the
+    ones that make it invertible and predictable: monotonic, fixed at both ends, and pointing the
+    right way.
+    """
+    problems = []
+
+    # Linear must be exactly the identity, because the firmware SKIPS the step at that setting and
+    # the model has to agree that skipping changes nothing.
+    lin = curve_lut(100)
+    if any(lin[m] != m for m in range(AXIS_MAX + 1)):
+        bad = [m for m in range(AXIS_MAX + 1) if lin[m] != m][:5]
+        problems.append(f"curve 1.00 is not the identity at {bad}")
+
+    for c in (25, 50, 75, 100, 150, 200, 300, 400):
+        lut = curve_lut(c)
+
+        if lut[0] != 0:
+            problems.append(f"curve {c/100}: centre maps to {lut[0]}, not 0")
+        if lut[AXIS_MAX] != AXIS_MAX:
+            problems.append(f"curve {c/100}: full deflection maps to {lut[AXIS_MAX]}, losing the top")
+
+        prev = -1
+        for m in range(AXIS_MAX + 1):
+            if lut[m] < prev:
+                problems.append(f"curve {c/100}: not monotonic at {m} ({lut[m]} < {prev})")
+                break
+            prev = lut[m]
+
+        # Below 1.0 must boost, above must damp. Getting the direction backwards would be invisible
+        # in the code and obvious only by feel, which is the worst way to find out.
+        mid = AXIS_MAX // 2
+        if c < 100 and lut[mid] < mid:
+            problems.append(f"curve {c/100} should boost small input, but {mid} -> {lut[mid]}")
+        if c > 100 and lut[mid] > mid:
+            problems.append(f"curve {c/100} should damp small input, but {mid} -> {lut[mid]}")
+
+        # Direction must survive the radial application: a diagonal has to stay a diagonal.
+        x, y = apply_curve(60, 60, lut)
+        if x != y:
+            problems.append(f"curve {c/100}: diagonal 60,60 became {x},{y} - direction not preserved")
+
+        # And nothing may leave int8_t range after the final clamp.
+        for m in range(AXIS_MAX + 1):
+            gx, gy = apply_curve(m, 0, lut)
+            if clamp_axis(gx) != gx or gy != 0:
+                problems.append(f"curve {c/100}: axis {m} left range as {gx},{gy}")
+                break
+
+    # Cancelling a game's curve is the entire purpose, so check it actually cancels: our exponent
+    # 1/e followed by the game's e should come back to roughly where it started.
+    for game_e in (1.5, 2.0, 3.0):
+        lut = curve_lut(int(round(100 / game_e)))
+        worst = 0
+        for m in range(8, AXIS_MAX + 1):  # below 8 the integer steps dominate
+            ours = lut[m]
+            after_game = (ours / AXIS_MAX) ** game_e * AXIS_MAX
+            worst = max(worst, abs(after_game - m))
+        if worst > 4:
+            problems.append(
+                f"game exponent {game_e}: compensation leaves up to {worst:.1f} axis units of error")
+
+    return problems
+
+
 def main():
     groups = (
         ("defaults reproduce the pre-refactor arithmetic", check_equivalence()),
         ("anti-deadzone properties", check_anti_deadzone()),
         ("sensitivity is independent of the task rate", check_rate_independence()),
         ("filter resolution, centring and time constant", check_filter_behaviour()),
+        ("response curve", check_curve()),
     )
 
     failed = False
