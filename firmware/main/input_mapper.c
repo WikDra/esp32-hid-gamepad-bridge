@@ -100,7 +100,7 @@ typedef struct {
 
 static mapper_snapshot_t s_snap[2];
 static volatile uint8_t s_snap_idx;
-static volatile uint32_t s_reports_sent;
+static volatile uint32_t s_ticks;
 
 /* USB HID Keyboard/Keypad usage IDs */
 #define KEY_A     0x04
@@ -632,7 +632,7 @@ static void mapper_task(void *arg)
          * scripts/xinput_rumble.py --rate makes from the other end.
          */
         if (sent) {
-            s_reports_sent++;
+            s_ticks++;
         }
         {
             const uint8_t spare = s_snap_idx ? 0 : 1;
@@ -667,9 +667,9 @@ void input_mapper_snapshot(gamepad_state_t *pad, hid_input_state_t *in)
     }
 }
 
-uint32_t input_mapper_reports_sent(void)
+uint32_t input_mapper_ticks(void)
 {
-    return s_reports_sent;
+    return s_ticks;
 }
 
 esp_err_t input_mapper_start(void)

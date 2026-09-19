@@ -42,6 +42,15 @@ bool usb_pad_is_ready(void);
  * Returns true when the report was accepted (or was identical to the last one, which is
  * deliberately not resent). Mirrors ble_gamepad_send()'s contract.
  */
+/*
+ * Reports ACTUALLY put on the wire since boot. Monotonic.
+ *
+ * Distinct from how often the mapper ran: usb_pad_send() returns true when the state has not
+ * changed and nothing was transmitted, so counting its return value measures the task rate. Both
+ * numbers are useful and they are not the same - see the comment at the increment.
+ */
+uint32_t usb_pad_reports_sent(void);
+
 bool usb_pad_send(const gamepad_state_t *state);
 
 /*

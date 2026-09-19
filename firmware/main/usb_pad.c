@@ -117,6 +117,7 @@ static const char *s_strings[] = {
 /* --------------------------------------------------------------- report state */
 
 static uint8_t s_report[XINPUT_IN_REPORT_LEN];
+static volatile uint32_t s_reports_sent;
 static uint8_t s_out_buf[XINPUT_EP_SIZE];
 static bool s_mounted;
 static uint8_t s_rumble_left;
@@ -300,6 +301,11 @@ static void put_le16(uint8_t *dst, int16_t v)
     dst[1] = (uint8_t)(((uint16_t)v >> 8) & 0xFF);
 }
 
+uint32_t usb_pad_reports_sent(void)
+{
+    return s_reports_sent;
+}
+
 bool usb_pad_send(const gamepad_state_t *state)
 {
     if (!usb_pad_is_ready()) {
@@ -400,7 +406,21 @@ bool usb_pad_send(const gamepad_state_t *state)
     }
 
     memcpy(s_report, r, sizeof(r));
-    return usbd_edpt_xfer(0, XINPUT_EP_IN, s_report, sizeof(s_report), false);
+    const bool queued = usbd_edpt_xfer(0, XINPUT_EP_IN, s_report, sizeof(s_report), false);
+    if (queued) {
+        /*
+         * Counted HERE and nowhere else, because this is the only place a report actually goes on
+         * the wire. The mapper's own counter cannot do it: this function returns true when the
+         * state has not changed and nothing was sent, so counting its return value measures how
+         * often the mapping task RAN, not how many reports the host received.
+         *
+         * That distinction was not academic - the panel reported 990 "reports/s" on an idle pad
+         * whose XInput packet number was not moving at all. Two numbers, two meanings, both
+         * shown separately.
+         */
+        s_reports_sent++;
+    }
+    return queued;
 }
 
 /* ----------------------------------------------------------------------- start */

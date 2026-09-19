@@ -352,7 +352,7 @@ const keyName = c => KEYNAMES[c] || ("0x" + c.toString(16).padStart(2, "0"));
 const $ = id => document.getElementById(id);
 let cfg = null;        /* the configuration as the panel understands it */
 let listening = null;  /* index of the row waiting for a keypress */
-let lastReports = null, lastReportsAt = 0, measuredHz = 0;
+let lastTicks = null, lastReports = null, lastAt = 0, taskHz = 0, reportHz = 0;
 
 function toast(msg, kind) {
   const t = $("toast");
@@ -478,7 +478,8 @@ function drawStatus(s) {
     [s.sys.pad_ready ? "pad: host connected" : "pad: no host", s.sys.pad_ready ? "ok" : "warn"],
     [s.in.kbd   ? "keyboard" : "no keyboard", s.in.kbd   ? "ok" : "bad"],
     [s.in.mouse ? "mouse"    : "no mouse",    s.in.mouse ? "ok" : "bad"],
-    [measuredHz ? measuredHz + " reports/s" : "measuring…", ""],
+    [taskHz ? taskHz + " Hz loop" : "measuring…", ""],
+    [reportHz + " reports/s", ""],
     ["profile " + s.sys.slot, ""],
   ];
   $("pills").innerHTML = pills
@@ -488,8 +489,8 @@ function drawStatus(s) {
   $("telemetry").textContent =
     `heap ${s.sys.heap} B (low water ${s.sys.heap_min} B)\n` +
     `uptime ${Math.floor(up / 3600)}h ${Math.floor(up / 60) % 60}m ${up % 60}s\n` +
-    `mapping task ${s.sys.rate_hz} Hz, reports sent ${s.sys.reports}\n` +
-    `measured ${measuredHz} reports/s\n` +
+    `mapping loop: ${s.sys.rate_hz} Hz configured, ${taskHz} Hz measured\n` +
+    `reports: ${s.sys.reports} total, ${reportHz}/s now (only changes when the pad state does)\n` +
     `network ${s.sys.net} ${s.sys.url}`;
   $("fwinfo").textContent =
     `version ${s.sys.version}\nbuilt ${s.sys.built}\nESP-IDF ${s.sys.idf}`;
@@ -502,15 +503,24 @@ async function poll() {
     const s = await getJSON("/api/state");
     pollFailures = 0;
 
-    /* A rate from two samples of a monotonic counter: the window is ours, so nothing on the
-       device had to guess how often the panel would ask. */
+    /*
+       Rates from two samples of monotonic counters: the window is ours, so nothing on the device
+       had to guess how often the panel would ask.
+
+       TWO SEPARATE NUMBERS ON PURPOSE. taskHz is how often the mapping loop ran and does not
+       depend on anyone's hand, so a drop in it means something is stealing time. reportHz is how
+       many reports actually went to the PC, which only changes when the pad state does - a low
+       value with the mouse still is correct, not a fault.
+    */
     const now = performance.now();
-    if (lastReports !== null && now > lastReportsAt) {
-      const hz = (s.sys.reports - lastReports) * 1000 / (now - lastReportsAt);
-      measuredHz = Math.max(0, Math.round(hz));
+    if (lastAt && now > lastAt) {
+      const secs = (now - lastAt) / 1000;
+      taskHz = Math.max(0, Math.round((s.sys.ticks - lastTicks) / secs));
+      reportHz = Math.max(0, Math.round((s.sys.reports - lastReports) / secs));
     }
+    lastTicks = s.sys.ticks;
     lastReports = s.sys.reports;
-    lastReportsAt = now;
+    lastAt = now;
 
     if (!$("tab-pad").hidden) drawPad(s);
     drawStatus(s);

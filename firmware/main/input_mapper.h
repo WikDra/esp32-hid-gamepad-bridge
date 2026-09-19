@@ -46,11 +46,16 @@ size_t input_mapper_default_binds(input_bind_t *out, size_t max);
 void input_mapper_snapshot(gamepad_state_t *pad, hid_input_state_t *in);
 
 /*
- * Reports actually sent since boot. Monotonic, and only incremented when a report went out - so
- * two samples and the time between them give the rate the host really sees, measured from this
- * end instead of with scripts/xinput_rumble.py from the other.
+ * Mapping-task iterations since boot, monotonic.
+ *
+ * NOT the number of reports the host received, and the distinction cost a wrong number in the
+ * panel before it was noticed: usb_pad_send() returns true when the state has not changed and
+ * nothing went on the wire, so this counter measures how often the task RAN. That is worth having
+ * on its own - it is the operator-independent figure that shows whether anything (Wi-Fi, the HTTP
+ * server, a browser polling) is stealing time from the 1 kHz loop. For reports actually sent, see
+ * usb_pad_reports_sent().
  */
-uint32_t input_mapper_reports_sent(void);
+uint32_t input_mapper_ticks(void);
 
 #ifdef __cplusplus
 }

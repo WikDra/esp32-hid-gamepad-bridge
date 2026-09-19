@@ -238,13 +238,52 @@ static void url_decode(char *s)
     *out = '\0';
 }
 
-/* Looks up a form key. Returns false when absent, which callers treat as "leave unchanged". */
+/*
+ * Looks up a form key and decodes it. Returns false when absent, which callers treat as "leave
+ * unchanged".
+ *
+ * THE SCRATCH BUFFER HOLDS THE ENCODED FORM, WHICH IS LONGER THAN THE DECODED ONE, and getting
+ * this wrong cost two silent bugs in a row - both found on hardware, neither visible to the
+ * compiler:
+ *
+ *   1. Reading straight into the caller's buffer. httpd_query_key_value() copies the value STILL
+ *      PERCENT-ENCODED and fails when it does not fit, and every byte can become three characters
+ *      ("%20"). So any value needing escapes was rejected: the name "abc def" (9 encoded) was
+ *      stored while "aa bb cc dd ee" (22 encoded) vanished, and the panel allows 15 characters.
+ *
+ *   2. Guarding with out_size * 3 >= sizeof(scratch). That looks careful and silently disabled the
+ *      largest field: the binding table's destination is 560 bytes, so the guard rejected it
+ *      outright and the mapping editor did nothing at all.
+ *
+ * The scratch only has to fit what a client can legitimately send. The largest field is the binding
+ * table: 40 rows of "255:255:255," where encodeURIComponent turns ':' into "%3A" and ',' into
+ * "%2C", so 40 x 18 = 720 characters. 1024 leaves room; anything beyond it is refused OUT LOUD.
+ */
+#define FORM_VALUE_MAX 1024
+
 static bool form_str(const char *body, const char *key, char *out, size_t out_size)
 {
-    if (httpd_query_key_value(body, key, out, out_size) != ESP_OK) {
+    if (out_size == 0) {
         return false;
     }
-    url_decode(out);
+
+    char enc[FORM_VALUE_MAX];
+    const esp_err_t err = httpd_query_key_value(body, key, enc, sizeof(enc));
+    if (err == ESP_ERR_NOT_FOUND) {
+        return false; /* absent: the caller keeps whatever it had */
+    }
+    if (err != ESP_OK) {
+        /*
+         * Logged rather than ignored. Both bugs above were invisible precisely because a rejected
+         * field is indistinguishable from an absent one, and the symptom - "the panel ignores that
+         * box" - points nowhere near the cause.
+         */
+        ESP_LOGW(TAG, "form field '%s' does not fit in %u B - ignored", key, (unsigned)sizeof(enc));
+        return false;
+    }
+
+    url_decode(enc);
+    snprintf(out, out_size, "%s", enc);
     return true;
 }
 
@@ -348,8 +387,8 @@ static void config_from_form(const char *body, bridge_config_t *cfg)
     cfg->mouse_anti_deadzone = (uint8_t)form_int(body, "anti_dz", cfg->mouse_anti_deadzone);
     cfg->mouse_invert_y = form_int(body, "invert_y", cfg->mouse_invert_y) ? 1 : 0;
 
-    /* Room for the encoded table: 40 rows of "255:255:255," is 520 bytes. */
-    char binds[560];
+    /* Decoded table: 40 rows of "255:255:255," is 480 characters plus a terminator. */
+    char binds[520];
     if (form_str(body, "binds", binds, sizeof(binds))) {
         cfg->bind_count = parse_binds(binds, cfg->binds, INPUT_BIND_MAX);
     }
@@ -362,7 +401,10 @@ static esp_err_t h_index(httpd_req_t *req)
     /* The page itself is not behind the password: it holds no secrets and every endpoint it calls
      * is protected. Prompting before the page can explain itself would be worse. */
     webui_touch();
-    httpd_resp_set_type(req, "text/html");
+    /* Charset stated in the HEADER as well as in the document's meta tag: the page contains
+     * typographic dashes and quotes, and leaving the encoding to a browser default is how those
+     * turn into mojibake on somebody else's machine. */
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
     return httpd_resp_send(req, (const char *)index_html_start,
                            index_html_end - index_html_start - 1);
 }
@@ -522,11 +564,19 @@ static esp_err_t h_state(httpd_req_t *req)
     jw_fmt(&w, ",\"sys\":{\"heap\":%u,\"heap_min\":%u,\"uptime_ms\":%lld",
            (unsigned)esp_get_free_heap_size(), (unsigned)esp_get_minimum_free_heap_size(),
            esp_timer_get_time() / 1000);
-    /* A monotonic count, not a rate: the panel samples it twice and divides, so the window is one
-     * it controls rather than one we guessed at. */
-    jw_fmt(&w, ",\"reports\":%u,\"pad_ready\":%s,\"slot\":%u,\"rate_hz\":%d",
-           (unsigned)input_mapper_reports_sent(), usb_pad_is_ready() ? "true" : "false",
-           bridge_config_active_slot(), CONFIG_APP_REPORT_RATE_HZ);
+    /*
+     * TWO counters, two meanings, and keeping them apart matters. "ticks" is how often the mapping
+     * task ran - operator-independent, so it shows whether Wi-Fi or a polling browser is stealing
+     * time from the 1 kHz loop. "reports" is how many actually went on the wire, which only
+     * changes when the pad state does and therefore depends on the hand on the mouse.
+     *
+     * Reported as monotonic counts rather than rates: the panel samples twice and divides, so the
+     * window belongs to whoever is measuring instead of being one we guessed at.
+     */
+    jw_fmt(&w, ",\"ticks\":%u,\"reports\":%u,\"pad_ready\":%s,\"slot\":%u,\"rate_hz\":%d",
+           (unsigned)input_mapper_ticks(), (unsigned)usb_pad_reports_sent(),
+           usb_pad_is_ready() ? "true" : "false", bridge_config_active_slot(),
+           CONFIG_APP_REPORT_RATE_HZ);
     jw_raw(&w, ",\"net\":");
     jw_str(&w, net == WEBUI_STA_UP           ? "station"
                : net == WEBUI_AP_UP          ? "ap"
