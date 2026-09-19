@@ -2339,6 +2339,63 @@ I jeszcze jedno, czego lista DHCP routera nie pokazała, a skan pokazał: mostek
 `192.168.1.32`. Adres klienta używa **bazowego** MAC (`…a3:28`), a AP inkrementowanego (`…a3:29`) —
 warto wiedzieć, szukając go w tablicy ARP.
 
+### 4.42 Wgrywanie firmware na układ wejść po drucie (branch `usb-webui`)
+
+Układ wejść nie miał żadnej drogi aktualizacji: jego port USB to strona hosta, a konsola wymaga
+przejściówki USB-UART, więc każda zmiana firmware znaczyła trzymanie BOOT i RESET. Kabel jest spięty
+**krzyżowo na obu parach**, więc kierunek powrotny był już w sprzęcie.
+
+Rozważane były dwie drogi i pierwotnie polecałem **własne WiFi na układzie wejść**. Gdy okazało się,
+że drut jest darmowy, rekomendacja się zmieniła — warto zapisać, dlaczego: wgrywanie po drucie nie
+stawia radia obok pętli odpytującej dongle co 1 ms, kosztuje ~5 kB zamiast ~600 kB, i zostawia jeden
+panel, jedno hasło, jeden zestaw skrótów.
+
+#### Kluczowe: kierunek pochodzi z PINÓW, rola z Kconfig
+
+`LINK_CAN_TX` / `LINK_CAN_RX` mówią, co pozwala okablowanie, i gatują **maszynerię** — pisarza ramek,
+parser, zadania. `APP_LINK_SENDER` / `APP_LINK_RECEIVER` mówią, do czego układ służy, i gatują
+**treść** — kto produkuje ramki myszy, kto generuje keepalive i oktet trybu.
+
+Rozdzielenie jest konieczne, nie kosmetyczne: **pad musi umieć nadawać obraz, nie nadając nigdy
+oktetu trybu.** Dwa układy asertujące stan absolutny nawzajem walczyłyby, a wygrałby ten, który
+odezwał się później. Na podziale BLE piny są jednokierunkowe i te warunki redukują się dokładnie do
+starego zachowania — cztery warianty BLE bez zmian.
+
+`LINK_PAYLOAD_MAX` podniesione z 8 na 192. Osiem bajtów wymiarowano pod raport myszy; obraz 300 kB to
+przy nim 37 500 ramek i tempo narzucałyby obiegi potwierdzeń, nie drut. Bufory UART z 512 na 2048, bo
+okno czterech ramek to 768 bajtów w drodze.
+
+#### Stan weryfikacji: CZĘŚCIOWO, blokuje styk kabelka
+
+| Co | Dowód |
+|---|---|
+| refaktor nie zepsuł istniejącego ruchu | `link: sent 9671 frames (dropped 0)` po zmianie ładunku |
+| nowa tablica partycji na wejściach | `otadata` zapisane na `0xd000`, wcześniej tej partycji nie było |
+| zadanie odbiorcze startuje | log startowy wejść: `UART1 up: tx=GPIO4 rx=GPIO5`, `mode: sender`, **`mode: receiver`** |
+| podział binarek | `s3pad` ma `/api/ota/peer` i nie ma odbiornika, `s3input` odwrotnie |
+| **protokół działa** | jedna próba przepchnęła `BEGIN` **potwierdzony** i **20 ramek danych**, `crc_err=0` |
+
+**Czego brakuje: rzetelnego styku na parze pad GPIO4 ↔ wejścia GPIO5.** Właściciel zmierzył ją
+omomierzem — przewód nie stykał. Po poruszeniu styk jest marginalny: próby dały kolejno `sent=21`
+(BEGIN plus 20 ramek danych), potem `sent=1`, potem `sent=1`. Ten sam kod, minuty różnicy, różne
+etapy — czyli warstwa fizyczna, nie programowa.
+
+Diagnozę umożliwił przyrząd dołożony na miejscu: `/api/state` niesie teraz `sent`, `recv`,
+`crc_err` i piny łącza. Bez niego nie dało się rozdzielić „ten układ nie nadaje" od „drut nie
+przenosi", bo jedyna dostępna konsola była konsolą drugiego układu.
+
+#### Sprostowanie do decyzji „bez retransmisji"
+
+Uzasadniłem brak retransmisji tym, że łącze ma zmierzone zero błędów CRC na 19 884 ramkach. **To była
+własność kierunku wejścia→pad.** Kierunku powrotnego nikt nigdy nie mierzył, a ja oparłem na tym
+decyzję projektową — dokładnie ten błąd, który te notatki opisują w innych miejscach: wniosek z
+jednego pomiaru rozciągnięty na rzecz, której nie mierzono.
+
+Jeśli styk nie da się zrobić pewnie, właściwą odpowiedzią jest retransmisja, a nie obejście. Wymaga
+dołożenia **przesunięcia do ramek danych**, bo `esp_ota_write()` jest sekwencyjny i nie da się go
+cofnąć: odbiorca musi umieć pominąć duplikat i wykryć lukę. Bez przesunięcia powtórzone okno
+zapisałoby te same bajty drugi raz i obraz by się nie zweryfikował.
+
 ### 4.39 Passthrough na skrót: dwie tożsamości USB, nie jedno urządzenie złożone
 
 Skrót `Ctrl+Alt+G` przełącza układ pada między padem XInput a zwykłą klawiaturą i myszą HID,
