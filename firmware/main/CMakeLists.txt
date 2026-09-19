@@ -36,6 +36,15 @@ if(CONFIG_APP_USB_HID_HOST)
     list(APPEND reqs espressif__usb_host_hid usb)
 endif()
 
+# The configuration panel. Built only on the chip that owns the pad, because that is where the
+# mapper and the settings it reads live; the input chip contributes hotkey detection, which is in
+# usb_hid_host.c and needs nothing extra. webui.h supplies empty inlines when this is skipped, so
+# no call site has to know - see AGENTS.md 4.38 for why that matters.
+if(CONFIG_APP_WEBUI AND CONFIG_APP_USB_PAD)
+    list(APPEND srcs "webui.c")
+    list(APPEND reqs esp_wifi esp_netif esp_event)
+endif()
+
 # The glue between input and pad. Needed for either pad transport, but not when the pad is
 # running its own test pattern - the two would fight over the same report.
 #

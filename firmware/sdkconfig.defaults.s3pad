@@ -90,3 +90,13 @@ CONFIG_APP_MOUSE_SCALE_DIV=64
 # polled every millisecond. Measured from the PC side, not assumed: 250 Hz requested on a 100 Hz
 # tick produced 97 Hz. At 1000 Hz the period is expressible exactly.
 CONFIG_FREERTOS_HZ=1000
+
+# --- Configuration panel over Wi-Fi ---
+# This is the chip that runs it: the mapper and the settings it reads live here, so this is where
+# a browser has to be able to change them. The input chip gets the same option for the hotkey
+# detection only.
+#
+# Wi-Fi stays DOWN until Ctrl+Alt+W arrives over the link, which is what keeps it free: nothing
+# competes with the 1 kHz mapping task or the 1 ms endpoint while a game is running, and the
+# measured 997 Hz ceiling stays a number about this firmware rather than about the radio.
+CONFIG_APP_WEBUI=y

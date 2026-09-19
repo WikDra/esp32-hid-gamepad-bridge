@@ -57,17 +57,31 @@ void chip_link_send_keyboard(uint8_t modifiers, const uint8_t keys[6]);
 void chip_link_set_presence(bool mouse, bool keyboard);
 
 /*
- * Sender only: ask the pad chip to switch USB identity - gamepad or keyboard+mouse passthrough.
+ * Sender only: ask the pad chip to change mode - which USB identity it presents, and whether the
+ * configuration panel is up.
  *
- * Sent immediately and then repeated with every keepalive. The mode is ABSOLUTE state rather
- * than a toggle command on the wire, which is what makes it robust: a frame lost to noise, or a
- * reset of either chip, corrects itself within one keepalive period instead of leaving the two
- * sides disagreeing about which device is on the bus.
+ * ONE OCTET OF ABSOLUTE STATE, not a toggle command, and that is what makes it robust: a frame
+ * lost to noise, or a reset of either chip, corrects itself within one keepalive period instead
+ * of leaving the two sides disagreeing. A toggle would do the opposite - a lost toggle stays
+ * wrong forever, and both chips would report success.
+ *
+ * It carries a bitmask rather than a boolean because passthrough and the panel are independent:
+ * the panel is useful in either identity, and a single "mode" value would have to enumerate
+ * every combination.
+ *
+ * WIRE COMPATIBILITY: an older build treated this octet as "non-zero means passthrough", so a
+ * new input chip talking to an old pad chip would switch identity when asked for the panel.
+ * Both ends come out of the same tree, so this only matters if they are flashed from different
+ * commits.
  */
-void chip_link_set_mode(bool passthrough);
+#define LINK_MODE_PASSTHROUGH 0x01 /* present as a HID keyboard + mouse instead of a pad */
+#define LINK_MODE_WEBUI       0x02 /* bring Wi-Fi and the configuration panel up */
+#define LINK_MODE_WEBUI_AP    0x04 /* serve an access point rather than joining a network */
 
-/* Sender only: the mode last set, so the caller can toggle without keeping its own copy. */
-bool chip_link_mode_is_passthrough(void);
+void chip_link_set_mode_bits(uint8_t bits);
+
+/* Sender only: the bits last set, so a caller can toggle one without keeping its own copy. */
+uint8_t chip_link_mode_bits(void);
 
 /* Receiver only: whether a frame arrived recently enough (APP_LINK_PEER_TIMEOUT_MS). */
 bool chip_link_peer_alive(void);

@@ -47,3 +47,14 @@ CONFIG_APP_LINK_RX_GPIO=-1
 # them beats custom pins. No clash with the link: that is UART1 on GPIO4/GPIO5.
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# --- Configuration panel over Wi-Fi: hotkey detection only ---
+# This chip has the keyboard, so it is the only one that can see Ctrl+Alt+W. It does NOT run
+# Wi-Fi or the HTTP server - webui.c is not even compiled here, because that is gated on
+# APP_USB_PAD. What this option adds locally is two entries in the hotkey table and one bit in
+# the mode frame.
+#
+# Enabled on BOTH chips for the same reason APP_USB_PASSTHROUGH is: one chip sees the keystroke
+# and the other acts on it. Set on only one of them, the feature looks present and does nothing -
+# which is exactly the class of fault AGENTS.md 4.38 and 4.39 record.
+CONFIG_APP_WEBUI=y

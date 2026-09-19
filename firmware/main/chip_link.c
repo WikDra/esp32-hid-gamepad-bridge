@@ -13,6 +13,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
+#include "webui.h"
 
 #if CONFIG_APP_LINK_RECEIVER || CONFIG_APP_LINK_SENDER
 #if CONFIG_APP_ENABLE_HID_HOST
@@ -133,12 +134,24 @@ void chip_link_set_presence(bool mouse, bool keyboard)
                            (keyboard ? LINK_PRESENT_KEYBOARD : 0));
 }
 
-#if CONFIG_APP_USB_PASSTHROUGH
-static volatile uint8_t s_mode; /* 0 = gamepad, 1 = passthrough */
+/*
+ * The mode frame is needed by passthrough (which identity is on the bus) and by the web panel
+ * (whether Wi-Fi is up). ONE NAME FOR THE CONDITION, because it is tested in four places and a
+ * disjunction repeated four times is four chances to write it differently - which is the shape of
+ * the bug in AGENTS.md 4.38.
+ */
+#if CONFIG_APP_USB_PASSTHROUGH || CONFIG_APP_WEBUI
+#define LINK_HAS_MODE 1
+#else
+#define LINK_HAS_MODE 0
+#endif
 
-void chip_link_set_mode(bool passthrough)
+#if LINK_HAS_MODE
+static volatile uint8_t s_mode; /* LINK_MODE_* bits */
+
+void chip_link_set_mode_bits(uint8_t bits)
 {
-    s_mode = passthrough ? 1 : 0;
+    s_mode = bits;
     /*
      * Sent immediately so the switch feels instant, and then repeated with every keepalive by
      * the sender task. The repetition is what makes it robust: the mode is ABSOLUTE state, so
@@ -154,11 +167,11 @@ void chip_link_set_mode(bool passthrough)
     }
 }
 
-bool chip_link_mode_is_passthrough(void)
+uint8_t chip_link_mode_bits(void)
 {
-    return s_mode != 0;
+    return s_mode;
 }
-#endif /* CONFIG_APP_USB_PASSTHROUGH */
+#endif /* LINK_HAS_MODE */
 
 static int16_t clamp16(int32_t v)
 {
@@ -241,7 +254,7 @@ static void sender_task(void *arg)
                 p[0] = evt.kbd.modifiers;
                 memcpy(&p[1], evt.kbd.keys, sizeof(evt.kbd.keys));
                 frame_send(LINK_TYPE_KEYBOARD, p, sizeof(p));
-#if CONFIG_APP_USB_PASSTHROUGH
+#if LINK_HAS_MODE
             } else if (evt.type == LINK_TYPE_MODE) {
                 const uint8_t p = evt.kbd.modifiers;
                 frame_send(LINK_TYPE_MODE, &p, 1);
@@ -264,8 +277,8 @@ static void sender_task(void *arg)
             present = (uint8_t)(ble_hid_host_device_count() > 0 ? LINK_PRESENT_MOUSE : 0);
 #endif
             frame_send(LINK_TYPE_KEEPALIVE, &present, 1);
-#if CONFIG_APP_USB_PASSTHROUGH
-            /* Absolute state, resent with every keepalive - see chip_link_set_mode(). */
+#if LINK_HAS_MODE
+            /* Absolute state, resent with every keepalive - see chip_link_set_mode_bits(). */
             {
                 const uint8_t m = s_mode;
                 frame_send(LINK_TYPE_MODE, &m, 1);
@@ -316,15 +329,19 @@ static uint8_t s_peer_present;
 #endif
 
 /*
- * The mode frame only means anything on a chip that owns a USB pad, because switching identity
- * is what it asks for. Everywhere else it is accepted and discarded, so an input chip built with
- * passthrough enabled can talk to a pad chip built without it.
+ * The mode frame carries two independent things. Switching USB identity only means something on a
+ * chip that owns a pad, so that one stays behind a condition; the panel handles its own absence
+ * through empty inlines in webui.h, so that one does not need one.
+ *
+ * Both dispatches are called on EVERY mode frame, which arrives with every keepalive, so both
+ * must be idempotent and act only on a change. That is the price of absolute state on the wire
+ * and it is worth paying: a lost frame repairs itself instead of leaving the chips disagreeing.
  */
 #if CONFIG_APP_USB_PASSTHROUGH && CONFIG_APP_USB_PAD
 #include "usb_pad.h"
-#define LINK_SET_MODE(pt) usb_pad_request_mode((pt))
+#define LINK_SET_IDENTITY(pt) usb_pad_request_mode((pt))
 #else
-#define LINK_SET_MODE(pt) ((void)(pt))
+#define LINK_SET_IDENTITY(pt) ((void)(pt))
 #endif
 
 bool chip_link_peer_alive(void)
@@ -365,7 +382,10 @@ static void handle_frame(uint8_t type, const uint8_t *p, uint8_t len)
         if (len != 1) {
             return;
         }
-        LINK_SET_MODE(p[0] != 0);
+        /* Tested BIT BY BIT, not for being non-zero: with two independent flags in one octet,
+         * "non-zero means passthrough" would switch identity whenever the panel was asked for. */
+        LINK_SET_IDENTITY((p[0] & LINK_MODE_PASSTHROUGH) != 0);
+        webui_request((p[0] & LINK_MODE_WEBUI) != 0, (p[0] & LINK_MODE_WEBUI_AP) != 0);
         break;
 
     case LINK_TYPE_KEEPALIVE:

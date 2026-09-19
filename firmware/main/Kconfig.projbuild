@@ -342,6 +342,105 @@ menu "HID bridge (application configuration)"
             Ctrl+Alt was picked because both modifiers are visible in the boot-protocol report
             and the pair is rare in games, where a stray toggle would be costly.
 
+    config APP_WEBUI
+        bool "Web configuration panel over Wi-Fi"
+        depends on (APP_USB_PAD && SOC_WIFI_SUPPORTED) || APP_LINK_SENDER
+        default n
+        help
+            Serves a configuration panel over Wi-Fi: mouse sensitivity, the smoothing time
+            constant, deadzone compensation, the key-to-control mapping, profiles and firmware
+            updates. Without it those live in Kconfig, which means a rebuild and a reflash to
+            change a number you can only judge by feel.
+
+            ENABLE IT ON BOTH CHIPS, like passthrough, because the two ends do different jobs:
+
+              - the PAD chip runs Wi-Fi, the HTTP server and the configuration store, because
+                that is where the mapper and the settings it reads already live;
+              - the INPUT chip only detects the hotkeys and reports them over the link, because
+                that is where the keyboard is.
+
+            Enabled on just the pad chip, the panel works but no hotkey can reach it. Enabled on
+            just the input chip, the hotkeys are detected and nothing listens.
+
+            WI-FI IS OFF UNTIL ASKED FOR. It is brought up by the hotkey below and shut down
+            again after an idle timeout, so nothing competes with the 1 kHz report path while a
+            game is running. That is what makes the feature free rather than a trade-off, and it
+            is why the measured 997 Hz ceiling stays meaningful.
+
+    config APP_WEBUI_HOTKEY_KEYCODE
+        hex "Web panel hotkey: USB HID keycode pressed with Ctrl+Alt"
+        depends on APP_WEBUI
+        default 0x1A
+        help
+            Toggles Wi-Fi and the panel on and off. 0x1A is W. Like the passthrough hotkey the
+            combination is consumed, so it never reaches the PC.
+
+            W is bound to the left stick in the default mapping, which does not clash in
+            practice: the stick only misses the keystroke while Ctrl and Alt are both held, and
+            that combination was chosen precisely because it is rare in games.
+
+    config APP_WEBUI_AP_HOTKEY_KEYCODE
+        hex "Force access point mode: USB HID keycode pressed with Ctrl+Alt"
+        depends on APP_WEBUI
+        default 0x13
+        help
+            Forces the bridge to serve its own access point instead of joining a stored network,
+            and brings Wi-Fi up if it was off. 0x13 is P, as in access Point.
+
+            This exists because the useful failure mode is silent: if the stored network is out
+            of range, or its password changed, or the router hands out an address you cannot
+            guess, then "join the network" leaves the panel unreachable and there is nothing to
+            configure it with. One keystroke on the keyboard the bridge already owns is the way
+            back in that does not need a serial adapter.
+
+    config APP_WEBUI_AP_SSID_PREFIX
+        string "Access point name prefix"
+        depends on APP_WEBUI
+        default "hid-bridge"
+        help
+            The last two bytes of the chip's MAC address are appended, so two bridges on one
+            bench do not collide and the name identifies the board.
+
+    config APP_WEBUI_PASSWORD
+        string "Device password (empty = derive one from the MAC address)"
+        depends on APP_WEBUI
+        default ""
+        help
+            Used both as the WPA2 key of the access point and as the password the panel asks
+            for. Left empty, a value is derived from the MAC address and printed in the console
+            at startup: unique per board, nothing to configure, and not a shared secret that
+            every clone of this repository would have.
+
+            THIS IS NOT OPTIONAL HARDENING. The panel can change what the pad reports and can
+            flash new firmware, so an unauthenticated one would let anyone in range move your
+            sticks mid-game or replace the firmware outright. WPA2 protects the air on the
+            access point; the password protects against someone already on the network when the
+            bridge has joined yours instead.
+
+            Must be at least 8 characters, which is a WPA2 requirement, not ours.
+
+    config APP_WEBUI_IDLE_TIMEOUT_MIN
+        int "Shut Wi-Fi down after this many minutes without a request (0 = never)"
+        depends on APP_WEBUI
+        range 0 120
+        default 10
+        help
+            Counted from the last HTTP request, so an open panel keeps itself alive. The point is
+            that forgetting to switch Wi-Fi off should not quietly cost radio time and CPU for
+            the rest of the session.
+
+    config APP_WEBUI_STA_TIMEOUT_S
+        int "Seconds to wait for a stored network before falling back to the access point"
+        depends on APP_WEBUI
+        range 5 60
+        default 15
+        help
+            When credentials are stored the bridge tries to join that network first and drops the
+            access point once it succeeds - which is what makes the panel reachable at a stable
+            address from a phone that is already on your Wi-Fi. If the join does not happen
+            within this many seconds it serves its own access point instead, so there is always
+            something to connect to.
+
     config APP_DEBUG_PAD_RATE_PROBE
         bool "Diagnostics: force a different pad report every tick, to measure the transport"
         depends on APP_ENABLE_GAMEPAD || APP_USB_PAD

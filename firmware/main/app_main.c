@@ -36,6 +36,7 @@
 #include "bridge_config.h"
 #include "input_mapper.h"
 #endif
+#include "webui.h"
 #if CONFIG_APP_ROLE_FAKE_KEYBOARD
 #include "fake_keyboard.h"
 #endif
@@ -194,6 +195,14 @@ void app_main(void)
     ESP_LOGW(TAG, "pad selftest enabled - input mapping is INACTIVE");
 #endif
 
+    /*
+     * The configuration panel. Called UNCONDITIONALLY: webui.h is a set of empty inlines on a
+     * chip that does not run it, which is the one construction that cannot drift away from the
+     * CMake condition. Wi-Fi stays down until a hotkey asks for it, so this costs a task and
+     * nothing else.
+     */
+    ESP_ERROR_CHECK(webui_start());
+
 #if !CONFIG_APP_LINK_DISABLED
     /*
      * Split bridge. Started before the stack because it is pure UART - it does not touch
@@ -280,6 +289,18 @@ void app_main(void)
                      tick, (uint32_t)esp_get_free_heap_size(),
                      (uint32_t)esp_get_minimum_free_heap_size(), pad, st.keyboard_connected,
                      st.mouse_connected, rl, rr);
+            /*
+             * Only while it is up, and on its own line. An address is the one thing about the
+             * panel nobody can guess - especially when it has joined a network and the router
+             * chose the address - and repeating "off" every five seconds would be noise.
+             */
+            if (webui_state() != WEBUI_OFF) {
+                ESP_LOGI(TAG, "  config panel: %s -> %s",
+                         webui_state() == WEBUI_STA_UP      ? "on your network"
+                         : webui_state() == WEBUI_AP_UP     ? "own access point"
+                                                            : "joining a network",
+                         webui_url()[0] ? webui_url() : "(no address yet)");
+            }
 #endif
             if (st.modifiers || st.keys[0]) {
                 ESP_LOGI(TAG, "  keyboard: mod=0x%02x key=0x%02x", st.modifiers, st.keys[0]);

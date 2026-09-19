@@ -111,40 +111,121 @@ static void handle_keyboard(const uint8_t *data, size_t len)
 #endif
 }
 
-#if CONFIG_APP_USB_PASSTHROUGH && CONFIG_APP_LINK_SENDER
 /*
- * Passthrough hotkey: Ctrl+Alt+<APP_PASSTHROUGH_KEYCODE>, either side of the keyboard.
+ * Hotkeys live on this chip because this is where the keyboard is, even though two of the three
+ * act on the OTHER chip. What travels is the resulting mode bitmask, as absolute state, so a
+ * lost frame repairs itself - see chip_link.h.
  *
- * Returns true when the combination fired, and the caller then DROPS the report instead of
- * forwarding it. That matters: without it the chosen key would also reach the PC, and in
- * passthrough mode that means a stray character in whatever has focus.
- *
- * Edge-triggered on the key going down. A held combination must not toggle repeatedly - the
- * keyboard sends the same report over and over while a key is held, and a toggle per report
- * would flip identity dozens of times a second and re-enumerate USB each time.
+ * ONE NAME FOR THE CONDITION, tested in two places below.
  */
-static bool hotkey_fired(const uint8_t *data)
+#if (CONFIG_APP_USB_PASSTHROUGH || CONFIG_APP_WEBUI) && CONFIG_APP_LINK_SENDER
+#define HOST_HAS_HOTKEYS 1
+#else
+#define HOST_HAS_HOTKEYS 0
+#endif
+
+#if HOST_HAS_HOTKEYS
+/*
+ * Ctrl+Alt+<key>, either side of the keyboard.
+ *
+ * The caller DROPS a report that fired a hotkey instead of forwarding it. That matters: without
+ * it the chosen key would also reach the PC, and in passthrough mode that means a stray
+ * character in whatever has focus.
+ *
+ * Edge-triggered per hotkey, each with its own state. A held combination must not fire
+ * repeatedly - the keyboard resends the same report while a key is held, and acting per report
+ * would flip identity dozens of times a second, re-enumerating USB each time.
+ */
+enum {
+    HOTKEY_NONE = 0,
+    HOTKEY_PASSTHROUGH,
+    HOTKEY_WEBUI,
+    HOTKEY_WEBUI_AP,
+};
+
+static const struct {
+    uint8_t keycode;
+    uint8_t id;
+} s_hotkeys[] = {
+#if CONFIG_APP_USB_PASSTHROUGH
+    { CONFIG_APP_PASSTHROUGH_KEYCODE, HOTKEY_PASSTHROUGH },
+#endif
+#if CONFIG_APP_WEBUI
+    { CONFIG_APP_WEBUI_HOTKEY_KEYCODE, HOTKEY_WEBUI },
+    { CONFIG_APP_WEBUI_AP_HOTKEY_KEYCODE, HOTKEY_WEBUI_AP },
+#endif
+};
+
+#define HOTKEY_COUNT (sizeof(s_hotkeys) / sizeof(s_hotkeys[0]))
+
+static uint8_t hotkey_fired(const uint8_t *data)
 {
     const uint8_t mods = data[0];
     const bool ctrl = (mods & 0x11) != 0; /* LCtrl | RCtrl */
     const bool alt = (mods & 0x44) != 0;  /* LAlt  | RAlt  */
 
-    bool key_down = false;
-    for (int i = 0; i < HID_KEYS_MAX; i++) {
-        if (data[2 + i] == CONFIG_APP_PASSTHROUGH_KEYCODE) {
-            key_down = true;
-            break;
+    static bool was_down[HOTKEY_COUNT];
+    uint8_t fired = HOTKEY_NONE;
+
+    for (unsigned h = 0; h < HOTKEY_COUNT; h++) {
+        bool down = false;
+        if (ctrl && alt) {
+            for (int i = 0; i < HID_KEYS_MAX; i++) {
+                if (data[2 + i] == s_hotkeys[h].keycode) {
+                    down = true;
+                    break;
+                }
+            }
         }
+        /*
+         * The edge state is updated for every hotkey even after one has fired, so releasing a
+         * combination always clears its own flag. Returning early would leave a stale "still
+         * held" for the others.
+         */
+        if (down && !was_down[h] && fired == HOTKEY_NONE) {
+            fired = s_hotkeys[h].id;
+        }
+        was_down[h] = down;
     }
-
-    const bool combo = ctrl && alt && key_down;
-
-    static bool was_down;
-    const bool fired = combo && !was_down;
-    was_down = combo;
     return fired;
 }
-#endif /* passthrough hotkey */
+
+static void hotkey_act(uint8_t id)
+{
+    uint8_t bits = chip_link_mode_bits();
+
+    switch (id) {
+#if CONFIG_APP_USB_PASSTHROUGH
+    case HOTKEY_PASSTHROUGH:
+        bits ^= LINK_MODE_PASSTHROUGH;
+        ESP_LOGI(TAG, "hotkey: pad chip -> %s",
+                 (bits & LINK_MODE_PASSTHROUGH) ? "PASSTHROUGH (keyboard + mouse)" : "GAMEPAD");
+        break;
+#endif
+#if CONFIG_APP_WEBUI
+    case HOTKEY_WEBUI:
+        bits ^= LINK_MODE_WEBUI;
+        if (!(bits & LINK_MODE_WEBUI)) {
+            /* Switching the panel off also forgets a forced access point, so turning it back on
+             * retries the stored network. Otherwise one emergency use of the AP hotkey would
+             * quietly stick for the rest of the session. */
+            bits &= (uint8_t)~LINK_MODE_WEBUI_AP;
+        }
+        ESP_LOGI(TAG, "hotkey: config panel -> %s", (bits & LINK_MODE_WEBUI) ? "ON" : "OFF");
+        break;
+
+    case HOTKEY_WEBUI_AP:
+        bits |= LINK_MODE_WEBUI | LINK_MODE_WEBUI_AP;
+        ESP_LOGI(TAG, "hotkey: config panel -> ON, forced to its own access point");
+        break;
+#endif
+    default:
+        return;
+    }
+
+    chip_link_set_mode_bits(bits);
+}
+#endif /* HOST_HAS_HOTKEYS */
 
 static void handle_mouse(const uint8_t *data, size_t len)
 {
@@ -198,13 +279,13 @@ static void iface_event_cb(hid_host_device_handle_t dev, const hid_host_interfac
             return;
         }
         if (params.proto == HID_PROTOCOL_KEYBOARD) {
-#if CONFIG_APP_USB_PASSTHROUGH && CONFIG_APP_LINK_SENDER
-            if (len >= 8 && hotkey_fired(data)) {
-                const bool pt = !chip_link_mode_is_passthrough();
-                chip_link_set_mode(pt);
-                ESP_LOGI(TAG, "hotkey: pad chip -> %s",
-                         pt ? "PASSTHROUGH (keyboard + mouse)" : "GAMEPAD");
-                break; /* consumed - the combination itself must not reach the PC */
+#if HOST_HAS_HOTKEYS
+            if (len >= 8) {
+                const uint8_t hk = hotkey_fired(data);
+                if (hk != HOTKEY_NONE) {
+                    hotkey_act(hk);
+                    break; /* consumed - the combination itself must not reach the PC */
+                }
             }
 #endif
             handle_keyboard(data, len);
