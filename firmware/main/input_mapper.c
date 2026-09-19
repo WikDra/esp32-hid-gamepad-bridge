@@ -5,17 +5,19 @@
  * state from ble_hid_host and turns it into a gamepad report. Sending only happens on
  * a state change - ble_gamepad_send() takes care of that.
  *
- * Mapping (keys given as USB HID keycodes):
+ * Mapping is a TABLE, not a chain of conditions: s_default_binds below is the mapping the
+ * documentation describes, and input_mapper_set_binds() replaces it at runtime.
+ *
  *   left stick    <- WASD
- *   right stick   <- mouse motion (deltas, scaled and clamped)
+ *   right stick   <- mouse motion (deltas, scaled and clamped) - not bindable, see input_map.h
  *   D-pad         <- arrow keys (Xbox profile only - the generic one has no hat switch)
  *   button 1..3   <- left / right / middle mouse button
  *   button 4      <- space
  *   button 5..6   <- left Shift / left Ctrl
  *   button 7..12  <- E, Q, R, F, Tab, Esc
  *
- * The button numbers are nominal: ble_gamepad.c translates them into Xbox controls
- * (table s_xbox_ctrl) so that this module does not need to know which profile is active.
+ * The button numbers are nominal: ble_gamepad.c translates them into Xbox controls (table
+ * s_xbox_ctrl) so that this module does not need to know which profile is active.
  */
 
 #include "input_mapper.h"
@@ -61,6 +63,7 @@
 
 #include <inttypes.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <string.h>
 
 #include "ble_gamepad.h"
@@ -69,6 +72,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "input_map.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "mapper";
@@ -95,43 +99,225 @@ static const char *TAG = "mapper";
 #define MOD_LSHIFT 0x02
 
 /* Full axis deflection. The descriptor declares -127..127, but 127 is only used for
- * straight directions - see stick_from_wasd(). */
+ * straight directions - see map_digital(). */
 #define AXIS_MAX 127
 
-static bool key_down(const hid_input_state_t *st, uint8_t keycode)
+/*
+ * The default table: exactly the mapping that was hardcoded here before, and exactly the one
+ * the README documents. Anything that changes the feel of the bridge has to change this table
+ * or replace it at runtime - there is no second place where a key maps to a control.
+ */
+static const input_bind_t s_default_binds[] = {
+    { BIND_SRC_KEY, KEY_A, ACT_LSTICK_LEFT },
+    { BIND_SRC_KEY, KEY_D, ACT_LSTICK_RIGHT },
+    { BIND_SRC_KEY, KEY_W, ACT_LSTICK_UP },
+    { BIND_SRC_KEY, KEY_S, ACT_LSTICK_DOWN },
+
+    { BIND_SRC_MOUSE_BTN, 0x01, ACT_BTN_1 }, /* left   -> RT in the Xbox profile */
+    { BIND_SRC_MOUSE_BTN, 0x02, ACT_BTN_2 }, /* right  -> LT */
+    { BIND_SRC_MOUSE_BTN, 0x04, ACT_BTN_3 }, /* middle -> right stick click */
+
+    { BIND_SRC_KEY, KEY_SPACE, ACT_BTN_4 },
+    { BIND_SRC_MOD, MOD_LSHIFT, ACT_BTN_5 },
+    { BIND_SRC_MOD, MOD_LCTRL, ACT_BTN_6 },
+    { BIND_SRC_KEY, KEY_E, ACT_BTN_7 },
+    { BIND_SRC_KEY, KEY_Q, ACT_BTN_8 },
+    { BIND_SRC_KEY, KEY_R, ACT_BTN_9 },
+    { BIND_SRC_KEY, KEY_F, ACT_BTN_10 },
+    { BIND_SRC_KEY, KEY_TAB, ACT_BTN_11 },
+    { BIND_SRC_KEY, KEY_ESC, ACT_BTN_12 },
+
+    { BIND_SRC_KEY, KEY_UP, ACT_DPAD_UP },
+    { BIND_SRC_KEY, KEY_RIGHT, ACT_DPAD_RIGHT },
+    { BIND_SRC_KEY, KEY_DOWN, ACT_DPAD_DOWN },
+    { BIND_SRC_KEY, KEY_LEFT, ACT_DPAD_LEFT },
+};
+
+/*
+ * Derived form of the table: a direct index from what a HID report contains to what it does.
+ * 272 bytes, and it turns the hot path from "scan up to 40 rows per pressed key" into one array
+ * read per pressed key.
+ */
+typedef struct {
+    uint8_t key[256]; /* indexed by USB HID keycode */
+    uint8_t mod[8];   /* indexed by modifier BIT, not mask */
+    uint8_t mouse[8]; /* indexed by mouse button BIT */
+} bind_lut_t;
+
+/*
+ * Two of them, and the task reads through a pointer. A table change builds the spare copy and
+ * then swaps the pointer, which is a single aligned store: the mapping task sees either the
+ * whole old table or the whole new one, never a half-applied mixture. That is the same
+ * reasoning that puts the USB identity switch in this task rather than behind a lock - it is
+ * cheaper than a mutex and there is less to get wrong.
+ *
+ * volatile, not plain, so the compiler cannot hoist the read out of the loop and keep using a
+ * stale copy for the lifetime of the task.
+ */
+static bind_lut_t s_lut[2];
+static const bind_lut_t *volatile s_lut_active = &s_lut[0];
+static input_bind_t s_binds[INPUT_BIND_MAX];
+static size_t s_bind_count;
+
+static void lut_build(bind_lut_t *lut, const input_bind_t *binds, size_t count)
 {
-    for (int i = 0; i < HID_KEYS_MAX; i++) {
-        if (st->keys[i] == keycode) {
-            return true;
+    memset(lut, 0, sizeof(*lut)); /* everything unbound is ACT_NONE, which is 0 */
+
+    for (size_t i = 0; i < count; i++) {
+        const uint8_t act = binds[i].action;
+        if (act == ACT_NONE || act >= ACT_COUNT) {
+            continue;
+        }
+
+        switch (binds[i].src) {
+        case BIND_SRC_KEY:
+            /* code is a uint8_t and the array has 256 entries, so every value is in range. */
+            lut->key[binds[i].code] = act;
+            break;
+
+        case BIND_SRC_MOD:
+        case BIND_SRC_MOUSE_BTN:
+            /* Stored as a mask, because that is how the HID report carries it; looked up by
+             * bit. A mask with several bits set binds all of them, which is harmless. */
+            for (int b = 0; b < 8; b++) {
+                if (binds[i].code & (1u << b)) {
+                    if (binds[i].src == BIND_SRC_MOD) {
+                        lut->mod[b] = act;
+                    } else {
+                        lut->mouse[b] = act;
+                    }
+                }
+            }
+            break;
+
+        default:
+            break;
         }
     }
-    return false;
+}
+
+void input_mapper_set_binds(const input_bind_t *binds, size_t count)
+{
+    if (count > INPUT_BIND_MAX) {
+        count = INPUT_BIND_MAX;
+    }
+
+    bind_lut_t *spare = (s_lut_active == &s_lut[0]) ? &s_lut[1] : &s_lut[0];
+    lut_build(spare, binds, count);
+
+    memcpy(s_binds, binds, count * sizeof(input_bind_t));
+    s_bind_count = count;
+    s_lut_active = spare; /* the swap */
+}
+
+const input_bind_t *input_mapper_binds(size_t *count)
+{
+    if (count) {
+        *count = s_bind_count;
+    }
+    return s_binds;
+}
+
+size_t input_mapper_default_binds(input_bind_t *out, size_t max)
+{
+    const size_t n = sizeof(s_default_binds) / sizeof(s_default_binds[0]);
+    const size_t copy = (n < max) ? n : max;
+    if (out) {
+        memcpy(out, s_default_binds, copy * sizeof(input_bind_t));
+    }
+    return n;
+}
+
+static inline void act_apply(uint8_t action, int *lx, int *ly, uint8_t *dpad, uint16_t *btn)
+{
+    switch (action) {
+    case ACT_NONE:
+        return;
+    case ACT_LSTICK_LEFT:
+        *lx -= 1;
+        return;
+    case ACT_LSTICK_RIGHT:
+        *lx += 1;
+        return;
+    case ACT_LSTICK_UP:
+        *ly -= 1; /* in HID the Y axis grows downwards */
+        return;
+    case ACT_LSTICK_DOWN:
+        *ly += 1;
+        return;
+    case ACT_DPAD_UP:
+        *dpad |= GAMEPAD_DPAD_UP;
+        return;
+    case ACT_DPAD_RIGHT:
+        *dpad |= GAMEPAD_DPAD_RIGHT;
+        return;
+    case ACT_DPAD_DOWN:
+        *dpad |= GAMEPAD_DPAD_DOWN;
+        return;
+    case ACT_DPAD_LEFT:
+        *dpad |= GAMEPAD_DPAD_LEFT;
+        return;
+    default:
+        if (action >= ACT_BTN_1 && action <= ACT_BTN_12) {
+            *btn |= 1u << (action - ACT_BTN_1);
+        }
+        return;
+    }
 }
 
 /*
- * WASD is a digital input while an analog axis expects a vector. With two keys held
- * (e.g. W+D), simply setting both axes to maximum would produce a vector of length
- * 1.41 - in games that shows up as moving faster diagonally. Hence the ~0.707 scaling.
+ * Everything digital in one pass: keys, modifiers and mouse buttons all resolve through the
+ * same lookup and land on the same four outputs.
+ *
+ * WASD is a digital input while an analog axis expects a vector. With two keys held (e.g. W+D),
+ * simply setting both axes to maximum would produce a vector of length 1.41 - in games that
+ * shows up as moving faster diagonally. Hence the ~0.707 scaling.
  */
-static void stick_from_wasd(const hid_input_state_t *st, int8_t *out_x, int8_t *out_y)
+static void map_digital(const hid_input_state_t *st, gamepad_state_t *out)
 {
-    int x = 0, y = 0;
-    if (key_down(st, KEY_A)) {
-        x -= 1;
+    const bind_lut_t *lut = s_lut_active;
+    int lx = 0, ly = 0;
+    uint8_t dpad = 0;
+    uint16_t btn = 0;
+
+    for (int i = 0; i < HID_KEYS_MAX; i++) {
+        const uint8_t kc = st->keys[i];
+        if (kc != 0) {
+            act_apply(lut->key[kc], &lx, &ly, &dpad, &btn);
+        }
     }
-    if (key_down(st, KEY_D)) {
-        x += 1;
+    for (int b = 0; b < 8; b++) {
+        if (st->modifiers & (1u << b)) {
+            act_apply(lut->mod[b], &lx, &ly, &dpad, &btn);
+        }
     }
-    if (key_down(st, KEY_W)) {
-        y -= 1; /* in HID the Y axis grows downwards */
-    }
-    if (key_down(st, KEY_S)) {
-        y += 1;
+    for (int b = 0; b < 8; b++) {
+        if (st->mouse_buttons & (1u << b)) {
+            act_apply(lut->mouse[b], &lx, &ly, &dpad, &btn);
+        }
     }
 
-    int magnitude = (x != 0 && y != 0) ? 90 : AXIS_MAX; /* 90 ~= 127 * 0.707 */
-    *out_x = (int8_t)(x * magnitude);
-    *out_y = (int8_t)(y * magnitude);
+    /*
+     * Clamped because a user-editable table can do what the hardcoded version could not: bind
+     * two keys to the same direction. Without this, holding both would scale the axis past
+     * int8_t range and wrap the sign.
+     */
+    if (lx > 1) {
+        lx = 1;
+    } else if (lx < -1) {
+        lx = -1;
+    }
+    if (ly > 1) {
+        ly = 1;
+    } else if (ly < -1) {
+        ly = -1;
+    }
+
+    const int magnitude = (lx != 0 && ly != 0) ? 90 : AXIS_MAX; /* 90 ~= 127 * 0.707 */
+    out->lx = (int8_t)(lx * magnitude);
+    out->ly = (int8_t)(ly * magnitude);
+    out->buttons = btn;
+    out->dpad = dpad;
 }
 
 static int8_t clamp_axis(int32_t v)
@@ -233,71 +419,6 @@ static void stick_from_mouse(const hid_input_state_t *st, int8_t *out_x, int8_t 
     *out_y = clamp_axis((int32_t)(((int64_t)ema_y * AXIS_MAX * CONFIG_APP_REPORT_RATE_HZ) / denom));
 }
 
-static uint16_t buttons_from_state(const hid_input_state_t *st)
-{
-    uint16_t b = 0;
-
-    /* Mouse buttons: bit 0 left, bit 1 right, bit 2 middle. */
-    if (st->mouse_buttons & 0x01) {
-        b |= 1u << 0;
-    }
-    if (st->mouse_buttons & 0x02) {
-        b |= 1u << 1;
-    }
-    if (st->mouse_buttons & 0x04) {
-        b |= 1u << 2;
-    }
-
-    if (key_down(st, KEY_SPACE)) {
-        b |= 1u << 3;
-    }
-    if (st->modifiers & MOD_LSHIFT) {
-        b |= 1u << 4;
-    }
-    if (st->modifiers & MOD_LCTRL) {
-        b |= 1u << 5;
-    }
-    if (key_down(st, KEY_E)) {
-        b |= 1u << 6;
-    }
-    if (key_down(st, KEY_Q)) {
-        b |= 1u << 7;
-    }
-    if (key_down(st, KEY_R)) {
-        b |= 1u << 8;
-    }
-    if (key_down(st, KEY_F)) {
-        b |= 1u << 9;
-    }
-    if (key_down(st, KEY_TAB)) {
-        b |= 1u << 10;
-    }
-    if (key_down(st, KEY_ESC)) {
-        b |= 1u << 11;
-    }
-    return b;
-}
-
-/* D-pad from the arrow keys. We build a bitmap here; turning it into a hat switch value
- * is ble_gamepad.c's job - only it knows the report layout of the active profile. */
-static uint8_t dpad_from_keys(const hid_input_state_t *st)
-{
-    uint8_t d = 0;
-    if (key_down(st, KEY_UP)) {
-        d |= GAMEPAD_DPAD_UP;
-    }
-    if (key_down(st, KEY_RIGHT)) {
-        d |= GAMEPAD_DPAD_RIGHT;
-    }
-    if (key_down(st, KEY_DOWN)) {
-        d |= GAMEPAD_DPAD_DOWN;
-    }
-    if (key_down(st, KEY_LEFT)) {
-        d |= GAMEPAD_DPAD_LEFT;
-    }
-    return d;
-}
-
 static void mapper_task(void *arg)
 {
     const TickType_t period = pdMS_TO_TICKS(1000 / CONFIG_APP_REPORT_RATE_HZ);
@@ -341,10 +462,8 @@ static void mapper_task(void *arg)
         }
 
         gamepad_state_t out = {0};
-        stick_from_wasd(&in, &out.lx, &out.ly);
+        map_digital(&in, &out);
         stick_from_mouse(&in, &out.rx, &out.ry);
-        out.buttons = buttons_from_state(&in);
-        out.dpad = dpad_from_keys(&in);
 
 #if CONFIG_APP_DEBUG_PAD_RATE_PROBE
         /*
@@ -404,10 +523,19 @@ static void mapper_task(void *arg)
 
 esp_err_t input_mapper_start(void)
 {
+    /*
+     * The table has to be in force before the task can run, and installing it here rather than
+     * relying on a static initialiser means there is exactly one code path that builds the
+     * lookups - the same one a later configuration change will use.
+     */
+    input_bind_t defaults[INPUT_BIND_MAX];
+    const size_t n = input_mapper_default_binds(defaults, INPUT_BIND_MAX);
+    input_mapper_set_binds(defaults, n);
+
     if (xTaskCreate(mapper_task, "mapper", 3072, NULL, 5, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
-    ESP_LOGI(TAG, "input mapping enabled (%d Hz, mouse divisor %d)",
-             CONFIG_APP_REPORT_RATE_HZ, CONFIG_APP_MOUSE_SCALE_DIV);
+    ESP_LOGI(TAG, "input mapping enabled (%d Hz, mouse divisor %d, %u bindings)",
+             CONFIG_APP_REPORT_RATE_HZ, CONFIG_APP_MOUSE_SCALE_DIV, (unsigned)n);
     return ESP_OK;
 }
