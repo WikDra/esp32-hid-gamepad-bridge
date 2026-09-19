@@ -1829,6 +1829,32 @@ z interfejsu klawiatury *myszy* może na chwilę zwolnić trzymany klawisz. Bezc
 nic nie nadaje, więc w praktyce może to nigdy nie wystąpić — ale to jest objaw do wypatrywania,
 a nie do szukania potem w mapperze.
 
+#### ZMIERZONE: prawdziwym limitem interfejsów jest liczba kanałów kontrolera, nie nasza tablica
+
+Odczytane z logu startowego układu wejść, przy dwóch dongle'ach 2,4 GHz na zasilanym hubie:
+
+```
+I usb_host: HID connected: addr 3 iface 2 sub_class 0 proto 0
+E HCD DWC: No more HCD channels available
+E USBH: EP Alloc error: ESP_ERR_NOT_SUPPORTED
+E USB HOST: Claiming interface error: ESP_ERR_NOT_SUPPORTED
+E hid-host: hid_host_device_open(1504): Unable to claim interface
+E usb_host: hid_host_device_open failed: ESP_ERR_NOT_SUPPORTED
+```
+
+To **piąty** interfejs HID, czyli vendorowy interfejs AJAZZ-a z tabeli wyżej. Nasz host go i tak
+pomija, bo dyspozycja idzie po `params.proto`, więc **nic nie tracimy** — ale warto wiedzieć, że
+podniesienie `USB_HID_MAX_IFACES` z 4 na 8 nie usunęło prawdziwego ograniczenia. Kanały kontrolera
+DWC są zasobem sprzętowym i pięć interfejsów je wyczerpuje.
+
+Konsekwencja praktyczna: przy **trzecim** urządzeniu wejściowym objawi się to jako urządzenie, które
+„się nie podłącza", z błędem wskazującym na alokację endpointu, a nie na cokolwiek w naszym kodzie.
+Objaw będzie wyglądał na wadę firmware'u i nie będzie nią.
+
+W tym samym logu leci dwukrotnie `SET_PROTOCOL(boot) failed: ESP_ERR_TIMEOUT - carrying on`.
+Nieszkodliwe — raporty przychodzą normalnie — ale to dokładnie ten rodzaj linii, który przy następnej
+diagnozie wygląda na trop.
+
 #### Najważniejszy błąd tego uruchomienia: mapper na padzie USB nigdy nie startował
 
 Objaw był mylący, bo **wszystko po drodze działało**: pad się wyliczał, Windows wiązał `xusb22`,
