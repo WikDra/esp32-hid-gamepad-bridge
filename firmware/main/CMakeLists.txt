@@ -38,9 +38,13 @@ endif()
 
 # The glue between input and pad. Needed for either pad transport, but not when the pad is
 # running its own test pattern - the two would fight over the same report.
+#
+# bridge_config goes with it rather than being unconditional: it exists to feed the mapper, and
+# the two are gated on the same condition ON PURPOSE. A build where one is present and the other
+# is not would be the shape of AGENTS.md 4.38 all over again.
 if(NOT CONFIG_APP_GAMEPAD_SELFTEST)
     if((CONFIG_APP_ENABLE_HID_HOST AND CONFIG_APP_ENABLE_GAMEPAD) OR CONFIG_APP_USB_PAD)
-        list(APPEND srcs "input_mapper.c")
+        list(APPEND srcs "input_mapper.c" "bridge_config.c")
     endif()
 endif()
 

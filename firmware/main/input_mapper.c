@@ -64,10 +64,12 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "ble_gamepad.h"
 #include "ble_hid_host.h"
+#include "bridge_config.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -344,35 +346,81 @@ static int8_t clamp_axis(int32_t v)
  * Under steady motion the stick holds a stable deflection proportional to mouse speed, and
  * returns to centre about one time constant after the mouse stops.
  *
- * BOTH CONSTANTS BELOW ARE EXPRESSED IN TIME, NOT IN TICKS, and that is load-bearing rather
- * than tidy. They used to be per-tick: the time constant was "8 ticks" and full deflection was
- * "div * 4 counts per tick". Raising APP_REPORT_RATE_HZ therefore changed the feel silently -
- * going from 100 Hz to 250 Hz made the filter 2.5x faster AND the mouse 2.5x less sensitive,
- * quietly undoing the tuning that AGENTS.md 4.22 arrived at by hand. Derived from the rate at
- * compile time, the numbers mean the same thing at 100 Hz and at 1 kHz.
+ * BOTH OF THESE ARE EXPRESSED IN TIME, NOT IN TICKS, and that is load-bearing rather than tidy.
+ * They used to be per-tick: the time constant was "8 ticks" and full deflection was "div * 4
+ * counts per tick". Raising APP_REPORT_RATE_HZ therefore changed the feel silently - going from
+ * 100 Hz to 250 Hz made the filter 2.5x faster AND the mouse 2.5x less sensitive, quietly
+ * undoing the tuning that AGENTS.md 4.22 arrived at by hand. Converted from time to ticks
+ * against the actual rate, the numbers mean the same thing at 100 Hz and at 1 kHz.
+ *
+ * Both now live in bridge_config rather than in a macro, because they are the two settings you
+ * can only judge by feel and therefore the two worst candidates for requiring a reflash.
  */
-#define MOUSE_TAU_MS 80  /* filter time constant; 80 ms is the value tuned at 100 Hz */
 
 /*
  * Fractional resolution of the fixed-point accumulator. It has to be large relative to the
  * number of ticks in the time constant, or the filter STALLS: the step is
- * (sample * EMA_FRAC - ema) / EMA_TICKS in integer arithmetic, so once the difference falls
- * below EMA_TICKS the increment truncates to zero and the average stops moving.
+ * (sample * EMA_FRAC - ema) / ema_ticks in integer arithmetic, so once the difference falls
+ * below ema_ticks the increment truncates to zero and the average stops moving.
  *
  * That is not hypothetical - it is a bug this file had for one iteration. With EMA_FRAC 256 and
  * a 1 kHz task the time constant is 80 ticks, leaving barely three units of headroom, and slow
  * mouse movement simply stopped registering. 4096 keeps at least 51 units even at 1 kHz, and at
  * 100 Hz it is 512, so nothing is lost at the low end either.
  */
-#define EMA_FRAC     4096
-
-/* Time constant expressed in ticks at the configured rate. At 100 Hz this is 8, which is
- * exactly what the hand-tuned version used. */
-#define EMA_TICKS_RAW ((CONFIG_APP_REPORT_RATE_HZ * MOUSE_TAU_MS) / 1000)
-#define EMA_TICKS     (EMA_TICKS_RAW > 0 ? EMA_TICKS_RAW : 1)
+#define EMA_FRAC 4096
 
 static int32_t s_ema_x;
 static int32_t s_ema_y;
+
+/*
+ * Values derived from the configuration, recomputed only when it changes.
+ *
+ * The point of caching is not the arithmetic - a multiply and a divide per tick would be free.
+ * It is that the derivation belongs to the filter and not to the configuration store: this file
+ * owns EMA_FRAC and the report rate, and nothing else should have to know they exist to be able
+ * to offer a time constant in milliseconds.
+ */
+static struct {
+    uint32_t gen;
+    int32_t ema_ticks;
+    int64_t denom_x;
+    int64_t denom_y;
+    int32_t anti_dz; /* in axis units, not percent */
+    bool invert_y;
+} s_tune = { .gen = UINT32_MAX, .ema_ticks = 1, .denom_x = 1, .denom_y = 1 };
+
+static void tune_refresh(void)
+{
+    const uint32_t gen = bridge_config_generation();
+    if (gen == s_tune.gen) {
+        return;
+    }
+    const bridge_config_t *cfg = bridge_config_get();
+    if (!cfg) {
+        return;
+    }
+
+    /* Time constant expressed in ticks at the configured rate. At 100 Hz and 80 ms this is 8,
+     * which is exactly what the hand-tuned version used. */
+    int32_t ticks = ((int32_t)CONFIG_APP_REPORT_RATE_HZ * cfg->mouse_tau_ms) / 1000;
+    s_tune.ema_ticks = (ticks > 0) ? ticks : 1;
+
+    /*
+     * Mouse speed that produces full deflection, expressed in counts per SECOND so that the
+     * feel does not depend on the task rate. The tuned value was "div * 4 counts per tick at
+     * 100 Hz", which is div * 400 counts per second; at div=24 that is 9600 counts/s, and
+     * measurements on the reference mouse showed roughly 7900 counts/s during brisk movement,
+     * so it lands around 80 % of the range.
+     */
+    s_tune.denom_x = (int64_t)cfg->mouse_div_x * 400 * EMA_FRAC;
+    s_tune.denom_y = (int64_t)cfg->mouse_div_y * 400 * EMA_FRAC;
+
+    s_tune.anti_dz = ((int32_t)cfg->mouse_anti_deadzone * AXIS_MAX) / 100;
+    s_tune.invert_y = cfg->mouse_invert_y != 0;
+
+    s_tune.gen = gen;
+}
 
 /*
  * Returns the accumulator in FIXED-POINT units, not whole counts per tick, and that matters
@@ -381,9 +429,9 @@ static int32_t s_ema_y;
  * levels - 0, 1, 2 - and the stick moved in steps of a seventh of its range. The whole path to
  * the axis now stays in EMA_FRAC units.
  */
-static int32_t ema_step(int32_t *ema, int32_t sample)
+static int32_t ema_step(int32_t *ema, int32_t sample, int32_t ticks)
 {
-    *ema += ((sample * EMA_FRAC) - *ema) / EMA_TICKS;
+    *ema += ((sample * EMA_FRAC) - *ema) / ticks;
     /* Integer division never quite reaches zero for a small remainder, which would
      * leave the stick permanently off-centre. Below 1 count per tick there is nothing
      * worth carrying over anyway. */
@@ -393,30 +441,78 @@ static int32_t ema_step(int32_t *ema, int32_t sample)
     return *ema;
 }
 
-static void stick_from_mouse(const hid_input_state_t *st, int8_t *out_x, int8_t *out_y)
+/* Integer square root. No FPU is involved deliberately: this file is shared with the ESP32-C3
+ * build, which has none, and a soft-float sqrt in a 1 kHz loop would be a silly way to pay for
+ * a deadzone. */
+static uint32_t isqrt32(uint32_t v)
 {
-    int32_t div = CONFIG_APP_MOUSE_SCALE_DIV;
-    if (div < 1) {
-        div = 1;
+    uint32_t rem = v, root = 0, bit = 1u << 30;
+    while (bit > rem) {
+        bit >>= 2;
+    }
+    while (bit != 0) {
+        if (rem >= root + bit) {
+            rem -= root + bit;
+            root = (root >> 1) + bit;
+        } else {
+            root >>= 1;
+        }
+        bit >>= 2;
+    }
+    return root;
+}
+
+/*
+ * Lifts a non-zero deflection to at least the anti-deadzone magnitude and compresses the rest
+ * of the range into what is left, so the mapping stays continuous and still reaches full scale.
+ *
+ * Radial, on the magnitude of the vector: applying it per axis would add up to 41 % on
+ * diagonals, which feels like the stick being pulled towards the corners.
+ */
+static void apply_anti_deadzone(int32_t *x, int32_t *y, int32_t dz)
+{
+    if (dz <= 0 || (*x == 0 && *y == 0)) {
+        return;
     }
 
+    const uint32_t mag = isqrt32((uint32_t)(*x * *x) + (uint32_t)(*y * *y));
+    if (mag == 0) {
+        return;
+    }
+
+    const int32_t scaled = dz + (int32_t)((mag * (uint32_t)(AXIS_MAX - dz)) / AXIS_MAX);
+    *x = (int32_t)(((int64_t)*x * scaled) / (int32_t)mag);
+    *y = (int32_t)(((int64_t)*y * scaled) / (int32_t)mag);
+}
+
+static void stick_from_mouse(const hid_input_state_t *st, int8_t *out_x, int8_t *out_y)
+{
+    tune_refresh();
+
+    const int32_t ema_x = ema_step(&s_ema_x, st->mouse_dx, s_tune.ema_ticks);
+    const int32_t ema_y = ema_step(&s_ema_y, st->mouse_dy, s_tune.ema_ticks);
+
     /*
-     * Mouse speed that produces full deflection, expressed in counts per SECOND so that the
-     * feel does not depend on the task rate. The tuned value was "div * 4 counts per tick at
-     * 100 Hz", which is div * 400 counts per second; at div=24 that is 9600 counts/s, and
-     * measurements on the reference mouse showed roughly 7900 counts/s during brisk movement,
-     * so it lands around 80 % of the range.
-     *
      * The scaling is done in one expression, in 64-bit, rather than by first reducing the
      * accumulator to counts per tick: both intermediate divisions used to truncate, and at high
      * task rates almost nothing survived them.
      */
-    const int64_t denom = (int64_t)div * 400 * EMA_FRAC;
-    const int32_t ema_x = ema_step(&s_ema_x, st->mouse_dx);
-    const int32_t ema_y = ema_step(&s_ema_y, st->mouse_dy);
+    int32_t x = (int32_t)(((int64_t)ema_x * AXIS_MAX * CONFIG_APP_REPORT_RATE_HZ) / s_tune.denom_x);
+    int32_t y = (int32_t)(((int64_t)ema_y * AXIS_MAX * CONFIG_APP_REPORT_RATE_HZ) / s_tune.denom_y);
 
-    *out_x = clamp_axis((int32_t)(((int64_t)ema_x * AXIS_MAX * CONFIG_APP_REPORT_RATE_HZ) / denom));
-    *out_y = clamp_axis((int32_t)(((int64_t)ema_y * AXIS_MAX * CONFIG_APP_REPORT_RATE_HZ) / denom));
+    if (s_tune.invert_y) {
+        y = -y;
+    }
+
+    /* Clamp before the deadzone so the magnitude it works on is the one that will actually be
+     * reported, and skip the whole thing when the feature is off - the default path then costs
+     * exactly what it did before. */
+    x = clamp_axis(x);
+    y = clamp_axis(y);
+    apply_anti_deadzone(&x, &y, s_tune.anti_dz);
+
+    *out_x = clamp_axis(x);
+    *out_y = clamp_axis(y);
 }
 
 static void mapper_task(void *arg)
@@ -524,18 +620,23 @@ static void mapper_task(void *arg)
 esp_err_t input_mapper_start(void)
 {
     /*
-     * The table has to be in force before the task can run, and installing it here rather than
-     * relying on a static initialiser means there is exactly one code path that builds the
-     * lookups - the same one a later configuration change will use.
+     * bridge_config_init() publishes a configuration and hands the binding table over, so it has
+     * to have run first. Failing loudly rather than quietly installing a second set of defaults
+     * is deliberate: a second place that decides what the default mapping is would be a second
+     * description of one thing, which in this project has twice meant a bug that builds, links,
+     * reports success and behaves differently (AGENTS.md 4.38, 4.39).
      */
-    input_bind_t defaults[INPUT_BIND_MAX];
-    const size_t n = input_mapper_default_binds(defaults, INPUT_BIND_MAX);
-    input_mapper_set_binds(defaults, n);
+    const bridge_config_t *cfg = bridge_config_get();
+    if (!cfg) {
+        ESP_LOGE(TAG, "no configuration in force - call bridge_config_init() first");
+        return ESP_ERR_INVALID_STATE;
+    }
 
     if (xTaskCreate(mapper_task, "mapper", 3072, NULL, 5, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
-    ESP_LOGI(TAG, "input mapping enabled (%d Hz, mouse divisor %d, %u bindings)",
-             CONFIG_APP_REPORT_RATE_HZ, CONFIG_APP_MOUSE_SCALE_DIV, (unsigned)n);
+    ESP_LOGI(TAG, "input mapping enabled (%d Hz, mouse div %u/%u, tau %u ms, %u bindings)",
+             CONFIG_APP_REPORT_RATE_HZ, cfg->mouse_div_x, cfg->mouse_div_y, cfg->mouse_tau_ms,
+             cfg->bind_count);
     return ESP_OK;
 }

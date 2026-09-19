@@ -33,6 +33,7 @@
 #endif
 #if !CONFIG_APP_GAMEPAD_SELFTEST && \
     ((CONFIG_APP_ENABLE_HID_HOST && CONFIG_APP_ENABLE_GAMEPAD) || CONFIG_APP_USB_PAD)
+#include "bridge_config.h"
 #include "input_mapper.h"
 #endif
 #if CONFIG_APP_ROLE_FAKE_KEYBOARD
@@ -182,6 +183,12 @@ void app_main(void)
  */
 #if !CONFIG_APP_GAMEPAD_SELFTEST && \
     ((CONFIG_APP_ENABLE_HID_HOST && CONFIG_APP_ENABLE_GAMEPAD) || CONFIG_APP_USB_PAD)
+    /*
+     * Configuration first: it publishes the tunables and hands the binding table to the mapper,
+     * which refuses to start without one. Same condition as the mapper itself, for the reason
+     * spelled out above - and bridge_config.c is gated on it in CMakeLists.txt too.
+     */
+    ESP_ERROR_CHECK(bridge_config_init());
     ESP_ERROR_CHECK(input_mapper_start());
 #elif CONFIG_APP_GAMEPAD_SELFTEST
     ESP_LOGW(TAG, "pad selftest enabled - input mapping is INACTIVE");
