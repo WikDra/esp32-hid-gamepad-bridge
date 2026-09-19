@@ -70,6 +70,21 @@ webui_state_t webui_state(void);
 /* Human-readable address to point a browser at, or an empty string when Wi-Fi is down. */
 const char *webui_url(void);
 
+/* The stored network name, or an empty string when none is stored. The password is deliberately
+ * not readable: it has no use to a caller and every reason not to leave the device. */
+const char *webui_sta_ssid(void);
+
+/*
+ * Re-reads the stored credentials and restarts Wi-Fi so they take effect.
+ *
+ * WHY A RESTART. Credentials are only consulted when the interface comes up, so storing them while
+ * an access point is already being served changed nothing until the next hotkey - and "I typed my
+ * password and it did not join" is the obvious thing to conclude from that. The restart happens
+ * from the control task a moment later, not inside the HTTP handler, so the response reaches the
+ * browser before the network it arrived on goes away.
+ */
+void webui_network_changed(void);
+
 #else /* the panel is not built on this chip */
 
 static inline esp_err_t webui_start(void)
@@ -91,6 +106,13 @@ static inline webui_state_t webui_state(void)
 static inline const char *webui_url(void)
 {
     return "";
+}
+static inline const char *webui_sta_ssid(void)
+{
+    return "";
+}
+static inline void webui_network_changed(void)
+{
 }
 
 #endif

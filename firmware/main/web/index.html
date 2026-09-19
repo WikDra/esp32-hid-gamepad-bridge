@@ -273,6 +273,7 @@ td select{width:100%;padding:7px 8px;min-height:38px}
     Wi-Fi comes up and stops serving its own access point — so the panel sits at a stable address
     on your network. If it ever cannot get there, <b>Ctrl+Alt+P</b> on the keyboard forces the
     access point back.</p>
+    <div class="hint" id="stanow" style="margin-bottom:10px"></div>
     <div class="tune"><label for="ssid">Network name</label>
       <input type="text" id="ssid" style="width:100%" autocomplete="off"></div>
     <div class="tune"><label for="wpass">Password</label>
@@ -492,6 +493,10 @@ function drawStatus(s) {
     `mapping loop: ${s.sys.rate_hz} Hz configured, ${taskHz} Hz measured\n` +
     `reports: ${s.sys.reports} total, ${reportHz}/s now (only changes when the pad state does)\n` +
     `network ${s.sys.net} ${s.sys.url}`;
+  $("stanow").textContent = s.sys.sta_ssid
+    ? "Stored network: " + s.sys.sta_ssid + (s.sys.net === "station"
+        ? " - currently joined." : " - not joined right now; the access point is being served.")
+    : "No network stored, so the bridge serves its own access point.";
   $("fwinfo").textContent =
     `version ${s.sys.version}\nbuilt ${s.sys.built}\nESP-IDF ${s.sys.idf}`;
 }
@@ -728,7 +733,7 @@ $("importfile").addEventListener("change", async e => {
 $("savewifi").addEventListener("click", async () => {
   try {
     await postForm("/api/wifi", { ssid: $("ssid").value, pass: $("wpass").value });
-    toast("Stored — it takes effect the next time Wi-Fi starts", "ok");
+    toast("Stored. Wi-Fi is restarting to join it, so this access point will drop.", "ok");
   } catch (e) { toast(e.message, "bad"); }
 });
 $("forgetwifi").addEventListener("click", async () => {

@@ -51,6 +51,8 @@ static int s_sta_retry;
 static volatile bool s_sta_got_ip;
 
 static char s_url[32];
+static char s_sta_ssid[33];
+static volatile bool s_want_restart;
 static char s_ssid[33];
 static char s_password[33];
 
@@ -94,6 +96,40 @@ webui_state_t webui_state(void)
 const char *webui_url(void)
 {
     return s_url;
+}
+
+const char *webui_sta_ssid(void)
+{
+    return s_sta_ssid;
+}
+
+/* Refreshes the cached copy of the stored network name. Cached rather than read on demand because
+ * the panel polls the state several times a second and this is in that response. */
+static void refresh_sta_ssid(void)
+{
+    s_sta_ssid[0] = '\0';
+
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
+        return;
+    }
+    size_t len = sizeof(s_sta_ssid);
+    if (nvs_get_str(h, NVS_KEY_STA_SSID, s_sta_ssid, &len) != ESP_OK) {
+        s_sta_ssid[0] = '\0';
+    }
+    nvs_close(h);
+}
+
+void webui_network_changed(void)
+{
+    refresh_sta_ssid();
+    /*
+     * Handled by the control task rather than here, so the HTTP response has already left before
+     * the interface it came in on is torn down. wifi_down() does not set the suppression flag, so
+     * the next tick brings Wi-Fi straight back up - this time consulting the credentials.
+     */
+    s_want_restart = true;
+    ESP_LOGI(TAG, "network settings changed - restarting Wi-Fi to apply them");
 }
 
 /*
@@ -429,6 +465,20 @@ static void webui_task(void *arg)
         const bool want_ap = s_want_ap;
         const webui_state_t state = s_state;
 
+        /*
+         * Network settings changed. Taken before everything else: bringing the interface down here
+         * leaves state OFF, and the check below then brings it straight back up - this time
+         * consulting the stored credentials. One transition expressed as two, rather than a second
+         * path that could disagree with the first.
+         */
+        if (s_want_restart) {
+            s_want_restart = false;
+            if (state != WEBUI_OFF) {
+                wifi_down();
+                continue;
+            }
+        }
+
         /* Asked to stop. */
         if (!want_on && state != WEBUI_OFF) {
             wifi_down();
@@ -494,6 +544,7 @@ static void webui_task(void *arg)
 esp_err_t webui_start(void)
 {
     build_identity();
+    refresh_sta_ssid();
 
     /*
      * Say so at boot if firmware updates are not actually possible, rather than letting the panel

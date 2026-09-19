@@ -584,6 +584,10 @@ static esp_err_t h_state(httpd_req_t *req)
                                              : "off");
     jw_raw(&w, ",\"url\":");
     jw_str(&w, webui_url());
+    /* The stored network name, so the panel can show what it will try to join. The password is not
+     * exposed: it has no use to the panel and every reason not to leave the device. */
+    jw_raw(&w, ",\"sta_ssid\":");
+    jw_str(&w, webui_sta_ssid());
     jw_raw(&w, ",\"version\":");
     jw_str(&w, app->version);
     jw_raw(&w, ",\"built\":");
@@ -640,6 +644,14 @@ static esp_err_t h_wifi(httpd_req_t *req)
     if (err != ESP_OK) {
         return send_err(req, "500 Internal Server Error", "could not write NVS");
     }
+
+    /*
+     * Apply them now rather than at the next hotkey. Credentials are only consulted when the
+     * interface comes up, so without this "I typed my password and it did not join" was the
+     * correct description of what happened. The restart is deferred to the control task, so this
+     * response still reaches the browser.
+     */
+    webui_network_changed();
     return send_ok(req);
 }
 
