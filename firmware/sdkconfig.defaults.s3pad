@@ -100,3 +100,29 @@ CONFIG_FREERTOS_HZ=1000
 # competes with the 1 kHz mapping task or the 1 ms endpoint while a game is running, and the
 # measured 997 Hz ceiling stays a number about this firmware rather than about the radio.
 CONFIG_APP_WEBUI=y
+
+
+# --- Partitions: two application slots, so firmware can be updated over Wi-Fi ---
+# Layout and the arithmetic behind it: firmware/partitions.csv. Two slots of 1.9 MB, no wasted
+# factory copy, about 50 % free per slot against the current image.
+#
+# CHANGING THIS CHANGES THE FLASH LAYOUT, which moves the NVS partition: anything previously stored
+# there is gone after the first flash with this table. On this variant that costs nothing - there
+# are no Bluetooth bonds here, only profiles, and a profile is a few hundred bytes you can re-enter
+# or import from a file. The BLE variants deliberately stay on a single app partition, because
+# there the same change would mean re-pairing a keyboard, a mouse and the PC.
+#
+# TRAP, and it cost a silent bad build here: a value ALREADY PRESENT in a generated sdkconfig wins
+# over one in a defaults file, and the partition choice was already set. Adding the line below to a
+# tree that has been built before therefore changes NOTHING - the build succeeds, OTA is absent, and
+# the only symptom is the panel reporting "no spare OTA partition". Delete
+# firmware/sdkconfig.win.esp32s3.s3pad once to let it regenerate. webui_start() also logs a warning
+# at boot when this has happened, so it cannot pass unnoticed twice.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Start a freshly written image as PENDING_VERIFY and roll back to the previous one unless the
+# application confirms itself. app_main confirms after 30 s of uptime, so an image that panics or
+# boot-loops recovers with nothing to press - which matters here because the only way in is over a
+# network that a broken image would not bring up.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

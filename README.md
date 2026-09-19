@@ -16,6 +16,7 @@ at 1 ms with no pairing anywhere.
 | pad update rate | 133 Hz | **1 kHz** (997 Hz measured) |
 | latency added by the bridge | ≤ 15 ms | **≤ 2 ms** |
 | extra hardware | none, one USB-C cable | powered hub, USB-UART adapter, three wires |
+| tuning and remapping | rebuild and reflash | [web panel](#configuration-panel-over-wi-fi), live, plus firmware updates |
 
 **Measured on hardware, not claimed:**
 
@@ -52,6 +53,7 @@ and traps, with the evidence behind every decision: [`AGENTS.md`](AGENTS.md).*
   - [What it needs](#what-it-needs)
   - [Wiring and flashing](#wiring-and-flashing)
   - [Passthrough on a hotkey](#passthrough-on-a-hotkey)
+  - [Configuration panel over Wi-Fi](#configuration-panel-over-wi-fi)
 - [Input mapping](#input-mapping) — shared by both transports
 - [Report rates](#report-rates) — every measured number, in one place
 - [Requirements and build](#requirements-and-build)
@@ -305,6 +307,65 @@ accepted cost; design details in `AGENTS.md` §4.39.
 The key is `APP_PASSTHROUGH_KEYCODE` and the feature can be turned off with
 `APP_USB_PASSTHROUGH`.
 
+### Configuration panel over Wi-Fi
+
+`Ctrl+Alt+W` brings up a web panel for changing sensitivity, smoothing, deadzone compensation, the
+key mapping and profiles — and for updating the firmware. **Wi-Fi is down until that hotkey, and
+shuts itself off after ten idle minutes**, which is what keeps it free: nothing competes with the
+1 kHz report path while a game is running, so the measured 997 Hz ceiling stays a statement about
+this firmware rather than about the radio.
+
+| Hotkey | What it does |
+|---|---|
+| `Ctrl+Alt+W` | Wi-Fi and the panel on / off |
+| `Ctrl+Alt+P` | force the bridge's own access point, and bring Wi-Fi up if it was off |
+
+Without stored credentials it serves an access point named `hid-bridge-XXXX`, where `XXXX` comes
+from the MAC. **The password is printed in the console at startup** and, unless you set
+`APP_WEBUI_PASSWORD`, is derived from the MAC — unique per board rather than a value every clone of
+this repository would share. It is the WPA2 key and the panel's password both; the panel's username
+is `admin`.
+
+Give it your own network from the System tab and it joins that instead and drops the access point,
+so the panel sits at a stable address reachable from a phone already on your Wi-Fi. `Ctrl+Alt+P` is
+the way back if that network is ever out of reach — which matters, because a panel you cannot get
+to would otherwise need a serial adapter to diagnose.
+
+What it can change:
+
+- **Mouse to right stick:** sensitivity per axis, smoothing time constant, Y inversion, and
+  deadzone compensation — which lifts any non-zero deflection above the inner deadzone that games
+  discard, applied to the *length* of the vector so diagonals do not overshoot. Changes apply
+  immediately, so a setting you can only judge by feel no longer needs a rebuild and a reflash.
+- **The mapping**, as a table: press *Listen* and then a key on the keyboard the bridge owns, and
+  it binds. Every nominal button is labelled with the Xbox control it drives.
+- **Four profiles in NVS**, named, with export and import as a JSON file.
+- **Firmware**, by uploading `hid_gamepad_bridge.bin`. The image is verified before anything
+  reboots and is only confirmed after the new firmware has stayed up for 30 s, so one that crashes
+  or boot-loops rolls back on its own.
+
+It also shows the live pad state, the raw keyboard and mouse input before mapping, and the report
+rate measured from the device side — the same figure `scripts/xinput_rumble.py --rate` reads from
+the PC.
+
+> **Two things to know before relying on it.**
+>
+> **It is not encrypted.** Authentication is HTTP Basic, which is base64 rather than ciphertext. On
+> the access point WPA2 covers the air; joined to your network, panel traffic is in the clear on
+> that network. The password still matters — this API can change what the pad reports and can flash
+> firmware, so an unauthenticated one would hand both to anyone who can reach it.
+>
+> **The pad variant uses a different partition table** ([`firmware/partitions.csv`](firmware/partitions.csv)),
+> because firmware updates need two application slots. That moves NVS, so the first flash with it
+> wipes whatever was stored — which costs nothing here, since this variant has no Bluetooth bonds.
+> If you are updating an existing checkout, **delete `firmware/sdkconfig.win.esp32s3.s3pad` once**:
+> a value already in a generated sdkconfig beats a defaults file, so otherwise the build quietly
+> keeps the old single-slot table and updates fail. The firmware logs a warning at startup when
+> that has happened.
+
+Enabled with `APP_WEBUI`, **on both chips** — the pad chip runs the panel, the input chip has the
+keyboard and so is the only one that can see the hotkeys.
+
 ---
 
 ## Input mapping
@@ -552,6 +613,7 @@ Two host-side tools exist for the same reason — they answer questions the devi
 |---|---|
 | `scripts/xinput_rumble.py` | whether XInput actually *talks* to the pad, rather than merely whether a driver bound: it reads all four slots through `XInputGetState`, then sends three deliberately different motor pairs so the device log can be matched against them line by line. `--watch <s>` is a live state view keyed on `dwPacketNumber`, the end-to-end test taken from the side a game reads; `--rate <s>` measures how often the pad really updates |
 | `scripts/check_xinput_descriptor.py` | whether the USB descriptor that will really be on the wire matches a Wireshark capture of a genuine controller — it parses the **built binary**, not the source |
+| `scripts/check_mapper_math.py` | whether the mouse-to-stick arithmetic still means what it says. It models the integer maths and asserts the properties that broke before: that the same mouse speed gives the same deflection at 100 Hz and at 1 kHz, that the filter does not stall, and that deadzone compensation stays monotonic and symmetric. A model can drift from the firmware, so a failure means "one of these two is wrong" |
 | `scripts/check_doc_links.py` | whether every cross-reference in this documentation still resolves — file links and `#anchors` alike. The docs deliberately point at each other so that one fact lives in one place, and that only stays true if a rename cannot break it silently |
 
 ## Licence and attribution

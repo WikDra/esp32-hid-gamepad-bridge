@@ -79,6 +79,29 @@
 
 static const char *TAG = "mapper";
 
+/*
+ * What the mapper last produced, for the configuration panel to display.
+ *
+ * DOUBLE BUFFERED, and not because a torn pad state would matter - one odd frame in a
+ * visualisation is invisible. It matters for the INPUT state: the panel's "press a key to bind
+ * it" flow reads the held keys from here, and a half-written keys[] could show a key nobody is
+ * pressing and bind the wrong thing. The writer fills the spare slot and then publishes the
+ * index, which is a single aligned store.
+ *
+ * The reader can still be unlucky if it is descheduled for a whole millisecond mid-copy, so this
+ * is cheap consistency rather than a guarantee. That is the right trade here: a lock in a loop
+ * that runs 1000 times a second, taken for the benefit of a diagnostic, would be paying in the
+ * wrong currency.
+ */
+typedef struct {
+    gamepad_state_t pad;
+    hid_input_state_t in;
+} mapper_snapshot_t;
+
+static mapper_snapshot_t s_snap[2];
+static volatile uint8_t s_snap_idx;
+static volatile uint32_t s_reports_sent;
+
 /* USB HID Keyboard/Keypad usage IDs */
 #define KEY_A     0x04
 #define KEY_D     0x07
@@ -602,6 +625,22 @@ static void mapper_task(void *arg)
 
         bool sent = IO_PAD_SEND(&out);
 
+        /*
+         * Publish after sending, so what the panel shows is what went to the host rather than
+         * what we were about to send. The counter is only ever incremented here, and the panel
+         * turns two samples of it into a rate - which is the same measurement
+         * scripts/xinput_rumble.py --rate makes from the other end.
+         */
+        if (sent) {
+            s_reports_sent++;
+        }
+        {
+            const uint8_t spare = s_snap_idx ? 0 : 1;
+            s_snap[spare].pad = out;
+            s_snap[spare].in = in;
+            s_snap_idx = spare;
+        }
+
         /* Log only on a real change and no more than once per 250 ms - otherwise mouse
          * movement would flood the console. */
         if (sent) {
@@ -615,6 +654,22 @@ static void mapper_task(void *arg)
             }
         }
     }
+}
+
+void input_mapper_snapshot(gamepad_state_t *pad, hid_input_state_t *in)
+{
+    const mapper_snapshot_t *s = &s_snap[s_snap_idx];
+    if (pad) {
+        *pad = s->pad;
+    }
+    if (in) {
+        *in = s->in;
+    }
+}
+
+uint32_t input_mapper_reports_sent(void)
+{
+    return s_reports_sent;
 }
 
 esp_err_t input_mapper_start(void)

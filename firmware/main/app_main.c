@@ -37,6 +37,9 @@
 #include "input_mapper.h"
 #endif
 #include "webui.h"
+#if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
+#include "esp_ota_ops.h"
+#endif
 #if CONFIG_APP_ROLE_FAKE_KEYBOARD
 #include "fake_keyboard.h"
 #endif
@@ -251,6 +254,34 @@ void app_main(void)
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(5000));
         tick += 5;
+
+#if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
+        /*
+         * Confirm a freshly updated image, once, after it has stayed up for a while.
+         *
+         * WHAT THIS PROTECTS AGAINST, precisely: an image that panics, boot-loops or hangs before
+         * reaching here. The bootloader rolls back to the previous one on the next reset, with
+         * nobody having to press anything - which is the whole point, because the only way to
+         * deliver a replacement is over a network that a broken image would never bring up.
+         *
+         * WHAT IT DOES NOT PROTECT AGAINST: an image that runs perfectly and behaves wrongly.
+         * Confirming at the end of the upload instead would only have proved that the transfer
+         * finished, which is not a property anyone needs.
+         */
+        if (tick == 30) {
+            const esp_partition_t *running = esp_ota_get_running_partition();
+            esp_ota_img_states_t state;
+            if (esp_ota_get_state_partition(running, &state) == ESP_OK &&
+                state == ESP_OTA_IMG_PENDING_VERIFY) {
+                if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
+                    ESP_LOGW(TAG, "this image was just updated and has run for 30 s - confirmed, "
+                                  "rollback cancelled");
+                } else {
+                    ESP_LOGE(TAG, "could not confirm the image - it will roll back on reset");
+                }
+            }
+        }
+#endif
 
 #if CONFIG_APP_ENABLE_GAMEPAD
         const char *pad = ble_gamepad_is_ready() ? "ready" : "no PC";

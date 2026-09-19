@@ -86,6 +86,30 @@ bool bridge_config_validate(bridge_config_t *cfg)
     /* A name that is not terminated would be read past its end by every consumer. */
     cfg->name[BRIDGE_PROFILE_NAME_MAX - 1] = '\0';
 
+    /*
+     * Names are reduced to a safe alphabet rather than merely length-checked. This string arrives
+     * over the network, is stored, is put into a JSON response and is then rendered by the panel -
+     * so quotes, backslashes, angle brackets and control characters each have somewhere they could
+     * do harm. Letters, digits, space, dash and underscore name a profile perfectly well.
+     *
+     * The JSON writer escapes as well. Two defences for one property is right here: the cost is a
+     * loop, and the failure mode if either is loosened on its own is a panel that runs whatever
+     * somebody put in a profile name.
+     */
+    for (char *p = cfg->name; *p; p++) {
+        const unsigned char c = (unsigned char)*p;
+        const bool safe = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                          (c >= '0' && c <= '9') || c == ' ' || c == '-' || c == '_';
+        if (!safe) {
+            *p = '_';
+            ok = false;
+        }
+    }
+    if (cfg->name[0] == '\0') {
+        strncpy(cfg->name, "unnamed", BRIDGE_PROFILE_NAME_MAX - 1);
+        ok = false;
+    }
+
     uint16_t v;
     v = clamp_u16(cfg->mouse_div_x, BRIDGE_MOUSE_DIV_MIN, BRIDGE_MOUSE_DIV_MAX);
     if (v != cfg->mouse_div_x) {

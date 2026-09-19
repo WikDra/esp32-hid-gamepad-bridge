@@ -2011,6 +2011,152 @@ nominalna czułość i stała czasowa wychodzą identyczne jak przed zmianą —
 teraz pełna, więc drobne ruchy będą się liczyć wyraźniej niż dotąd. Przed scaleniem do `main`
 warto przejechać jeden przebieg na C3.
 
+### 4.41 Panel konfiguracyjny po Wi-Fi (branch `usb-webui`)
+
+Panel WWW na układzie pada: czułość, wygładzanie, kompensacja martwej strefy, mapowanie, cztery
+profile w NVS, wizualizacja pada i aktualizacja firmware'u. **Zbudowane, nieuruchomione na
+sprzęcie** — płytki nie były podłączone. Ta sekcja to decyzje projektowe i pięć pułapek, z których
+trzy są przenośne poza ten projekt.
+
+#### Wi-Fi jest wyłączone do skrótu, i to jest cała idea
+
+Nie oszczędzanie prądu. Ten układ prowadzi zadanie 1 kHz karmiące endpoint odpytywany co
+milisekundę, a zmierzone **997 Hz pochodzi z przebiegu z milczącym radiem**. Stale włączone Wi-Fi
+wstawiłoby niezmierzony koszt pod każdy przyszły pomiar tempa. Podnoszone na czas konfiguracji
+zostawia tę liczbę sensowną.
+
+`Ctrl+Alt+W` włącza i wyłącza, `Ctrl+Alt+P` wymusza własny AP. Skrót widzi układ **wejść** (tam jest
+klawiatura), a Wi-Fi stoi na układzie **pada** (tam jest mapper i nastawy), więc `APP_WEBUI` włącza
+się na obu — dokładnie jak `APP_USB_PASSTHROUGH`.
+
+#### PUŁAPKA PRZENOŚNA 1: warunkowe `REQUIRES` w CMake nie może działać
+
+To najważniejsze ustalenie tej tury i dotyczy każdego projektu ESP-IDF. Plik `CMakeLists.txt`
+komponentu jest przetwarzany **dwa razy**, a konfiguracja istnieje tylko w jednym przebiegu.
+Zmierzone sondą `message(STATUS)`:
+
+```
+-- SONDA: APP_WEBUI=[]  USB_PAD=[]  faza=[__component_get_requirements]
+-- SONDA: APP_WEBUI=[y] USB_PAD=[y] faza=[]
+```
+
+Pierwszy przebieg zbiera `REQUIRES`. Czyli **warunkowe `SRCS` działają, a warunkowe `REQUIRES`
+cicho nie** — klasyczny kształt wady w tym projekcie: konfiguruje się, kompiluje, linkuje, zgłasza
+sukces i robi coś innego.
+
+Ten projekt miał to od początku i nie zauważył: `list(APPEND reqs bt)` w warunku BLE i
+`list(APPEND reqs usb)` w warunku USB **nigdy nic nie robiły**. Działało, bo nagłówki NimBLE
+docierają przechodnio przez `esp_hid`, a `usb` przez zarządzany `usb_host_hid`. Zależności panelu
+takiej przypadkowej ścieżki nie mają, więc padły wprost na `esp_app_desc.h: No such file or
+directory`.
+
+**Co jest dostępne w tej fazie: `IDF_TARGET`** — na nim opiera się `idf_component.yml`, więc na nim
+opiera się teraz i `main/CMakeLists.txt`. Bramkowanie po targecie jest tu zresztą konieczne
+niezależnie: komponent `usb` **nie istnieje** na C3, więc lista bezwarunkowa wywala build z
+`Failed to resolve component 'usb'`. Target i konfiguracja zgadzają się w tym przypadku — tylko
+układy z USB-OTG mogą być padem USB, i tylko pad USB prowadzi panel.
+
+Koszt wymienienia komponentu w wariancie, który go nie używa, to **czas kompilacji, nie rozmiar
+obrazu**: `--gc-sections` wyrzuca to, co nieosiągalne. Zmierzone: C3 urósł o 224 B, i to od
+walidacji nazw profilu, nie od Wi-Fi.
+
+#### PUŁAPKA PRZENOŚNA 2: stan absolutny na drucie kontra decyzja lokalna
+
+Ramka `MODE` niesie stan absolutny powtarzany z każdym keepalive — to robi ją odporną na zgubienie.
+Ale układ wejść **nie ma pojęcia**, że pad wygasił Wi-Fi po bezczynności, więc powtarza „panel
+włączony" cztery razy na sekundę i samo wygaszenie zostałoby odwrócone w 250 ms. W nieskończoność.
+Łącze jest jednokierunkowe, więc nie da się odpowiedzieć „skasuj bit".
+
+Rozstrzygnięcie: drut wygrywa znowu, gdy **zmienią się bity**, czyli gdy użytkownik coś zrobi.
+Praktycznie: po wygaśnięciu `Ctrl+Alt+W` trzeba wcisnąć dwa razy, a `Ctrl+Alt+P` wraca jednym, bo
+zmienia bit AP. Ta sama poprawka objęła drugą oscylację: nieudany start Wi-Fi zostawiał „chcę
+sieci" prawdą, więc zadanie próbowałoby cztery razy na sekundę do końca sesji.
+
+#### PUŁAPKA PRZENOŚNA 3: prawdziwa PWA po HTTP w LAN jest niemożliwa
+
+Sprawdzone w regule platformy, nie założone. **Service worker wymaga bezpiecznego kontekstu**;
+wyjątkiem jest tylko `localhost` i `127.x`, a `http://192.168.4.1` nim nie jest. Bez service workera
+nie ma cache'u offline ani promptu instalacji w Chrome na Androidzie. Certyfikat self-signed **nie
+pomaga** — service worker i tak się nie zarejestruje przy niezaufanym.
+
+Właściciel po przedstawieniu tego zrezygnował z PWA, i słusznie: cache offline jest tu bezcelowy,
+bo aplikacja bez osiągalnego ESP i tak jest bezużyteczna. Panel jest więc responsywny i mobile-first,
+bez manifestu i bez obietnicy offline.
+
+#### Trzy decyzje, które warto znać
+
+- **Brak parsera JSON na urządzeniu.** cJSON wyszedł z ESP-IDF w 6.x (potwierdzone w migracji
+  Espressifu: „The built-in json component has been removed… migrate to `espressif/cjson`"), ale
+  lepszym argumentem jest to, że potrzebujemy JSON tylko **produkować**. Żądania przychodzą
+  form-encoded, co `esp_http_server` już rozdziela, a jedyne miejsce wymagające prawdziwego parsera
+  — import pliku profilu — robi przeglądarka, gdzie `JSON.parse` jest darmowy i nie może zepsuć nic
+  po naszej stronie. Powierzchnia parsowania to dwie małe funkcje, nie parser ogólny osiągalny z
+  sieci.
+- **Strona wbudowana w obraz, nieskompresowana.** Jedno żądanie nie może rozjechać strony ze
+  skryptem, nie ma partycji plików do uszkodzenia, a aktualizacja wymienia panel i API razem.
+- **Nazwa profilu jest redukowana do bezpiecznego alfabetu** w walidacji, *oraz* escapowana przy
+  wypisywaniu JSON. Dwie obrony dla jednej własności są tu słuszne: ten ciąg przychodzi z sieci,
+  jest zapisywany, wraca w odpowiedzi i jest renderowany przez panel.
+
+#### Znowu 4.39: wybór partycji nie wszedł z defaults
+
+`CONFIG_PARTITION_TABLE_CUSTOM` dopisane do `sdkconfig.defaults.s3pad` **nic nie zmieniło**, bo
+wybór partycji już był w wygenerowanym `sdkconfig.win.esp32s3.s3pad`, a wartość obecna wygrywa z
+defaults. Build się udał, OTA było nieobecne, a jedynym objawem byłby komunikat panelu „no spare OTA
+partition". Wykryte odczytaniem **wygenerowanego** pliku, nie założeniem — to jest cała reguła.
+
+Dlatego `webui_start()` loguje teraz ostrzeżenie przy starcie, gdy `esp_ota_get_next_update_partition()`
+zwraca NULL. Cicha wada nie przejdzie drugi raz.
+
+Przy okazji: **`partitions_two_ota.csv` z IDF marnuje megabajt** — deklaruje trzy partycje
+aplikacji (`factory` + dwa sloty OTA) po 1 MB na układzie 4 MB, a `factory` przy OTA nie jest
+używane. Obrazowi zostawało 10 % zapasu. Własna `firmware/partitions.csv` ma dwa sloty po 1856 kB
+bez `factory` (bootloader startuje `ota_0`, gdy `otadata` jest czyste), co daje **51 % zapasu** i
+320 kB wolnego flasha.
+
+#### Zjawisko zmierzone przy okazji: filtr EMA zaniża wychylenie
+
+Całkowitoliczbowy EMA zatrzymuje się `ticks-1` przed celem, bo dzielenie obcina. Zaniżenie wynosi
+`(ticks-1)*127*rate/(div*400*4096)`:
+
+| Tempo | `div` | `ticks` | Zaniżenie |
+|---|---|---|---|
+| 100 Hz | 24 | 8 | ≤ 0,002 jednostki osi |
+| 1000 Hz | 24 | 80 | ≤ 0,255 |
+| 1000 Hz | **64** (wariant pada) | 80 | **≤ 0,096** |
+
+Czyli niecała dziesiąta kroku osi w konfiguracji, którą wgrywamy. Zaokrąglanie zamiast obcinania by
+to usunęło i **świadomie tego nie robię**: zmierzone 997 Hz i 830 Hz pochodzą z tej arytmetyki.
+Granica jest policzona i zapisana w `scripts/check_mapper_math.py`.
+
+#### Sprawdzacz arytmetyki dwa razy kłamał — czwarty i piąty raz w tym projekcie
+
+`scripts/check_mapper_math.py` powstał, bo arytmetyka myszy była błędna trzy razy (§4.40), a płytek
+nie było pod ręką. Dwa razy zgłosił błąd i **dwa razy błąd był w nim**:
+
+1. Twierdził, że filtr utyka przy 100 Hz, gdzie jeden count na tik to zwyczajnie 1 % pełnego
+   wychylenia. Asercja była bez sensu, nie firmware.
+2. Twierdził, że czułość zależy od tempa zadania, bo dzielił prędkość całkowicie: przy 400 counts/s
+   i 250 Hz podawał faktycznie 250 counts/s i porównywał z przebiegiem przy 400.
+
+Po poprawkach sprawdza to, co ma znaczenie: że ta sama prędkość myszy daje to samo wychylenie przy
+100, 250 i 1000 Hz (z tolerancją jednej jednostki, uzasadnioną wyżej), że filtr wraca do środka, że
+stała czasowa jest czasem, i że kompensacja martwej strefy jest monotoniczna, symetryczna i nie
+przestrzeliwuje na skosach. Dzielenie w modelu obcina **w stronę zera**, jak w C — pomyłka w tym
+miejscu zmienia zachowanie tylko dla ujemnych przyrostów, czyli niewykrywalnie wyczuciem.
+
+#### Stan weryfikacji
+
+Zbudowane: sześć konfiguracji, zero ostrzeżeń. Pad `0xe5990` (940 kB) w slocie 1856 kB, 51 % wolne.
+Tablica partycji odczytana z binarki i zgodna z projektem. Strona potwierdzona w obrazie przez
+szukanie ciągów. C3 urósł o 224 B, H2 i `s3input` bez zmian.
+
+**Nie zweryfikowane na sprzęcie, do przejechania:** koszt heapu po podniesieniu Wi-Fi; tempo pada
+przyrządem `APP_DEBUG_PAD_RATE_PROBE` przy radiu włączonym i przy otwartym panelu (to jest
+najważniejszy pomiar tej funkcji); oba skróty; dołączenie do sieci i awaryjny powrót do AP;
+zapis i odczyt profilu; pełny obieg OTA wraz z **celowo zepsutym obrazem**, żeby potwierdzić
+wycofanie.
+
 ### 4.39 Passthrough na skrót: dwie tożsamości USB, nie jedno urządzenie złożone
 
 Skrót `Ctrl+Alt+G` przełącza układ pada między padem XInput a zwykłą klawiaturą i myszą HID,

@@ -1,0 +1,28 @@
+# Partition table for the USB pad variant: two application slots, so firmware can be replaced over
+# Wi-Fi from the configuration panel.
+#
+# WHY NOT ESP-IDF's partitions_two_ota.csv. That one declares THREE application partitions -
+# factory plus two OTA slots - of 1 MB each on a 4 MB part. The factory copy is never used once
+# OTA is in play, so a megabyte is spent on nothing and the slots are left with about 10 % free
+# against this image. Measured: 0xe58b0 (940 kB) into 0x100000.
+#
+# With no factory partition the bootloader boots ota_0 when otadata is blank, which is exactly what
+# a freshly flashed board has. So the first flash writes ota_0 at 0x10000 like any other image, and
+# updates alternate between the two slots from then on.
+#
+# Arithmetic, because getting this wrong is a boot failure rather than a build failure:
+#   0x010000 + 0x1D0000 = 0x1E0000   ota_0 ends where ota_1 begins
+#   0x1E0000 + 0x1D0000 = 0x3B0000   = 3 866 624 B, against 4 194 304 B of flash
+#   spare: 327 680 B, and both app offsets are multiples of 0x10000 as the bootloader requires.
+#
+# Each slot holds 1 900 544 B, so the current image leaves about 50 % free - room for the panel to
+# grow without this file having to be revisited.
+#
+# nvs is 16 kB: four profiles of ~150 B plus stored Wi-Fi credentials, with room to spare.
+#
+# Name,     Type, SubType, Offset,   Size,     Flags
+nvs,        data, nvs,     0x9000,   0x4000,
+otadata,    data, ota,     0xd000,   0x2000,
+phy_init,   data, phy,     0xf000,   0x1000,
+ota_0,      app,  ota_0,   0x10000,  0x1D0000,
+ota_1,      app,  ota_1,   0x1E0000, 0x1D0000,

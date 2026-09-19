@@ -16,6 +16,7 @@ w którym każdy odcinek chodzi co 1 ms i nie ma żadnego parowania.
 | tempo raportów pada | 133 Hz | **1 kHz** (zmierzone 997 Hz) |
 | opóźnienie dodane przez mostek | ≤ 15 ms | **≤ 2 ms** |
 | dodatkowy sprzęt | żaden, jeden kabel USB-C | zasilany hub, przejściówka USB-UART, trzy druty |
+| strojenie i remapowanie | przebudowa i wgranie | [panel WWW](#panel-konfiguracyjny-po-wi-fi), na żywo, plus aktualizacja firmware |
 
 **Zmierzone na sprzęcie, nie deklarowane:**
 
@@ -53,6 +54,7 @@ i pułapki, z dowodem przy każdej decyzji: [`AGENTS.md`](AGENTS.md).*
   - [Czego to wymaga](#czego-to-wymaga)
   - [Połączenia i wgrywanie](#połączenia-i-wgrywanie)
   - [Passthrough na skrót klawiaturowy](#passthrough-na-skrót-klawiaturowy)
+  - [Panel konfiguracyjny po Wi-Fi](#panel-konfiguracyjny-po-wi-fi)
 - [Mapowanie wejść](#mapowanie-wejść) — wspólne dla obu transportów
 - [Tempo raportów](#tempo-raportów) — wszystkie zmierzone liczby w jednym miejscu
 - [Wymagania i budowanie](#wymagania-i-budowanie)
@@ -301,6 +303,65 @@ podmienia deskryptory i wylicza od nowa, co znaczy, że **pad znika na czas pass
 przyjęty koszt; szczegóły projektowe w `AGENTS.md` §4.39.
 
 Klawisz ustawia `APP_PASSTHROUGH_KEYCODE`, a całą funkcję wyłącza `APP_USB_PASSTHROUGH`.
+
+### Panel konfiguracyjny po Wi-Fi
+
+`Ctrl+Alt+W` podnosi panel WWW do zmiany czułości, wygładzania, kompensacji martwej strefy,
+mapowania klawiszy i profili — oraz do aktualizacji firmware'u. **Wi-Fi jest wyłączone do tego
+skrótu i gasi się samo po dziesięciu minutach bezczynności**, i to właśnie czyni tę funkcję
+darmową: nic nie konkuruje ze ścieżką raportów 1 kHz w trakcie gry, więc zmierzone 997 Hz pozostaje
+liczbą o tym firmware, a nie o radiu.
+
+| Skrót | Co robi |
+|---|---|
+| `Ctrl+Alt+W` | włącza i wyłącza Wi-Fi razem z panelem |
+| `Ctrl+Alt+P` | wymusza własny punkt dostępowy i podnosi Wi-Fi, jeśli było wyłączone |
+
+Bez zapisanych danych sieci mostek serwuje punkt dostępowy `hid-bridge-XXXX`, gdzie `XXXX` pochodzi
+z MAC. **Hasło jest wypisywane w konsoli przy starcie** i — o ile nie ustawisz
+`APP_WEBUI_PASSWORD` — wyprowadzane z MAC, czyli unikalne dla płytki, a nie wspólne dla każdej
+kopii tego repozytorium. To jednocześnie klucz WPA2 i hasło panelu; użytkownik panelu to `admin`.
+
+Podaj w zakładce System swoją sieć i mostek dołączy do niej, zdejmując własny AP — panel siedzi
+wtedy pod stabilnym adresem, osiągalnym z telefonu, który już jest w tej sieci. `Ctrl+Alt+P` to
+droga powrotna, gdyby tamta sieć była nieosiągalna; bez niej do panelu, do którego nie ma dostępu,
+trzeba by sięgnąć po przejściówkę szeregową.
+
+Co można zmienić:
+
+- **Mysz na prawą gałkę:** czułość osobno na każdą oś, stała czasowa wygładzania, inwersja Y oraz
+  kompensacja martwej strefy — podnosi każde niezerowe wychylenie powyżej wewnętrznej strefy, którą
+  gry odrzucają, i działa na **długości** wektora, więc skosy nie przestrzeliwują. Zmiany działają
+  natychmiast, czyli nastawa oceniana wyczuciem nie wymaga już przebudowy i wgrywania.
+- **Mapowanie**, jako tabela: wciskasz *Listen*, potem klawisz na klawiaturze obsługiwanej przez
+  mostek, i przypisanie jest gotowe. Każdy nominalny przycisk jest opisany kontrolką Xbox, którą
+  steruje.
+- **Cztery profile w NVS**, z nazwami, z eksportem i importem jako plik JSON.
+- **Firmware**, przez wgranie `hid_gamepad_bridge.bin`. Obraz jest weryfikowany przed jakimkolwiek
+  restartem i potwierdzany dopiero po tym, jak nowy firmware utrzyma się 30 s — więc taki, który
+  się wywala albo wpada w pętlę restartów, wycofuje się sam.
+
+Panel pokazuje też stan pada na żywo, surowe wejścia z klawiatury i myszy przed mapowaniem oraz
+tempo raportów mierzone po stronie urządzenia — tę samą liczbę, którą `scripts/xinput_rumble.py
+--rate` odczytuje od strony PC.
+
+> **Dwie rzeczy do wiedzenia, zanim się na tym oprzesz.**
+>
+> **Nie ma szyfrowania.** Uwierzytelnianie to HTTP Basic, czyli base64, nie szyfrogram. Na punkcie
+> dostępowym eter osłania WPA2; po dołączeniu do Twojej sieci ruch panelu idzie tą siecią jawnie.
+> Hasło i tak ma znaczenie — to API zmienia to, co raportuje pad, i wgrywa firmware, więc bez hasła
+> oddawałoby jedno i drugie każdemu, kto ma dostęp.
+>
+> **Wariant pada używa innej tablicy partycji**
+> ([`firmware/partitions.csv`](firmware/partitions.csv)), bo aktualizacja firmware'u potrzebuje
+> dwóch slotów aplikacji. To przesuwa NVS, więc pierwsze wgranie kasuje, co tam było — co tutaj nic
+> nie kosztuje, bo ten wariant nie ma bondów Bluetooth. Jeśli aktualizujesz istniejący klon,
+> **usuń raz `firmware/sdkconfig.win.esp32s3.s3pad`**: wartość już obecna w wygenerowanym
+> sdkconfigu wygrywa z plikiem defaults, więc inaczej build po cichu zostawi starą
+> jednoslotową tablicę i aktualizacje będą padać. Firmware ostrzega o tym w logu przy starcie.
+
+Włącza się opcją `APP_WEBUI`, **na obu układach** — panel prowadzi układ pada, a skróty widzi tylko
+układ wejść, bo tam jest klawiatura.
 
 ---
 

@@ -1,15 +1,55 @@
 set(srcs "app_main.c")
-# The GPIO and UART drivers are named EXPLICITLY rather than pulled in through the "driver"
-# meta-component. On IDF 5.x "driver" still re-exported them, but IDF 6.x dropped that: a
-# build there fails with "chip_link.c includes driver/uart.h, provided by esp_driver_uart".
-# Both component names exist since 5.3, which is this project's floor (idf_component.yml).
-set(reqs esp_hid nvs_flash esp_timer esp_driver_gpio esp_driver_uart)
+
+# ---------------------------------------------------------------------------------------------
+# REQUIRES MUST NOT BE GATED ON CONFIG_*. It cannot work, and it fails silently.
+#
+# ESP-IDF processes this file TWICE, and the configuration exists for only one of the passes.
+# Measured on this project with a message(STATUS) probe:
+#
+#   -- SONDA: APP_WEBUI=[]  USB_PAD=[]  faza=[__component_get_requirements]
+#   -- SONDA: APP_WEBUI=[y] USB_PAD=[y] faza=[]
+#
+# The first pass is the one that collects REQUIRES. So conditional SOURCES work and conditional
+# REQUIREMENTS silently do not - the classic shape of a fault in this project: it configures,
+# compiles, links, reports success and does something other than it says.
+#
+# This was found the hard way. The file used to append `bt` inside a BLE condition and `usb` inside
+# a USB one, and both appeared to work - because NimBLE's headers arrive transitively through
+# esp_hid, and `usb` through the managed usb_host_hid component. Neither line ever did anything.
+# The panel's dependencies have no such accidental path, so they failed outright with
+# "esp_app_desc.h: No such file or directory".
+#
+# WHAT IS AVAILABLE IN THAT PASS IS IDF_TARGET, which is what idf_component.yml already gates on,
+# so that is what is used here. It also has to be: `usb` does not exist on the ESP32-C3 at all, so
+# an unconditional list breaks that build with "Failed to resolve component 'usb'". Target and
+# configuration happen to agree here - only the USB-OTG parts can be a USB pad, and only a USB pad
+# runs the panel (see APP_WEBUI in Kconfig.projbuild).
+#
+# The cost of naming a component a variant does not use is compile time, NOT image size:
+# -ffunction-sections with --gc-sections drops whatever is never referenced.
+#
+# The GPIO and UART drivers are named explicitly rather than pulled in through the "driver"
+# meta-component: IDF 5.x re-exported them, 6.x does not, and a build there fails with
+# "chip_link.c includes driver/uart.h, provided by esp_driver_uart". Both names exist since 5.3,
+# which is this project's floor.
+# ---------------------------------------------------------------------------------------------
+set(reqs esp_hid nvs_flash esp_timer esp_driver_gpio esp_driver_uart bt)
+
+if(IDF_TARGET STREQUAL "esp32s2" OR IDF_TARGET STREQUAL "esp32s3" OR IDF_TARGET STREQUAL "esp32p4")
+    # USB host role, and everything the configuration panel needs: Wi-Fi, the HTTP server, base64
+    # for the password check, and the OTA plus application-description APIs.
+    list(APPEND reqs usb esp_wifi esp_netif esp_event esp_http_server mbedtls app_update
+                     esp_app_format)
+endif()
+
+# Files embedded into the image. Empty unless the configuration panel is built; EMBED_FILES with
+# an empty list is legal, which is what keeps the page out of every other variant.
+set(embeds "")
 
 # The BLE stack is only linked when a BLE role is on, so a USB-only build does not pay for
 # NimBLE (~60 kB of heap and a lot of flash).
 if(CONFIG_APP_ENABLE_HID_HOST OR CONFIG_APP_ENABLE_GAMEPAD OR CONFIG_APP_ROLE_FAKE_KEYBOARD)
     list(APPEND srcs "ble_stack.c")
-    list(APPEND reqs bt)
 endif()
 
 if(CONFIG_APP_ENABLE_HID_HOST)
@@ -28,12 +68,10 @@ endif()
 
 if(CONFIG_APP_USB_PAD)
     list(APPEND srcs "usb_pad.c")
-    list(APPEND reqs espressif__esp_tinyusb)
 endif()
 
 if(CONFIG_APP_USB_HID_HOST)
     list(APPEND srcs "usb_hid_host.c")
-    list(APPEND reqs espressif__usb_host_hid usb)
 endif()
 
 # The configuration panel. Built only on the chip that owns the pad, because that is where the
@@ -41,8 +79,11 @@ endif()
 # usb_hid_host.c and needs nothing extra. webui.h supplies empty inlines when this is skipped, so
 # no call site has to know - see AGENTS.md 4.38 for why that matters.
 if(CONFIG_APP_WEBUI AND CONFIG_APP_USB_PAD)
-    list(APPEND srcs "webui.c")
-    list(APPEND reqs esp_wifi esp_netif esp_event)
+    list(APPEND srcs "webui.c" "webui_http.c")
+    # The page is embedded in the application image rather than kept in a filesystem partition, so
+    # an update replaces the panel and the API it talks to together and they cannot disagree about
+    # each other's version.
+    set(embeds "web/index.html")
 endif()
 
 # The glue between input and pad. Needed for either pad transport, but not when the pad is
@@ -71,4 +112,5 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES ${reqs}
     PRIV_REQUIRES spi_flash
+    EMBED_FILES ${embeds}
 )

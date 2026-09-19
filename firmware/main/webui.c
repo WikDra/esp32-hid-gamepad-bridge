@@ -11,12 +11,14 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_ota_ops.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs.h"
 #include "sdkconfig.h"
+#include "webui_http.h"
 
 static const char *TAG = "webui";
 
@@ -204,6 +206,15 @@ static esp_err_t wifi_common_init(void)
         return err;
     }
 
+    /*
+     * Marked as initialised HERE, not at the end of this function, and that is a bug fix rather
+     * than a style choice: every failure below goes to wifi_down(), which does nothing unless this
+     * flag is set. Setting it last meant a failure halfway through left the driver initialised and
+     * its event handlers registered, with nothing able to clean either up - a leak per attempt, on
+     * the path that retries.
+     */
+    s_wifi_inited = true;
+
     err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi_event, NULL,
                                              &s_h_wifi);
     if (err != ESP_OK) {
@@ -215,10 +226,9 @@ static esp_err_t wifi_common_init(void)
         return err;
     }
 
-    /* Credentials are not persisted to flash: they are ours to decide every time, and an NVS
-     * write per Wi-Fi start would be wear for nothing. */
+    /* Credentials are not persisted to flash: they are ours to decide every time, and an NVS write
+     * per Wi-Fi start would be wear for nothing. */
     esp_wifi_set_storage(WIFI_STORAGE_RAM);
-    s_wifi_inited = true;
     return ESP_OK;
 }
 
@@ -272,7 +282,7 @@ static esp_err_t start_ap(void)
     snprintf(s_url, sizeof(s_url), "http://" IPSTR, IP2STR(&ip.ip));
 
     ESP_LOGI(TAG, "access point '%s' up, password '%s' -> %s", s_ssid, s_password, s_url);
-    return ESP_OK;
+    return webui_http_start(s_password);
 }
 
 static esp_err_t start_sta(const char *ssid, const char *pass)
@@ -310,6 +320,10 @@ static void wifi_down(void)
     if (!s_wifi_inited) {
         return;
     }
+
+    /* Server first: stopping it closes its sockets while the interface they belong to still
+     * exists. The other order leaves lwIP tearing down under a task that is still accepting. */
+    webui_http_stop();
 
     esp_wifi_stop();
 
@@ -445,6 +459,9 @@ static void webui_task(void *arg)
                  * the way back.
                  */
                 ESP_LOGI(TAG, "joined the network -> %s", s_url);
+                if (webui_http_start(s_password) != ESP_OK) {
+                    fail_and_stop("the HTTP server would not start", ESP_FAIL);
+                }
             } else {
                 const int64_t elapsed = esp_timer_get_time() - attempt_started_us;
                 const bool timed_out =
@@ -477,6 +494,21 @@ static void webui_task(void *arg)
 esp_err_t webui_start(void)
 {
     build_identity();
+
+    /*
+     * Say so at boot if firmware updates are not actually possible, rather than letting the panel
+     * discover it when somebody tries.
+     *
+     * This exact misconfiguration happened while writing the feature and is easy to repeat: a
+     * value already present in a generated sdkconfig wins over a defaults file, so adding the
+     * partition choice to a tree that had been built before changed nothing. The build succeeded
+     * and OTA was silently absent. Remedy is in sdkconfig.defaults.s3pad.
+     */
+    if (esp_ota_get_next_update_partition(NULL) == NULL) {
+        ESP_LOGW(TAG, "no spare OTA partition - firmware updates from the panel will FAIL. The "
+                      "partition table has only one application slot; delete the variant's "
+                      "generated sdkconfig so it picks up partitions.csv");
+    }
 
     if (xTaskCreate(webui_task, "webui", 4096, NULL, 4, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;

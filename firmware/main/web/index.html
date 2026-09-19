@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#111418">
+<meta name="color-scheme" content="dark">
+<title>HID bridge</title>
+<style>
+/* Mobile first and hand-written. A framework would cost more flash than the whole panel and
+   would have to be kept in step with a build step that does not exist. */
+:root{
+  --bg:#111418; --card:#1a1f26; --line:#2b323c; --fg:#e6edf3; --dim:#8b97a6;
+  --accent:#4a9eff; --ok:#3fb950; --warn:#d29922; --bad:#f85149;
+  --tap:44px; /* minimum comfortable touch target */
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);
+  font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+body{padding:12px 12px calc(12px + env(safe-area-inset-bottom))}
+h1{font-size:18px;margin:0 0 2px}
+h2{font-size:15px;margin:0 0 10px;color:var(--dim);font-weight:600;
+  text-transform:uppercase;letter-spacing:.06em}
+a{color:var(--accent)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+  padding:14px;margin-bottom:12px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.row>*{min-width:0}
+.grow{flex:1}
+.dim{color:var(--dim)}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.small{font-size:13px}
+
+button,select,input{font:inherit;color:var(--fg);background:#232a33;
+  border:1px solid var(--line);border-radius:8px;padding:9px 12px;min-height:var(--tap)}
+button{cursor:pointer}
+button:active{background:#2c343f}
+button.primary{background:var(--accent);border-color:var(--accent);color:#06121f;font-weight:600}
+button.danger{border-color:var(--bad);color:var(--bad)}
+button:disabled{opacity:.45;cursor:default}
+input[type=range]{padding:0;min-height:var(--tap);background:none;border:0;width:100%}
+input[type=file]{padding:8px}
+label{display:block;margin-bottom:4px}
+
+/* status pills */
+.pills{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.pill{font-size:12px;padding:4px 9px;border-radius:999px;background:#232a33;
+  border:1px solid var(--line);white-space:nowrap}
+.pill.ok{border-color:var(--ok);color:var(--ok)}
+.pill.bad{border-color:var(--bad);color:var(--bad)}
+.pill.warn{border-color:var(--warn);color:var(--warn)}
+
+/* tabs */
+nav{display:flex;gap:6px;overflow-x:auto;margin-bottom:12px;-webkit-overflow-scrolling:touch}
+nav button{white-space:nowrap;padding:9px 14px;border-radius:999px}
+nav button[aria-selected=true]{background:var(--accent);border-color:var(--accent);
+  color:#06121f;font-weight:600}
+section[hidden]{display:none}
+
+/* pad visualisation */
+.sticks{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+.stickwrap{text-align:center}
+.stick{width:132px;height:132px;border-radius:50%;background:#0d1117;
+  border:1px solid var(--line);position:relative}
+.stick .cross{position:absolute;inset:0}
+.stick .cross::before,.stick .cross::after{content:"";position:absolute;background:var(--line)}
+.stick .cross::before{left:50%;top:6%;bottom:6%;width:1px}
+.stick .cross::after{top:50%;left:6%;right:6%;height:1px}
+.stick .dz{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  border:1px dashed #3a434f;border-radius:50%;width:0;height:0}
+.stick .dot{position:absolute;width:16px;height:16px;border-radius:50%;
+  background:var(--accent);left:50%;top:50%;margin:-8px 0 0 -8px;
+  transition:transform .05s linear}
+.trigs{display:flex;gap:14px;margin-top:14px}
+.trig{flex:1}
+.bar{height:12px;background:#0d1117;border:1px solid var(--line);border-radius:6px;
+  overflow:hidden}
+.bar>i{display:block;height:100%;width:0;background:var(--ok);transition:width .05s linear}
+.btns{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:6px;margin-top:14px}
+.btn{text-align:center;font-size:12px;padding:7px 2px;border-radius:7px;
+  background:#0d1117;border:1px solid var(--line);color:var(--dim)}
+.btn.on{background:var(--accent);border-color:var(--accent);color:#06121f;font-weight:600}
+.dpad{display:grid;grid-template-columns:repeat(3,34px);grid-template-rows:repeat(3,34px);
+  gap:4px;justify-content:center;margin-top:14px}
+.dpad div{background:#0d1117;border:1px solid var(--line);border-radius:6px}
+.dpad div.on{background:var(--accent);border-color:var(--accent)}
+.dpad .c{background:transparent;border:0}
+
+/* sliders */
+.tune{margin-bottom:16px}
+.tune .head{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.tune .val{font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--accent)}
+.hint{font-size:12.5px;color:var(--dim);margin-top:3px}
+
+/* mapping */
+table{width:100%;border-collapse:collapse}
+td,th{padding:6px 4px;text-align:left;vertical-align:middle;border-bottom:1px solid var(--line)}
+th{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
+td select{width:100%;padding:7px 8px;min-height:38px}
+.keycell{white-space:nowrap}
+.keybtn{min-height:38px;padding:7px 10px;font-family:ui-monospace,Menlo,Consolas,monospace}
+.keybtn.listening{border-color:var(--warn);color:var(--warn)}
+.del{min-height:38px;padding:7px 10px;line-height:1}
+
+#toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%) translateY(120%);
+  background:#232a33;border:1px solid var(--line);border-radius:10px;padding:11px 16px;
+  box-shadow:0 8px 28px #0008;transition:transform .2s ease;max-width:90vw;z-index:50}
+#toast.show{transform:translateX(-50%) translateY(0)}
+#toast.bad{border-color:var(--bad)}
+#toast.ok{border-color:var(--ok)}
+
+@media (min-width:640px){
+  body{max-width:780px;margin:0 auto;padding:20px}
+  .stick{width:160px;height:160px}
+}
+</style>
+</head>
+<body>
+
+<h1>HID bridge</h1>
+<div class="dim small" id="subtitle">connecting…</div>
+<div class="pills" id="pills"></div>
+
+<nav id="tabs">
+  <button data-tab="pad" aria-selected="true">Pad</button>
+  <button data-tab="mouse" aria-selected="false">Mouse</button>
+  <button data-tab="map" aria-selected="false">Mapping</button>
+  <button data-tab="profiles" aria-selected="false">Profiles</button>
+  <button data-tab="system" aria-selected="false">System</button>
+</nav>
+
+<!-- ------------------------------------------------------------------ pad -->
+<section id="tab-pad">
+  <div class="card">
+    <h2>What the PC is being sent</h2>
+    <div class="sticks">
+      <div class="stickwrap">
+        <div class="stick" id="ls"><div class="cross"></div><div class="dz"></div><div class="dot"></div></div>
+        <div class="small dim" style="margin-top:6px">left — WASD</div>
+      </div>
+      <div class="stickwrap">
+        <div class="stick" id="rs"><div class="cross"></div><div class="dz"></div><div class="dot"></div></div>
+        <div class="small dim" style="margin-top:6px">right — mouse</div>
+      </div>
+    </div>
+
+    <div class="trigs">
+      <div class="trig"><div class="small dim">LT</div><div class="bar"><i id="lt"></i></div></div>
+      <div class="trig"><div class="small dim">RT</div><div class="bar"><i id="rt"></i></div></div>
+    </div>
+
+    <div class="btns" id="btngrid"></div>
+
+    <div class="dpad" id="dpad">
+      <div class="c"></div><div data-d="1"></div><div class="c"></div>
+      <div data-d="8"></div><div class="c"></div><div data-d="2"></div>
+      <div class="c"></div><div data-d="4"></div><div class="c"></div>
+    </div>
+
+    <p class="hint">The dashed circle is the deadzone compensation, if it is switched on. Triggers
+    are analog axes, not buttons — that is why a mouse click shows up as a full bar here and as
+    nothing in the Windows button grid.</p>
+  </div>
+
+  <div class="card">
+    <h2>Raw input</h2>
+    <div class="mono small" id="rawin">—</div>
+    <p class="hint">Straight from the keyboard and mouse, before the mapping. Useful for telling
+    “the bridge is not receiving” apart from “the mapping is wrong”.</p>
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------- mouse -->
+<section id="tab-mouse" hidden>
+  <div class="card">
+    <h2>Mouse to right stick</h2>
+    <p class="hint" style="margin-top:0">Changes apply immediately so you can feel them. They are
+    kept only until a reboot unless you save a profile.</p>
+
+    <div class="tune">
+      <div class="head"><label for="div_x">Horizontal sensitivity</label>
+        <span class="val" id="div_x_v"></span></div>
+      <input type="range" id="div_x" min="1" max="512" step="1">
+      <div class="hint" id="div_x_h"></div>
+    </div>
+
+    <div class="tune">
+      <div class="head"><label for="div_y">Vertical sensitivity</label>
+        <span class="val" id="div_y_v"></span></div>
+      <input type="range" id="div_y" min="1" max="512" step="1">
+      <div class="hint" id="div_y_h"></div>
+    </div>
+
+    <div class="tune">
+      <div class="head"><label for="tau_ms">Smoothing</label>
+        <span class="val" id="tau_ms_v"></span></div>
+      <input type="range" id="tau_ms" min="5" max="500" step="5">
+      <div class="hint">How long the stick takes to follow a change in mouse speed, and to return
+      to centre after you stop. Lower is more direct and more jittery; the tuned default is
+      80&nbsp;ms.</div>
+    </div>
+
+    <div class="tune">
+      <div class="head"><label for="anti_dz">Deadzone compensation</label>
+        <span class="val" id="anti_dz_v"></span></div>
+      <input type="range" id="anti_dz" min="0" max="80" step="1">
+      <div class="hint">Games ignore stick movement below an inner deadzone, so small mouse
+      movements get thrown away. This lifts any non-zero deflection to at least this much and
+      compresses the rest of the range into what is left. Applied to the length of the vector, not
+      per axis, so diagonals do not overshoot. Start at 0 and raise it until slow aiming
+      responds.</div>
+    </div>
+
+    <div class="row">
+      <input type="checkbox" id="invert_y" style="min-height:auto;width:20px;height:20px">
+      <label for="invert_y" style="margin:0">Invert vertical aiming</label>
+    </div>
+  </div>
+</section>
+
+<!-- -------------------------------------------------------------- mapping -->
+<section id="tab-map" hidden>
+  <div class="card">
+    <h2>Key and button mapping</h2>
+    <p class="hint" style="margin-top:0">Press <b>Listen</b> and then the key on the keyboard
+    attached to the bridge — not the one you are holding this phone with. Mouse buttons and
+    modifiers are picked from the list instead, because they cannot be told apart reliably from a
+    single report.</p>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th style="width:38%">Input</th><th>Does</th><th style="width:44px"></th></tr></thead>
+        <tbody id="maprows"></tbody>
+      </table>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button id="addbind">Add a binding</button>
+      <button id="resetmap" class="danger">Back to defaults</button>
+    </div>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------- profiles -->
+<section id="tab-profiles" hidden>
+  <div class="card">
+    <h2>Profiles</h2>
+    <div class="tune">
+      <label for="pname">Name of the current settings</label>
+      <input type="text" id="pname" maxlength="15" class="grow" style="width:100%">
+    </div>
+    <div id="slots"></div>
+    <p class="hint">Saving writes the settings in force right now, name included, into that slot
+    and makes it the one loaded at startup.</p>
+  </div>
+
+  <div class="card">
+    <h2>Export and import</h2>
+    <div class="row">
+      <button id="export">Download as a file</button>
+      <label class="grow" style="margin:0">
+        <input type="file" id="importfile" accept="application/json,.json" class="grow">
+      </label>
+    </div>
+    <p class="hint">A profile is plain JSON: readable, editable, and safe to paste between boards.
+    Anything out of range is clamped when it is applied rather than rejected.</p>
+  </div>
+</section>
+
+<!-- --------------------------------------------------------------- system -->
+<section id="tab-system" hidden>
+  <div class="card">
+    <h2>Join a Wi-Fi network</h2>
+    <p class="hint" style="margin-top:0">With a network stored, the bridge joins it the next time
+    Wi-Fi comes up and stops serving its own access point — so the panel sits at a stable address
+    on your network. If it ever cannot get there, <b>Ctrl+Alt+P</b> on the keyboard forces the
+    access point back.</p>
+    <div class="tune"><label for="ssid">Network name</label>
+      <input type="text" id="ssid" style="width:100%" autocomplete="off"></div>
+    <div class="tune"><label for="wpass">Password</label>
+      <input type="password" id="wpass" style="width:100%" autocomplete="off"></div>
+    <div class="row">
+      <button id="savewifi" class="primary">Store</button>
+      <button id="forgetwifi" class="danger">Forget</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Firmware</h2>
+    <div class="mono small" id="fwinfo">—</div>
+    <div class="row" style="margin-top:12px">
+      <input type="file" id="fwfile" accept=".bin" class="grow">
+      <button id="fwsend" class="primary" disabled>Update</button>
+    </div>
+    <div class="bar" style="margin-top:10px"><i id="fwbar"></i></div>
+    <p class="hint">Upload <span class="mono">hid_gamepad_bridge.bin</span> for the pad chip. The
+    image is written to the spare slot and verified before anything reboots, and it is only
+    confirmed after the new firmware has stayed up for half a minute — so one that crashes or
+    boot-loops is rolled back on its own, with nothing to press.</p>
+  </div>
+
+  <div class="card">
+    <h2>Telemetry</h2>
+    <div class="mono small" id="telemetry">—</div>
+  </div>
+</section>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+
+/* ---- vocabulary, mirroring firmware/main/input_map.h ------------------- */
+const SRC = { NONE:0, KEY:1, MOD:2, MOUSE:3 };
+
+/* Nominal buttons 1..12 carry the Xbox meaning the transports give them, so the panel shows what
+   a game will see rather than "button 7". Keep this in step with s_xbox_ctrl in ble_gamepad.c. */
+const ACTIONS = [
+  [0,  "— nothing —"],
+  [1,  "Left stick: left"], [2, "Left stick: right"],
+  [3,  "Left stick: up"],   [4, "Left stick: down"],
+  [5,  "D-pad up"], [6, "D-pad right"], [7, "D-pad down"], [8, "D-pad left"],
+  [9,  "RT — right trigger"], [10, "LT — left trigger"], [11, "Right stick click"],
+  [12, "A"], [13, "Left stick click"], [14, "B"], [15, "X"], [16, "Y"],
+  [17, "LB"], [18, "RB"], [19, "View"], [20, "Menu"],
+];
+/* Button grid on the Pad tab: bit position in gamepad_state_t.buttons -> label. */
+const BTN_LABELS = ["RT","LT","RS","A","LS","B","X","Y","LB","RB","View","Menu"];
+
+const MODS = [[0x01,"Left Ctrl"],[0x02,"Left Shift"],[0x04,"Left Alt"],[0x08,"Left Win"],
+              [0x10,"Right Ctrl"],[0x20,"Right Shift"],[0x40,"Right Alt"],[0x80,"Right Win"]];
+const MOUSE_BTNS = [[0x01,"Left mouse button"],[0x02,"Right mouse button"],
+                    [0x04,"Middle mouse button"],[0x08,"Mouse button 4"],[0x10,"Mouse button 5"]];
+
+/* USB HID keycode -> name. Only what a person might bind; anything else shows as hex. */
+const KEYNAMES = (() => {
+  const m = {};
+  for (let i = 0; i < 26; i++) m[0x04 + i] = String.fromCharCode(65 + i);
+  const digits = "1234567890";
+  for (let i = 0; i < 10; i++) m[0x1e + i] = digits[i];
+  Object.assign(m, {
+    0x28:"Enter", 0x29:"Esc", 0x2a:"Backspace", 0x2b:"Tab", 0x2c:"Space",
+    0x2d:"-", 0x2e:"=", 0x2f:"[", 0x30:"]", 0x31:"\\", 0x33:";", 0x34:"'",
+    0x35:"`", 0x36:",", 0x37:".", 0x38:"/", 0x39:"Caps Lock",
+    0x4f:"Right arrow", 0x50:"Left arrow", 0x51:"Down arrow", 0x52:"Up arrow",
+    0x4a:"Home", 0x4b:"Page Up", 0x4d:"End", 0x4e:"Page Down", 0x49:"Insert", 0x4c:"Delete",
+  });
+  for (let i = 0; i < 12; i++) m[0x3a + i] = "F" + (i + 1);
+  return m;
+})();
+const keyName = c => KEYNAMES[c] || ("0x" + c.toString(16).padStart(2, "0"));
+
+/* ---- plumbing --------------------------------------------------------- */
+const $ = id => document.getElementById(id);
+let cfg = null;        /* the configuration as the panel understands it */
+let listening = null;  /* index of the row waiting for a keypress */
+let lastReports = null, lastReportsAt = 0, measuredHz = 0;
+
+function toast(msg, kind) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "show " + (kind || "");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { t.className = ""; }, 2600);
+}
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (r.status === 401) throw new Error("wrong password");
+  if (!r.ok) {
+    let msg = r.status + " " + r.statusText;
+    try { const j = await r.json(); if (j.error) msg = j.error; } catch (e) { /* not JSON */ }
+    throw new Error(msg);
+  }
+  return r;
+}
+const getJSON = p => api(p).then(r => r.json());
+
+/*
+ * Requests go out FORM-ENCODED, not as JSON. The device has no JSON parser - it only produces
+ * JSON - so the browser does the structured work, which is where a parser is free and cannot
+ * corrupt anything on the far side. Bindings collapse to "src:code:action,..." because one flat
+ * field needs no nesting.
+ */
+const encodeForm = obj => Object.entries(obj)
+  .filter(([, v]) => v !== undefined && v !== null)
+  .map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v))
+  .join("&");
+
+const postForm = (p, obj) => api(p, {
+  method: "POST",
+  headers: {"Content-Type": "application/x-www-form-urlencoded"},
+  body: encodeForm(obj),
+});
+const post = p => api(p, {method: "POST"});
+
+const configToForm = c => ({
+  name: c.name || "",
+  div_x: c.div_x, div_y: c.div_y, tau_ms: c.tau_ms,
+  anti_dz: c.anti_dz, invert_y: c.invert_y ? 1 : 0,
+  binds: (c.binds || []).map(b => `${b.src}:${b.code}:${b.action}`).join(","),
+});
+
+/* Sliders fire continuously; sending every event would queue dozens of requests and make the
+   panel feel worse than it is. One in flight, one pending, and the pending one always wins. */
+let sendTimer = null, sendPending = false;
+function pushConfig() {
+  sendPending = true;
+  if (sendTimer) return;
+  sendTimer = setTimeout(async () => {
+    sendTimer = null;
+    if (!sendPending) return;
+    sendPending = false;
+    try { await postForm("/api/config", configToForm(cfg)); }
+    catch (e) { toast("Could not apply: " + e.message, "bad"); }
+  }, 120);
+}
+
+/* ---- tabs ------------------------------------------------------------- */
+$("tabs").addEventListener("click", e => {
+  const b = e.target.closest("button[data-tab]");
+  if (!b) return;
+  for (const t of $("tabs").children) t.setAttribute("aria-selected", String(t === b));
+  for (const s of document.querySelectorAll("section")) s.hidden = true;
+  $("tab-" + b.dataset.tab).hidden = false;
+});
+
+/* ---- pad visualisation ------------------------------------------------ */
+(function buildButtonGrid() {
+  $("btngrid").innerHTML = BTN_LABELS
+    .map((l, i) => `<div class="btn" data-b="${i}">${l}</div>`).join("");
+})();
+
+function drawPad(s) {
+  const place = (el, x, y) => {
+    const r = el.clientWidth / 2 - 10;
+    el.querySelector(".dot").style.transform =
+      `translate(${(x / 127) * r}px, ${(y / 127) * r}px)`;
+  };
+  place($("ls"), s.pad.lx, s.pad.ly);
+  place($("rs"), s.pad.rx, s.pad.ry);
+
+  /* Triggers are nominal buttons 1 and 2 (RT, LT) in the Xbox mapping. */
+  $("rt").style.width = (s.pad.buttons & 1) ? "100%" : "0";
+  $("lt").style.width = (s.pad.buttons & 2) ? "100%" : "0";
+
+  for (const el of $("btngrid").children) {
+    el.classList.toggle("on", !!(s.pad.buttons & (1 << +el.dataset.b)));
+  }
+  for (const el of $("dpad").querySelectorAll("[data-d]")) {
+    el.classList.toggle("on", !!(s.pad.dpad & +el.dataset.d));
+  }
+
+  const keys = s.in.keys.filter(k => k).map(keyName);
+  const mods = MODS.filter(([m]) => s.in.mods & m).map(([, n]) => n);
+  const mb   = MOUSE_BTNS.filter(([m]) => s.in.mbtn & m).map(([, n]) => n);
+  $("rawin").textContent =
+    "keys: "  + (keys.length ? keys.join(" + ") : "none") +
+    "\nmods: " + (mods.length ? mods.join(" + ") : "none") +
+    "\nmouse: " + (mb.length ? mb.join(" + ") : "none");
+}
+
+function drawDeadzoneRing() {
+  const pct = cfg ? cfg.anti_dz : 0;
+  for (const id of ["ls", "rs"]) {
+    const ring = $(id).querySelector(".dz");
+    const d = ($(id).clientWidth - 20) * (pct / 100);
+    ring.style.width = ring.style.height = d + "px";
+    ring.style.display = pct > 0 ? "block" : "none";
+  }
+}
+
+/* ---- status ----------------------------------------------------------- */
+function drawStatus(s) {
+  const net = { station:"on your network", ap:"own access point",
+                joining:"joining a network", off:"off" }[s.sys.net] || s.sys.net;
+  $("subtitle").textContent = net + (s.sys.url ? " — " + s.sys.url : "");
+
+  const pills = [
+    [s.sys.pad_ready ? "pad: host connected" : "pad: no host", s.sys.pad_ready ? "ok" : "warn"],
+    [s.in.kbd   ? "keyboard" : "no keyboard", s.in.kbd   ? "ok" : "bad"],
+    [s.in.mouse ? "mouse"    : "no mouse",    s.in.mouse ? "ok" : "bad"],
+    [measuredHz ? measuredHz + " reports/s" : "measuring…", ""],
+    ["profile " + s.sys.slot, ""],
+  ];
+  $("pills").innerHTML = pills
+    .map(([t, k]) => `<span class="pill ${k}">${t}</span>`).join("");
+
+  const up = Math.floor(s.sys.uptime_ms / 1000);
+  $("telemetry").textContent =
+    `heap ${s.sys.heap} B (low water ${s.sys.heap_min} B)\n` +
+    `uptime ${Math.floor(up / 3600)}h ${Math.floor(up / 60) % 60}m ${up % 60}s\n` +
+    `mapping task ${s.sys.rate_hz} Hz, reports sent ${s.sys.reports}\n` +
+    `measured ${measuredHz} reports/s\n` +
+    `network ${s.sys.net} ${s.sys.url}`;
+  $("fwinfo").textContent =
+    `version ${s.sys.version}\nbuilt ${s.sys.built}\nESP-IDF ${s.sys.idf}`;
+}
+
+/* ---- polling ---------------------------------------------------------- */
+let pollFailures = 0;
+async function poll() {
+  try {
+    const s = await getJSON("/api/state");
+    pollFailures = 0;
+
+    /* A rate from two samples of a monotonic counter: the window is ours, so nothing on the
+       device had to guess how often the panel would ask. */
+    const now = performance.now();
+    if (lastReports !== null && now > lastReportsAt) {
+      const hz = (s.sys.reports - lastReports) * 1000 / (now - lastReportsAt);
+      measuredHz = Math.max(0, Math.round(hz));
+    }
+    lastReports = s.sys.reports;
+    lastReportsAt = now;
+
+    if (!$("tab-pad").hidden) drawPad(s);
+    drawStatus(s);
+  } catch (e) {
+    if (++pollFailures === 3) $("subtitle").textContent = "lost contact — " + e.message;
+  }
+  /* Slower when the pad tab is not visible: the point of the fast poll is the visualisation. */
+  setTimeout(poll, $("tab-pad").hidden ? 1000 : 120);
+}
+
+/* ---- mouse tuning ---------------------------------------------------- */
+const countsPerSecond = div => div * 400;
+function bindSlider(id, fmt) {
+  const el = $(id);
+  el.addEventListener("input", () => {
+    cfg[id] = +el.value;
+    renderTuning();
+    if (id === "anti_dz") drawDeadzoneRing();
+    pushConfig();
+  });
+  bindSlider[id] = fmt;
+}
+function renderTuning() {
+  for (const id of ["div_x", "div_y", "tau_ms", "anti_dz"]) {
+    $(id).value = cfg[id];
+    $(id + "_v").textContent = bindSlider[id](cfg[id]);
+  }
+  const speed = d => `full deflection at ${countsPerSecond(d).toLocaleString()} counts/s`;
+  $("div_x_h").textContent = speed(cfg.div_x);
+  $("div_y_h").textContent = speed(cfg.div_y);
+  $("invert_y").checked = !!cfg.invert_y;
+  $("pname").value = cfg.name || "";
+}
+bindSlider("div_x",   v => v);
+bindSlider("div_y",   v => v);
+bindSlider("tau_ms",  v => v + " ms");
+bindSlider("anti_dz", v => v + " %");
+$("invert_y").addEventListener("change", () => {
+  cfg.invert_y = $("invert_y").checked ? 1 : 0;
+  pushConfig();
+});
+$("pname").addEventListener("change", () => { cfg.name = $("pname").value; pushConfig(); });
+
+/* ---- mapping editor -------------------------------------------------- */
+function sourceLabel(b) {
+  if (b.src === SRC.KEY)   return keyName(b.code);
+  if (b.src === SRC.MOD)   return (MODS.find(([m]) => m === b.code) || [0, "modifier"])[1];
+  if (b.src === SRC.MOUSE) return (MOUSE_BTNS.find(([m]) => m === b.code) || [0, "mouse"])[1];
+  return "unset";
+}
+
+function renderMap() {
+  const rows = cfg.binds.map((b, i) => {
+    const opts = ACTIONS
+      .map(([v, l]) => `<option value="${v}"${v === b.action ? " selected" : ""}>${l}</option>`)
+      .join("");
+
+    let input;
+    if (b.src === SRC.KEY) {
+      input = `<button class="keybtn" data-listen="${i}">${sourceLabel(b)}</button>`;
+    } else {
+      const list = b.src === SRC.MOD ? MODS : MOUSE_BTNS;
+      input = `<select data-code="${i}">` + list
+        .map(([v, l]) => `<option value="${v}"${v === b.code ? " selected" : ""}>${l}</option>`)
+        .join("") + "</select>";
+    }
+
+    return `<tr>
+      <td class="keycell">
+        <select data-src="${i}" style="margin-bottom:4px">
+          <option value="1"${b.src === SRC.KEY   ? " selected" : ""}>Key</option>
+          <option value="2"${b.src === SRC.MOD   ? " selected" : ""}>Modifier</option>
+          <option value="3"${b.src === SRC.MOUSE ? " selected" : ""}>Mouse</option>
+        </select>
+        ${input}
+      </td>
+      <td><select data-action="${i}">${opts}</select></td>
+      <td><button class="del danger" data-del="${i}">&times;</button></td>
+    </tr>`;
+  }).join("");
+  $("maprows").innerHTML = rows ||
+    `<tr><td colspan="3" class="dim">Nothing is bound. Nothing will reach the pad.</td></tr>`;
+}
+
+$("maprows").addEventListener("change", e => {
+  const t = e.target;
+  if (t.dataset.action !== undefined) cfg.binds[+t.dataset.action].action = +t.value;
+  else if (t.dataset.code !== undefined) cfg.binds[+t.dataset.code].code = +t.value;
+  else if (t.dataset.src !== undefined) {
+    const b = cfg.binds[+t.dataset.src];
+    b.src = +t.value;
+    /* A code from one space means nothing in another, so start from a sane member of the new one
+       instead of leaving a value that would silently bind something else. */
+    b.code = b.src === SRC.KEY ? 0x04 : b.src === SRC.MOD ? 0x01 : 0x01;
+    renderMap();
+  } else return;
+  pushConfig();
+});
+
+$("maprows").addEventListener("click", e => {
+  const del = e.target.closest("[data-del]");
+  if (del) {
+    cfg.binds.splice(+del.dataset.del, 1);
+    renderMap(); pushConfig(); return;
+  }
+  const lis = e.target.closest("[data-listen]");
+  if (lis) {
+    const i = +lis.dataset.listen;
+    if (listening === i) { listening = null; renderMap(); return; }
+    listening = i;
+    for (const b of $("maprows").querySelectorAll(".keybtn")) b.classList.remove("listening");
+    lis.classList.add("listening");
+    lis.textContent = "press a key…";
+  }
+});
+
+/*
+ * Captures the next key from the BRIDGE's keyboard, read out of the live state - not from this
+ * browser. That is the only correct source: the phone or PC showing this page is very often not
+ * the machine whose keyboard the bridge owns.
+ */
+(async function keyCapture() {
+  let idle = null;
+  for (;;) {
+    await new Promise(r => setTimeout(r, 90));
+    if (listening === null) { idle = null; continue; }
+    try {
+      const s = await getJSON("/api/state");
+      const pressed = s.in.keys.find(k => k);
+      /* Wait for a release first, or the keypress that fired "Listen" on a bridge-attached
+         keyboard would bind itself. */
+      if (idle === null) { idle = !pressed; continue; }
+      if (!idle) { idle = !pressed; continue; }
+      if (pressed) {
+        cfg.binds[listening].src = SRC.KEY;
+        cfg.binds[listening].code = pressed;
+        listening = null; idle = null;
+        renderMap(); pushConfig();
+        toast("Bound " + keyName(pressed), "ok");
+      }
+    } catch (e) { listening = null; }
+  }
+})();
+
+$("addbind").addEventListener("click", () => {
+  if (cfg.binds.length >= 40) { toast("40 bindings is the limit", "bad"); return; }
+  cfg.binds.push({ src: SRC.KEY, code: 0x04, action: 0 });
+  renderMap(); pushConfig();
+});
+
+$("resetmap").addEventListener("click", async () => {
+  if (!confirm("Reset every setting and binding to the built-in defaults?")) return;
+  try { await post("/api/defaults"); await loadConfig(); toast("Back to defaults", "ok"); }
+  catch (e) { toast(e.message, "bad"); }
+});
+
+/* ---- profiles -------------------------------------------------------- */
+async function renderProfiles() {
+  let p;
+  try { p = await getJSON("/api/profiles"); }
+  catch (e) { $("slots").textContent = e.message; return; }
+
+  $("slots").innerHTML = p.slots.map(s => `
+    <div class="row" style="margin-bottom:8px">
+      <div class="grow">
+        <b>${s.slot}</b>
+        <span class="${s.stored ? "" : "dim"}">${s.stored ? s.name : "empty"}</span>
+        ${s.slot === p.active ? '<span class="pill ok" style="margin-left:6px">active</span>' : ""}
+      </div>
+      <button data-save="${s.slot}">Save</button>
+      <button data-load="${s.slot}" ${s.stored ? "" : "disabled"}>Load</button>
+      <button data-erase="${s.slot}" class="danger" ${s.stored ? "" : "disabled"}>&times;</button>
+    </div>`).join("");
+}
+
+$("slots").addEventListener("click", async e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  try {
+    if (b.dataset.save  !== undefined) { await post("/api/save?slot=" + b.dataset.save);
+                                         toast("Saved", "ok"); }
+    if (b.dataset.load  !== undefined) { await post("/api/load?slot=" + b.dataset.load);
+                                         await loadConfig(); toast("Loaded", "ok"); }
+    if (b.dataset.erase !== undefined) { await post("/api/erase?slot=" + b.dataset.erase);
+                                         toast("Erased", "ok"); }
+    await renderProfiles();
+  } catch (err) { toast(err.message, "bad"); }
+});
+
+$("export").addEventListener("click", () => { location.href = "/api/export"; });
+
+$("importfile").addEventListener("change", async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    const parsed = JSON.parse(await f.text());
+    await postForm("/api/config", configToForm(parsed));
+    await loadConfig();
+    toast("Imported", "ok");
+  } catch (err) { toast("Could not import: " + err.message, "bad"); }
+  e.target.value = "";
+});
+
+/* ---- Wi-Fi ----------------------------------------------------------- */
+$("savewifi").addEventListener("click", async () => {
+  try {
+    await postForm("/api/wifi", { ssid: $("ssid").value, pass: $("wpass").value });
+    toast("Stored — it takes effect the next time Wi-Fi starts", "ok");
+  } catch (e) { toast(e.message, "bad"); }
+});
+$("forgetwifi").addEventListener("click", async () => {
+  try {
+    await postForm("/api/wifi", { ssid: "", pass: "" });
+    $("ssid").value = $("wpass").value = "";
+    toast("Forgotten — the access point will be served from now on", "ok");
+  } catch (e) { toast(e.message, "bad"); }
+});
+
+/* ---- OTA ------------------------------------------------------------- */
+$("fwfile").addEventListener("change", () => {
+  $("fwsend").disabled = !$("fwfile").files[0];
+});
+$("fwsend").addEventListener("click", () => {
+  const f = $("fwfile").files[0];
+  if (!f) return;
+  if (!confirm(`Write ${f.name} (${f.size} bytes) and reboot into it?`)) return;
+
+  /* XHR rather than fetch, for upload progress - a firmware upload with no feedback is
+     indistinguishable from a hung one. */
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/ota");
+  xhr.setRequestHeader("Content-Type", "application/octet-stream");
+  $("fwsend").disabled = true;
+
+  xhr.upload.onprogress = ev => {
+    if (ev.lengthComputable) {
+      $("fwbar").style.width = Math.round(ev.loaded * 100 / ev.total) + "%";
+    }
+  };
+  xhr.onload = () => {
+    if (xhr.status === 200) {
+      toast("Written — rebooting. Reconnect in a few seconds.", "ok");
+      $("fwbar").style.width = "100%";
+    } else {
+      toast("Rejected: " + xhr.responseText, "bad");
+      $("fwsend").disabled = false;
+    }
+  };
+  xhr.onerror = () => {
+    toast("Transfer failed — nothing was changed", "bad");
+    $("fwsend").disabled = false;
+  };
+  xhr.send(f);
+});
+
+/* ---- start ----------------------------------------------------------- */
+async function loadConfig() {
+  cfg = await getJSON("/api/config");
+  if (!Array.isArray(cfg.binds)) cfg.binds = [];
+  renderTuning();
+  renderMap();
+  drawDeadzoneRing();
+}
+
+(async function init() {
+  try {
+    await loadConfig();
+    await renderProfiles();
+  } catch (e) {
+    $("subtitle").textContent = "could not load the configuration — " + e.message;
+  }
+  poll();
+})();
+</script>
+</body>
+</html>
