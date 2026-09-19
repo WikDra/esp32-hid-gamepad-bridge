@@ -1856,11 +1856,42 @@ kod się kompilował, linkował i uruchamiał, tylko jedna funkcja nie była wo�
 `input_mapper_start()` było wołane bezwarunkowo z pustą implementacją dla nieużywanych
 konfiguracji, kompilator złapałby niezgodność sam.
 
-#### Pułapka: Windows Terminal traktuje lewą gałkę pada jak strzałki
+#### Pułapka: Windows Terminal traktuje pada jak klawiaturę, i to szerzej niż tylko gałka
 
-Warto to wiedzieć, zanim się na tym zbuduje wniosek. **Windows Terminal reaguje na pada:
-wychylenie lewej gałki działa w nim jak klawisze strzałek** — sprawdzone przez właściciela
-prawdziwym padem Xbox Series X, niezależnie od naszego mostka.
+Warto to wiedzieć, zanim się na tym zbuduje wniosek. **Konsola Windows reaguje na pada**, i nie
+chodzi wyłącznie o osie. Zmierzone w praktyce, na tym mostku i potwierdzone właścicielem prawdziwym
+padem Xbox Series X, czyli niezależnie od naszego sprzętu:
+
+| Wejście pada | Co robi konsola |
+|---|---|
+| lewa gałka | jak klawisze strzałek |
+| `A` | jak Enter — **da się tym zamknąć PowerShella** |
+| `B` | jak Esc / „wstecz" |
+
+**To kosztowało utratę przebiegu testowego, i warto wiedzieć dlaczego.** Właściciel zgłosił, że po
+`Ctrl+Alt+G` „Backspace zadziałało jak Esc", co wygląda na off-by-one w deskryptorze klawiatury
+passthrough (Backspace to `0x2A`, Esc `0x29` — różnica jednego, więc hipoteza jest kusząca). Sam ją
+postawiłem i **była błędna.** Prawdziwy mechanizm nie ma z Backspace nic wspólnego:
+
+- `LCtrl` jest w domyślnej tablicy zmapowany na nominalny przycisk 6, czyli **`B`** w profilu Xbox,
+- skrót wymaga trzymania `Ctrl`, więc przez cały czas jego trzymania pad **wysyła `B`**,
+- konsola czyta `B` jako „wstecz", co wygląda jak Esc.
+
+Backspace jest niezmapowany i nie robi nic. Deskryptor passthrough jest w porządku — używa
+standardowego makra `TUD_HID_REPORT_DESC_KEYBOARD` z TinyUSB, a `tud_hid_keyboard_report()` sam
+wstawia bajt `reserved`, więc nie ma gdzie przesunąć wartości.
+
+Wnioski praktyczne, oba operacyjne:
+
+1. **Nie oceniaj po konsoli, kto obsługuje klawiaturę** — ani co wysyła mostek. Rozstrzygają dwa
+   logi czytane jednocześnie albo `XInputGetState`.
+2. **Nie trzymaj terminala aktywnego, testując skróty w trybie pada.** Każdy skrót zaczyna się od
+   `Ctrl`, `Ctrl` to `B`, a `B` zamyka rzeczy. Kliknij najpierw w cokolwiek innego.
+
+Metodologicznie to trzeci raz, gdy objaw po stronie PC wyglądał na wadę firmware'u i nią nie był —
+po §4.32 (generyczny sterownik zamiast XInput, wina wyboru PID) i po pierwszym przebiegu
+end-to-end, gdzie ruch kursora w Terminalu wyglądał na dowód, że klawiatura należy do Windows,
+a był dowodem odwrotnym.
 
 Konsekwencja dla testów tego projektu jest zwodnicza. Mostek mapuje WASD na lewą gałkę, więc
 naciśnięcie `W` na klawiaturze obsługiwanej przez ESP **poruszy kursorem w Terminalu** — a to
