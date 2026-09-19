@@ -96,11 +96,22 @@ static const char *TAG = "mapper";
 typedef struct {
     gamepad_state_t pad;
     hid_input_state_t in;
+    bool passthrough;
 } mapper_snapshot_t;
 
 static mapper_snapshot_t s_snap[2];
 static volatile uint8_t s_snap_idx;
 static volatile uint32_t s_ticks;
+
+/* Publishes into the buffer the reader is not looking at, then swaps the index. */
+static void snap_publish(const gamepad_state_t *pad, const hid_input_state_t *in, bool passthrough)
+{
+    const uint8_t spare = s_snap_idx ? 0 : 1;
+    s_snap[spare].pad = *pad;
+    s_snap[spare].in = *in;
+    s_snap[spare].passthrough = passthrough;
+    s_snap_idx = spare;
+}
 
 /* USB HID Keyboard/Keypad usage IDs */
 #define KEY_A     0x04
@@ -576,6 +587,14 @@ static void mapper_task(void *arg)
          * that is cheaper and easier to reason about than a lock around both.
          */
         if (IO_SERVICE_MODE()) {
+            /*
+             * Publish here too. Without this the snapshot is never written while passthrough is
+             * active, so the panel showed "no keyboard, no mouse" and a dead pad - which looks like
+             * a broken bridge rather than a deliberate mode. The pad part is zero because there is
+             * genuinely no pad on the bus; the mode flag is what tells the panel to say so.
+             */
+            const gamepad_state_t none = {0};
+            snap_publish(&none, &in, true);
             IO_PASSTHROUGH_SEND(&in);
             continue;
         }
@@ -634,12 +653,7 @@ static void mapper_task(void *arg)
         if (sent) {
             s_ticks++;
         }
-        {
-            const uint8_t spare = s_snap_idx ? 0 : 1;
-            s_snap[spare].pad = out;
-            s_snap[spare].in = in;
-            s_snap_idx = spare;
-        }
+        snap_publish(&out, &in, false);
 
         /* Log only on a real change and no more than once per 250 ms - otherwise mouse
          * movement would flood the console. */
@@ -656,7 +670,7 @@ static void mapper_task(void *arg)
     }
 }
 
-void input_mapper_snapshot(gamepad_state_t *pad, hid_input_state_t *in)
+void input_mapper_snapshot(gamepad_state_t *pad, hid_input_state_t *in, bool *passthrough)
 {
     const mapper_snapshot_t *s = &s_snap[s_snap_idx];
     if (pad) {
@@ -664,6 +678,9 @@ void input_mapper_snapshot(gamepad_state_t *pad, hid_input_state_t *in)
     }
     if (in) {
         *in = s->in;
+    }
+    if (passthrough) {
+        *passthrough = s->passthrough;
     }
 }
 

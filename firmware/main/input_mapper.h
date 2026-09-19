@@ -39,11 +39,15 @@ const input_bind_t *input_mapper_binds(size_t *count);
 size_t input_mapper_default_binds(input_bind_t *out, size_t max);
 
 /*
- * What the mapper last produced, and the input state it produced it from. Either pointer may be
- * NULL. Non-destructive, unlike input_state_take(), which clears the mouse accumulators - reading
- * that from an HTTP handler would steal motion from the pad.
+ * What the mapper last produced, the input state it produced it from, and whether passthrough is in
+ * force. Any pointer may be NULL. Non-destructive, unlike input_state_take(), which clears the mouse
+ * accumulators - reading that from an HTTP handler would steal motion from the pad.
+ *
+ * In passthrough mode the pad part is all zeroes because there genuinely is no pad on the bus. The
+ * flag is what lets a caller tell that apart from a bridge that has stopped working: without it the
+ * panel showed a dead pad and no inputs, which looks like a fault rather than a chosen mode.
  */
-void input_mapper_snapshot(gamepad_state_t *pad, hid_input_state_t *in);
+void input_mapper_snapshot(gamepad_state_t *pad, hid_input_state_t *in, bool *passthrough);
 
 /*
  * Mapping-task iterations since boot, monotonic.

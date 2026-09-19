@@ -542,7 +542,8 @@ static esp_err_t h_state(httpd_req_t *req)
 
     gamepad_state_t pad;
     hid_input_state_t in;
-    input_mapper_snapshot(&pad, &in);
+    bool passthrough = false;
+    input_mapper_snapshot(&pad, &in, &passthrough);
 
     char buf[JSON_MAX];
     jw_t w = {.buf = buf, .size = sizeof(buf)};
@@ -577,6 +578,9 @@ static esp_err_t h_state(httpd_req_t *req)
            (unsigned)input_mapper_ticks(), (unsigned)usb_pad_reports_sent(),
            usb_pad_is_ready() ? "true" : "false", bridge_config_active_slot(),
            CONFIG_APP_REPORT_RATE_HZ);
+    /* Without this the panel cannot tell "passthrough is on, so there is no pad" from "the pad has
+     * stopped working" - both look like pad_ready=false. */
+    jw_fmt(&w, ",\"passthrough\":%s", passthrough ? "true" : "false");
     jw_raw(&w, ",\"net\":");
     jw_str(&w, net == WEBUI_STA_UP           ? "station"
                : net == WEBUI_AP_UP          ? "ap"

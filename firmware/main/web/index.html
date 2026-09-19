@@ -97,9 +97,19 @@ table{width:100%;border-collapse:collapse}
 td,th{padding:6px 4px;text-align:left;vertical-align:middle;border-bottom:1px solid var(--line)}
 th{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
 td select{width:100%;padding:7px 8px;min-height:38px}
-.keycell{white-space:nowrap}
+/*
+ * The Input cell holds TWO stacked controls. They must be block-level: as inline-block they sit
+ * side by side, and with both at width:100% the second one overflows the cell and lands on top of
+ * the next column. That is what "Listen" looked like when it could not be found at all - the button
+ * was outside its own cell.
+ *
+ * white-space is normal here for the same reason; the nowrap it used to have actively prevented the
+ * two from wrapping onto separate lines.
+ */
+.keycell{white-space:normal}
+.keycell select,.keycell .keybtn{display:block;width:100%}
 .keybtn{min-height:38px;padding:7px 10px;font-family:ui-monospace,Menlo,Consolas,monospace;
-  border-color:var(--accent);width:100%;text-align:left}
+  border-color:var(--accent);text-align:left}
 .keybtn .pen{float:right;opacity:.55;font-family:system-ui}
 .keybtn.listening{border-color:var(--warn);color:var(--warn)}
 .del{min-height:38px;padding:7px 10px;line-height:1}
@@ -479,7 +489,11 @@ function drawStatus(s) {
   $("subtitle").textContent = net + (s.sys.url ? " — " + s.sys.url : "");
 
   const pills = [
-    [s.sys.pad_ready ? "pad: host connected" : "pad: no host", s.sys.pad_ready ? "ok" : "warn"],
+    /* Passthrough first: with it on there is no pad on the bus at all, so "pad: no host" would
+       be true and yet describe the wrong thing entirely. */
+    s.sys.passthrough
+      ? ["PASSTHROUGH - keyboard + mouse, no pad", "warn"]
+      : [s.sys.pad_ready ? "pad: host connected" : "pad: no host", s.sys.pad_ready ? "ok" : "warn"],
     [s.in.kbd   ? "keyboard" : "no keyboard", s.in.kbd   ? "ok" : "bad"],
     [s.in.mouse ? "mouse"    : "no mouse",    s.in.mouse ? "ok" : "bad"],
     [taskHz ? taskHz + " Hz loop" : "measuring…", ""],
