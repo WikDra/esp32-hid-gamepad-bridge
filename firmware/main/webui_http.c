@@ -810,8 +810,18 @@ static esp_err_t h_ota_peer(httpd_req_t *req)
     free(chunk);
 
     if (err != ESP_OK) {
+        /*
+         * The exact reason, not a generic message. The three ways this fails are distinguishable and
+         * point at different things: a refusal means the peer could not open its OTA partition, a
+         * byte-count mismatch means a frame was lost on the wire, and a timeout means no
+         * acknowledgement came back at all. Reporting them as one string cost a whole diagnostic
+         * round, because the only console available belonged to the other chip.
+         */
         ESP_LOGE(TAG, "peer OTA failed mid-transfer: %s", esp_err_to_name(err));
-        return send_err(req, "502 Bad Gateway", "transfer failed - the other chip is unchanged");
+        char msg[128];
+        snprintf(msg, sizeof(msg), "transfer failed (%s) - the other chip is unchanged",
+                 esp_err_to_name(err));
+        return send_err(req, "502 Bad Gateway", msg);
     }
 
     err = chip_link_fw_end();

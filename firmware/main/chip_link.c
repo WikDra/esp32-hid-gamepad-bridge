@@ -68,16 +68,32 @@ static const char *TAG = "link";
  * adapter, so every firmware change there meant holding BOOT and RESET. The cable was already
  * crossed on both pairs, so the reverse direction cost nothing to enable.
  *
- * NO RETRANSMISSION, deliberately. The ACK is FLOW CONTROL - it stops the sender outrunning the
- * receiver's flash writes - not reliability. Reliability comes from two places that are already
- * there: every frame carries a CRC, and esp_ota_end() verifies the image's SHA256 before it can
- * ever be booted. A transfer that goes wrong is abandoned and the browser can upload again; what
- * cannot happen is a corrupt image being booted.
+ * RETRANSMISSION, because the measurement demanded it. The first version had none, justified by the
+ * link having zero CRC errors over 19 884 frames - but that was a property of the INPUT-to-PAD
+ * direction. Measured on the reverse direction, the same cable gives about two bad frames in
+ * thirty-two, and without retransmission a single one of those aborts a 1 700-frame transfer.
+ *
+ * The scheme is deliberately dull. Every data frame carries its OFFSET, so the receiver can tell a
+ * duplicate from a gap: an offset it already has is skipped, the next one it wants is written, and
+ * anything beyond that is ignored because esp_ota_write() is strictly sequential and cannot be
+ * rewound. After each window the sender asks "where are you?" and resends the whole window if the
+ * answer is not what it expected. Duplicates being free is what makes resending the whole window
+ * correct and the bookkeeping trivial.
+ *
+ * esp_ota_end() still verifies the image's SHA256, so retransmission is about finishing at all, not
+ * about correctness - a transfer that ends successfully is byte-exact or it is rejected.
  */
 #define LINK_TYPE_FW_BEGIN 0x05 /* total size u32                                */
-#define LINK_TYPE_FW_DATA  0x06 /* image bytes, in order                         */
+#define LINK_TYPE_FW_DATA  0x06 /* offset u32, then image bytes                  */
 #define LINK_TYPE_FW_END   0x07 /* no payload: finish, verify and switch          */
 #define LINK_TYPE_FW_ACK   0x08 /* bytes accepted so far u32, status u8           */
+#define LINK_TYPE_FW_POLL  0x09 /* no payload: "where are you?" - answered by ACK */
+
+/* Image bytes per data frame, after the four-byte offset. */
+#define LINK_FW_CHUNK 188
+/* Frames sent before asking the peer where it got to. Four chunks is 752 bytes in flight against
+ * a 2 kB receive buffer. */
+#define LINK_FW_WINDOW 4
 
 #define LINK_PRESENT_MOUSE    0x01
 #define LINK_PRESENT_KEYBOARD 0x02
@@ -192,15 +208,10 @@ static void frame_send(uint8_t type, const uint8_t *payload, uint8_t len)
 #if LINK_FW_TARGET
 #include "esp_ota_ops.h"
 
-/* One window of frames is acknowledged at a time. Four times 192 bytes is 768 in flight, against a
- * 2 kB UART receive buffer - enough margin that a slow flash write cannot overrun it. */
-#define LINK_FW_ACK_EVERY 4
-
 static esp_ota_handle_t s_fw_ota;
 static const esp_partition_t *s_fw_part;
 static uint32_t s_fw_total;
 static uint32_t s_fw_got;
-static uint32_t s_fw_frames;
 static bool s_fw_failed;
 
 static void fw_ack(uint8_t status)
@@ -238,7 +249,6 @@ static void fw_begin(const uint8_t *p, uint8_t len)
     s_fw_total = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
                  ((uint32_t)p[3] << 24);
     s_fw_got = 0;
-    s_fw_frames = 0;
     s_fw_failed = false;
 
     s_fw_part = esp_ota_get_next_update_partition(NULL);
@@ -259,20 +269,35 @@ static void fw_begin(const uint8_t *p, uint8_t len)
 
 static void fw_data(const uint8_t *p, uint8_t len)
 {
-    if (s_fw_failed || !s_fw_ota) {
+    if (s_fw_failed || !s_fw_ota || len < 4) {
         return;
     }
-    if (esp_ota_write(s_fw_ota, p, len) != ESP_OK) {
+
+    const uint32_t off = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+                         ((uint32_t)p[3] << 24);
+    const uint8_t n = (uint8_t)(len - 4);
+
+    /*
+     * Three cases, and only one of them writes.
+     *
+     *   off <  got : a duplicate from a resent window. Skipping it is what lets the sender resend
+     *                a whole window without tracking which frame inside it went missing.
+     *   off == got : the next bytes we want.
+     *   off >  got : a gap, because a frame was lost. Ignored rather than buffered, since
+     *                esp_ota_write() is strictly sequential - the sender will resend from where the
+     *                acknowledgement says we are.
+     */
+    if (off < s_fw_got) {
+        return;
+    }
+    if (off > s_fw_got) {
+        return;
+    }
+    if (esp_ota_write(s_fw_ota, &p[4], n) != ESP_OK) {
         fw_abort("esp_ota_write");
         return;
     }
-    s_fw_got += len;
-
-    /* Acknowledge a window, not every frame: the point is to bound how much the sender may have in
-     * flight, and one round trip per 768 bytes costs far less than one per 192. */
-    if ((++s_fw_frames % LINK_FW_ACK_EVERY) == 0) {
-        fw_ack(0);
-    }
+    s_fw_got += n;
 }
 
 static void fw_end(void)
@@ -311,9 +336,10 @@ static volatile uint32_t s_fw_ack_bytes;
 static volatile uint8_t s_fw_ack_status;
 static volatile bool s_fw_ack_seen;
 
-/* Bytes handed to the wire so far, and how many frames since the last acknowledged window. */
-static uint32_t s_fw_pushed;
-static uint32_t s_fw_window;
+/* The window currently in flight, kept so it can be resent verbatim. */
+static uint8_t s_fw_buf[LINK_FW_WINDOW * LINK_FW_CHUNK];
+static size_t s_fw_buf_len;
+static uint32_t s_fw_base; /* image offset of s_fw_buf[0] */
 
 static esp_err_t fw_wait_ack(uint32_t expect_bytes, int timeout_ms)
 {
@@ -324,16 +350,60 @@ static esp_err_t fw_wait_ack(uint32_t expect_bytes, int timeout_ms)
                 ESP_LOGE(TAG, "peer refused the firmware at %" PRIu32 " B", s_fw_ack_bytes);
                 return ESP_FAIL;
             }
-            if (s_fw_ack_bytes != expect_bytes) {
-                ESP_LOGE(TAG, "peer accepted %" PRIu32 " B, expected %" PRIu32, s_fw_ack_bytes,
-                         expect_bytes);
-                return ESP_ERR_INVALID_STATE;
-            }
-            return ESP_OK;
+            return (s_fw_ack_bytes == expect_bytes) ? ESP_OK : ESP_ERR_INVALID_STATE;
         }
         vTaskDelay(pdMS_TO_TICKS(5));
     }
-    ESP_LOGE(TAG, "peer did not acknowledge within %d ms", timeout_ms);
+    return ESP_ERR_TIMEOUT;
+}
+
+/*
+ * Sends the buffered window, asks where the peer got to, and resends the whole window until the
+ * answer matches. Duplicates are free on the receiving side, which is what makes resending
+ * everything correct without tracking which frame was lost.
+ */
+static esp_err_t fw_flush_window(void)
+{
+    if (s_fw_buf_len == 0) {
+        return ESP_OK;
+    }
+    const uint32_t want = s_fw_base + (uint32_t)s_fw_buf_len;
+
+    for (int attempt = 1; attempt <= 8; attempt++) {
+        /* Cleared before sending, so a late acknowledgement from the previous attempt cannot be
+         * mistaken for the answer to this one. */
+        s_fw_ack_seen = false;
+
+        for (size_t off = 0; off < s_fw_buf_len; off += LINK_FW_CHUNK) {
+            const size_t n =
+                (s_fw_buf_len - off < LINK_FW_CHUNK) ? (s_fw_buf_len - off) : LINK_FW_CHUNK;
+            const uint32_t at = s_fw_base + (uint32_t)off;
+            uint8_t p[4 + LINK_FW_CHUNK];
+            p[0] = (uint8_t)at;
+            p[1] = (uint8_t)(at >> 8);
+            p[2] = (uint8_t)(at >> 16);
+            p[3] = (uint8_t)(at >> 24);
+            memcpy(&p[4], &s_fw_buf[off], n);
+            frame_send(LINK_TYPE_FW_DATA, p, (uint8_t)(4 + n));
+        }
+        frame_send(LINK_TYPE_FW_POLL, NULL, 0);
+
+        const esp_err_t err = fw_wait_ack(want, 3000);
+        if (err == ESP_OK) {
+            s_fw_base = want;
+            s_fw_buf_len = 0;
+            return ESP_OK;
+        }
+        if (err == ESP_FAIL) {
+            return err; /* the peer refused outright - retrying cannot help */
+        }
+        if (attempt == 1 || attempt == 4) {
+            ESP_LOGW(TAG, "window at %" PRIu32 " not confirmed (%s), resending - attempt %d",
+                     s_fw_base, esp_err_to_name(err), attempt);
+        }
+    }
+
+    ESP_LOGE(TAG, "gave up on the window at %" PRIu32 " B after 8 attempts", s_fw_base);
     return ESP_ERR_TIMEOUT;
 }
 
@@ -341,24 +411,45 @@ esp_err_t chip_link_fw_begin(uint32_t total)
 {
     uint8_t p[4] = { (uint8_t)total, (uint8_t)(total >> 8), (uint8_t)(total >> 16),
                      (uint8_t)(total >> 24) };
-    s_fw_ack_seen = false;
-    s_fw_pushed = 0;
-    s_fw_window = 0;
-    frame_send(LINK_TYPE_FW_BEGIN, p, sizeof(p));
-    return fw_wait_ack(0, 3000);
+    s_fw_base = 0;
+    s_fw_buf_len = 0;
+
+    /*
+     * GENEROUS, because the peer acknowledges this only after esp_ota_begin() returns - and that
+     * call ERASES the flash region the image will occupy, which for a 330 kB image takes on the
+     * order of a second or two and varies. Three seconds failed intermittently for exactly that
+     * reason, and it looked like a flaky wire.
+     *
+     * Retried, because the BEGIN frame can be lost like any other.
+     */
+    for (int attempt = 1; attempt <= 4; attempt++) {
+        s_fw_ack_seen = false;
+        frame_send(LINK_TYPE_FW_BEGIN, p, sizeof(p));
+        const esp_err_t err = fw_wait_ack(0, 15000);
+        if (err == ESP_OK) {
+            return ESP_OK;
+        }
+        if (err == ESP_FAIL) {
+            return err;
+        }
+        ESP_LOGW(TAG, "peer did not confirm the start (%s), retrying - attempt %d",
+                 esp_err_to_name(err), attempt);
+    }
+    return ESP_ERR_TIMEOUT;
 }
 
 esp_err_t chip_link_fw_data(const uint8_t *data, size_t len)
 {
     while (len) {
-        const uint8_t chunk = (len > LINK_PAYLOAD_MAX) ? LINK_PAYLOAD_MAX : (uint8_t)len;
-        frame_send(LINK_TYPE_FW_DATA, data, chunk);
-        data += chunk;
-        len -= chunk;
-        s_fw_pushed += chunk;
+        const size_t room = sizeof(s_fw_buf) - s_fw_buf_len;
+        const size_t take = (len < room) ? len : room;
+        memcpy(&s_fw_buf[s_fw_buf_len], data, take);
+        s_fw_buf_len += take;
+        data += take;
+        len -= take;
 
-        if ((++s_fw_window % 4) == 0) {
-            const esp_err_t err = fw_wait_ack(s_fw_pushed, 2000);
+        if (s_fw_buf_len == sizeof(s_fw_buf)) {
+            const esp_err_t err = fw_flush_window();
             if (err != ESP_OK) {
                 return err;
             }
@@ -369,13 +460,23 @@ esp_err_t chip_link_fw_data(const uint8_t *data, size_t len)
 
 esp_err_t chip_link_fw_end(void)
 {
-    /* Drain whatever the last partial window left unacknowledged, so a failure is reported here
-     * rather than looking like a rejected image. */
-    if ((s_fw_window % 4) != 0) {
-        s_fw_window = 0;
+    /* Whatever the last partial window holds still has to get there. */
+    esp_err_t err = fw_flush_window();
+    if (err != ESP_OK) {
+        return err;
     }
-    frame_send(LINK_TYPE_FW_END, NULL, 0);
-    return fw_wait_ack(s_fw_pushed, 10000);
+
+    for (int attempt = 1; attempt <= 4; attempt++) {
+        s_fw_ack_seen = false;
+        frame_send(LINK_TYPE_FW_END, NULL, 0);
+        err = fw_wait_ack(s_fw_base, 15000);
+        if (err == ESP_OK || err == ESP_FAIL) {
+            return err;
+        }
+        ESP_LOGW(TAG, "peer did not confirm the end (%s), retrying - attempt %d",
+                 esp_err_to_name(err), attempt);
+    }
+    return ESP_ERR_TIMEOUT;
 }
 #endif /* LINK_FW_SOURCE */
 
@@ -695,6 +796,11 @@ static void handle_frame(uint8_t type, const uint8_t *p, uint8_t len)
     case LINK_TYPE_FW_END:
         fw_end();
         break;
+    case LINK_TYPE_FW_POLL:
+        /* "Where are you?" - the answer is what lets the sender decide whether to advance or resend
+         * the window. Answered even after a failure, so the sender learns that too. */
+        fw_ack(s_fw_failed ? 1 : 0);
+        break;
 #endif
 
 #if LINK_FW_SOURCE
@@ -851,7 +957,20 @@ static void receiver_task(void *arg)
             }
         }
 
-        /* Link watchdog: silence is meaningful, because the sender keepalives. */
+        /*
+         * Link watchdog: silence is meaningful, because the sender keepalives.
+         *
+         * ROLE, NOT DIRECTION, and this is a bug that the bidirectional refactor introduced. The
+         * input chip now has a receiver so that firmware can reach it, but its input state comes
+         * from its OWN USB host - clearing it because the pad went quiet wipes the real keyboard and
+         * mouse presence, and nothing sets it again until a device is replugged.
+         *
+         * Observed exactly that: the input chip logged "peer silent ... clearing its input state"
+         * and then reported "usb ifaces 4 (kbd=0 mouse=0)" with both dongles plainly attached, and
+         * the panel showed no inputs. The pad only transmits during a firmware push, so on that
+         * chip the watchdog fires constantly and is always wrong.
+         */
+#if CONFIG_APP_LINK_RECEIVER
         bool alive = chip_link_peer_alive();
         if (peer_was_alive && !alive) {
             ESP_LOGW(TAG, "peer silent for %d ms - clearing its input state",
@@ -863,6 +982,9 @@ static void receiver_task(void *arg)
             ESP_LOGI(TAG, "peer link up");
         }
         peer_was_alive = alive;
+#else
+        (void)peer_was_alive;
+#endif
 
         int64_t now = esp_timer_get_time();
         if (now - last_stat_us >= 10 * 1000 * 1000) {
