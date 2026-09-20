@@ -339,8 +339,8 @@ What it can change:
   deadzone compensation — which lifts any non-zero deflection above the inner deadzone that games
   discard, applied to the *length* of the vector so diagonals do not overshoot. Changes apply
   immediately, so a setting you can only judge by feel no longer needs a rebuild and a reflash.
-- **The mapping**, as a table: press *Listen* and then a key on the keyboard the bridge owns, and
-  it binds. Every nominal button is labelled with the Xbox control it drives.
+- **A minimum left-stick deflection held while the right stick moves**, off by default. Unlike every other setting here, this *fabricates* stick input you did not make — the reason to want it is that some games treat "the player is moving" as a precondition for aim assistance, and in multiplayer titles that is the kind of input modification terms of service and anti-cheat address. It is a floor rather than an addition, so real movement above it passes through untouched.
+- **The mapping**, as a table: tap the key name in the Input column, then press that key on the keyboard the bridge owns, and it binds. Every nominal button is labelled with the Xbox control it drives.
 - **Four profiles in NVS**, named, with export and import as a JSON file. Each has a **Default** button that puts the factory settings back into that slot and keeps them there; which profile is active does not change, so resetting one you are not using cannot move you onto it. The mapping editor has its own **Restore default mapping**, which leaves sensitivity and smoothing alone.
 - **Firmware for both chips.** The pad updates itself over Wi-Fi; the input chip is updated *through the wire between the boards*, because its USB port is the host side and it has no network of its own. Every data frame carries its offset, so a corrupted one is simply resent — measured recovering three bad frames out of 1199 on a real transfer. 330 kB takes about 16 s.
 - **Firmware**, by uploading `hid_gamepad_bridge.bin`. The image is verified before anything
