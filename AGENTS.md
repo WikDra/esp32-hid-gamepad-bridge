@@ -114,6 +114,7 @@ Zrobione i **zweryfikowane na sprzęcie** (ESP32-C3 na COM6):
 | **Wi-Fi na żądanie nie kosztuje tempa** | licznik `ticks` w oknie z `uptime_ms`: **1000,0 Hz** przy podniesionym AP i odpytywanym panelu (6105 przebiegów w 6,105 s) oraz **1000 Hz** w trybie klienta (okno 8,191 s). Heap 242–248 kB wolne, czyli radio z serwerem kosztuje ~125 kB |
 | **OTA i wycofanie zweryfikowane** | trzy obiegi aktualizacji, każdy `HTTP 200` i każdy wstał. Wycofanie udowodnione obrazem z `abort()`, kryptograficznie poprawnym: przyjęty, uruchomiony, panika, bootloader wrócił do poprzedniego bez niczyjego udziału — po 87 s panel odpowiada z `pad_ready=True` |
 | **Dołączenie do sieci domowej** | `net=station`, `http://192.168.1.32`, `sta_ssid='PLAY_Swiatlowod_D4C0'`. Lista DHCP routera go **nie pokazywała** — znaleziony skanem LAN po MAC `90:da:72:49:a3:28` (klient używa bazowego MAC, AP inkrementowanego) |
+| **Wgrywanie firmware na układ wejść po drucie** | `328 800 B` w **16,0 s** z panelu pada, `HTTP 200`. Retransmisja odzyskała **trzy realnie uszkodzone ramki** (`received 1199 frames (CRC errors 3)`), `esp_ota_end()` przyjął obraz, a bootloader wystartował z drugiego slotu: `Loaded app from partition at offset 0x1e0000`. Układ bez własnej sieci i bez dostępnej konsoli aktualizuje się teraz bez BOOT+RESET. Szczegóły w §4.42 |
 | **Passthrough na skrót działa w obie strony** | `Ctrl+Alt+G` na klawiaturze przełącza tożsamość USB układu pada. Odczytane z drzewa urządzeń: w passthrough `USB\VID_303A&PID_4004` z `Service=HidUsb` i dwiema kolekcjami — `COL01` → `kbdhid`, `COL02` → `mouhid`, a pad `045E:028E` **nieobecny** i XInput nie widzi nic w żadnym slocie; po powtórnym skrócie wraca `USB\VID_045E&PID_028E` z `Service=xusb22` i slot 0 `CONNECTED`. Szczegóły projektowe w §4.39 |
 
 **Zbadane, jeszcze nieskompilowane** (wyniki analizy z 2026-08-15, szczegóły w §4):
@@ -2365,36 +2366,53 @@ starego zachowania — cztery warianty BLE bez zmian.
 przy nim 37 500 ramek i tempo narzucałyby obiegi potwierdzeń, nie drut. Bufory UART z 512 na 2048, bo
 okno czterech ramek to 768 bajtów w drodze.
 
-#### Stan weryfikacji: CZĘŚCIOWO, blokuje styk kabelka
+#### Stan weryfikacji: PRZEJECHANE NA SPRZĘCIE W CAŁOŚCI
 
 | Co | Dowód |
 |---|---|
-| refaktor nie zepsuł istniejącego ruchu | `link: sent 9671 frames (dropped 0)` po zmianie ładunku |
-| nowa tablica partycji na wejściach | `otadata` zapisane na `0xd000`, wcześniej tej partycji nie było |
-| zadanie odbiorcze startuje | log startowy wejść: `UART1 up: tx=GPIO4 rx=GPIO5`, `mode: sender`, **`mode: receiver`** |
+| refaktor nie zepsuł istniejącego ruchu | `link: sent 9671 frames (dropped 0)` po zmianie ładunku z 8 na 192 B |
+| nowa tablica partycji na wejściach | bootloader wypisuje `ota_0 00010000 001d0000` i `ota_1 001e0000 001d0000` |
+| zadanie odbiorcze startuje na obu | `UART1 up: tx=GPIO4 rx=GPIO5`, `mode: sender`, **`mode: receiver`** |
 | podział binarek | `s3pad` ma `/api/ota/peer` i nie ma odbiornika, `s3input` odwrotnie |
-| **protokół działa** | jedna próba przepchnęła `BEGIN` **potwierdzony** i **20 ramek danych**, `crc_err=0` |
+| **cały transfer** | `328 800 B` w **16,0 s** (~20,5 kB/s), `HTTP 200 {"ok":true,"peer_rebooting":true}` |
+| **retransmisja naprawia realne straty** | `received 1199 frames (CRC errors 3)` — trzy uszkodzone ramki odzyskane, obraz przyjęty |
+| obraz jest bajt w bajt | `esp_ota_end()` przyjął go, czyli SHA256 się zgodził |
+| uruchomienie z drugiego slotu | `boot: Loaded app from partition at offset 0x1e0000`, potem link i host USB wstają |
 
-**Czego brakuje: rzetelnego styku na parze pad GPIO4 ↔ wejścia GPIO5.** Właściciel zmierzył ją
-omomierzem — przewód nie stykał. Po poruszeniu styk jest marginalny: próby dały kolejno `sent=21`
-(BEGIN plus 20 ramek danych), potem `sent=1`, potem `sent=1`. Ten sam kod, minuty różnicy, różne
-etapy — czyli warstwa fizyczna, nie programowa.
+Czyli **wgrywanie firmware na układ, który nie ma własnej sieci ani dostępnej konsoli, działa po
+drucie, z panelu pada.** Ostatnie ręczne wgranie przez BOOT+RESET było potrzebne tylko raz, żeby
+dostarczyć tam odbiornik i tablicę partycji.
 
-Diagnozę umożliwił przyrząd dołożony na miejscu: `/api/state` niesie teraz `sent`, `recv`,
-`crc_err` i piny łącza. Bez niego nie dało się rozdzielić „ten układ nie nadaje" od „drut nie
-przenosi", bo jedyna dostępna konsola była konsolą drugiego układu.
+#### Cztery błędy, wszystkie moje, wszystkie znalezione dopiero pomiarem
 
-#### Sprostowanie do decyzji „bez retransmisji"
+Warto je zapisać razem, bo każdy udawał coś innego, niż był.
 
-Uzasadniłem brak retransmisji tym, że łącze ma zmierzone zero błędów CRC na 19 884 ramkach. **To była
-własność kierunku wejścia→pad.** Kierunku powrotnego nikt nigdy nie mierzył, a ja oparłem na tym
-decyzję projektową — dokładnie ten błąd, który te notatki opisują w innych miejscach: wniosek z
-jednego pomiaru rozciągnięty na rzecz, której nie mierzono.
+**1. Watchdog ciszy peera czyścił układowi wejść jego własny stan.** Regresja wprowadzona refaktorem
+dwukierunkowym: dałem temu układowi odbiornik, żeby firmware mogło do niego dotrzeć, ale watchdog
+„peer milczy, więc skasuj to, co trzymał" jest **treścią roli odbiorczej**, nie maszynerią kierunku.
+Na układzie wejść stan pochodzi z jego **własnego** hosta USB, a pad nadaje tylko w trakcie
+wgrywania — więc watchdog odpalał stale i zawsze błędnie.
 
-Jeśli styk nie da się zrobić pewnie, właściwą odpowiedzią jest retransmisja, a nie obejście. Wymaga
-dołożenia **przesunięcia do ramek danych**, bo `esp_ota_write()` jest sekwencyjny i nie da się go
-cofnąć: odbiorca musi umieć pominąć duplikat i wykryć lukę. Bez przesunięcia powtórzone okno
-zapisałoby te same bajty drugi raz i obraz by się nie zweryfikował.
+Objaw był widoczny godzinami i brałem go za usypianie dongli: `usb ifaces 4 (kbd=0 mouse=0)` przy
+obu dongle'ach włożonych, `kbd=False` w panelu. W logu stało wprost `peer silent for 1500 ms -
+clearing its input state`. Po naprawie od razu `kbd=True mouse=True`.
+
+**2. Limit 3 s na potwierdzenie ramki BEGIN.** Peer potwierdza ją dopiero **po** `esp_ota_begin()`,
+które **kasuje** obszar flasha pod obraz — dla 330 kB to sekunda albo dwie, zmiennie. Raz się
+mieściło, raz nie, co wyglądało **dokładnie jak niepewny styk** i przez to kazałem właścicielowi
+szukać zimnego lutu. Teraz 15 s, z powtórkami.
+
+**3. Brak retransmisji, uzasadniony pomiarem, którego nie zrobiłem.** Opisane wyżej.
+
+**4. Mój własny przyrząd zwracał jeden komunikat na trzy przyczyny.** `/api/ota/peer` odpowiadał
+„transfer failed" niezależnie od tego, czy peer odmówił, czy liczba bajtów się nie zgodziła, czy nie
+przyszło nic. Gdy zaczął przekazywać konkretny `esp_err`, właściwe miejsce wskazało się w jednym
+przebiegu. Ósmy raz w tym projekcie, gdy przyrząd kłamał spójnie.
+
+Do tego jedna pomyłka w odczycie, nie w kodzie: filtrowałem wyjście monitora na **ostatnie 16 linii**
+i przez to zgubiłem właśnie tę, która rozstrzygała — a potem na podstawie jednego udanego przebiegu
+ogłosiłem, że diagnoza o kablu była mylna. Następny pomiar to odwrócił. Wniosek z jednej próbki,
+czyli ten sam błąd, który te notatki opisują przy porównywaniu przebiegów o różnym ruchu ręki.
 
 ### 4.39 Passthrough na skrót: dwie tożsamości USB, nie jedno urządzenie złożone
 
