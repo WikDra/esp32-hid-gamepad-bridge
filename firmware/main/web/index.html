@@ -244,6 +244,37 @@ td select{width:100%;padding:7px 8px;min-height:38px}
       <label for="invert_y" style="margin:0">Invert vertical aiming</label>
     </div>
   </div>
+
+  <div class="card">
+    <h2>Left stick floor while aiming</h2>
+    <div class="tune">
+      <div class="head"><label for="ls_min">Minimum left stick</label>
+        <span class="val" id="ls_min_v"></span></div>
+      <input type="range" id="ls_min" min="0" max="60" step="1">
+      <div class="hint">Holds the left stick at this much whenever the right stick is deflected, and
+      lets go as soon as the mouse stops. It is a <b>floor</b>, not an addition: real WASD input above
+      it passes through untouched, and input below it is scaled up along the direction you are already
+      pushing.</div>
+    </div>
+
+    <div class="tune">
+      <label for="ls_min_dir">Direction when you are not moving</label>
+      <select id="ls_min_dir" style="width:100%">
+        <option value="0">Forward</option>
+        <option value="1">Back</option>
+        <option value="2">Left</option>
+        <option value="3">Right</option>
+      </select>
+      <div class="hint">Only used when the left stick is centred — a magnitude with no direction is
+      not a vector.</div>
+    </div>
+
+    <p class="hint"><b>What this is, plainly.</b> Every other setting here translates input you
+    actually made. This one <b>fabricates</b> stick deflection you did not make, and the reason to
+    want it is that some games treat “the player is moving” as a precondition for aim assistance. In
+    multiplayer titles that is the kind of input modification that terms of service and anti-cheat
+    address. It is off at 0, which is the default.</p>
+  </div>
 </section>
 
 <!-- -------------------------------------------------------------- mapping -->
@@ -434,6 +465,7 @@ const configToForm = c => ({
   name: c.name || "",
   div_x: c.div_x, div_y: c.div_y, tau_ms: c.tau_ms,
   anti_dz: c.anti_dz, invert_y: c.invert_y ? 1 : 0, curve: c.curve,
+  ls_min: c.ls_min, ls_min_dir: c.ls_min_dir,
   binds: (c.binds || []).map(b => `${b.src}:${b.code}:${b.action}`).join(","),
 });
 
@@ -591,7 +623,7 @@ function bindSlider(id, fmt) {
   bindSlider[id] = fmt;
 }
 function renderTuning() {
-  for (const id of ["div_x", "div_y", "tau_ms", "anti_dz", "curve"]) {
+  for (const id of ["div_x", "div_y", "tau_ms", "anti_dz", "curve", "ls_min"]) {
     $(id).value = cfg[id];
     $(id + "_v").textContent = bindSlider[id](cfg[id]);
   }
@@ -599,6 +631,7 @@ function renderTuning() {
   $("div_x_h").textContent = speed(cfg.div_x);
   $("div_y_h").textContent = speed(cfg.div_y);
   $("invert_y").checked = !!cfg.invert_y;
+  $("ls_min_dir").value = cfg.ls_min_dir;
   $("pname").value = cfg.name || "";
   drawCurve();
 }
@@ -640,6 +673,11 @@ bindSlider("div_y",   v => v);
 bindSlider("tau_ms",  v => v + " ms");
 bindSlider("anti_dz", v => v + " %");
 bindSlider("curve",   v => (v / 100).toFixed(2) + (v == 100 ? " (off)" : ""));
+bindSlider("ls_min",  v => v == 0 ? "off" : v + " %");
+$("ls_min_dir").addEventListener("change", () => {
+  cfg.ls_min_dir = +$("ls_min_dir").value;
+  pushConfig();
+});
 $("invert_y").addEventListener("change", () => {
   cfg.invert_y = $("invert_y").checked ? 1 : 0;
   pushConfig();

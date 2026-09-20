@@ -424,6 +424,8 @@ static struct {
     int32_t anti_dz; /* in axis units, not percent */
     bool invert_y;
     bool curve_on;
+    int32_t ls_min;     /* left-stick floor in axis units, 0 = off */
+    uint8_t ls_min_dir;
 } s_tune = { .gen = UINT32_MAX, .ema_ticks = 1, .denom_x = 1, .denom_y = 1 };
 
 /*
@@ -486,6 +488,10 @@ static void tune_refresh(void)
 
     /* Linear means "do nothing", not "apply an identity table": skipping the step keeps the default
      * path exactly the arithmetic that was measured on hardware. */
+    /* Percent to axis units, once, so the hot path compares integers. */
+    s_tune.ls_min = ((int32_t)cfg->lstick_min * AXIS_MAX) / 100;
+    s_tune.ls_min_dir = cfg->lstick_min_dir;
+
     s_tune.curve_on = (cfg->mouse_curve != BRIDGE_CURVE_LINEAR);
     if (s_tune.curve_on) {
         curve_build(cfg->mouse_curve);
@@ -625,6 +631,67 @@ static void stick_from_mouse(const hid_input_state_t *st, int8_t *out_x, int8_t 
     *out_y = clamp_axis(y);
 }
 
+/*
+ * Holds the left stick at a minimum magnitude while the right stick is being moved.
+ *
+ * A FLOOR, NOT AN ADDITION, and that is what keeps it from fighting real input: WASD above the floor
+ * passes through untouched, and anything below it is scaled up along the direction it already has.
+ * Adding a fixed vector instead would bend every diagonal and make full deflection overshoot.
+ *
+ * Only a centred left stick needs a direction chosen for it, because a magnitude without a direction
+ * is not a vector. That is the one case lstick_min_dir decides.
+ *
+ * See bridge_config.h for what this feature actually is and why it is off by default.
+ */
+static void apply_lstick_floor(gamepad_state_t *out)
+{
+    if (s_tune.ls_min == 0) {
+        return;
+    }
+
+    /*
+     * "The right stick is moving" means it is deflected at all. Two units rather than one because the
+     * filter's last step before centring can sit at one, and a floor that flickers on and off at the
+     * end of every mouse movement would be worse than none.
+     */
+    const uint32_t rmag =
+        isqrt32((uint32_t)((int32_t)out->rx * out->rx) + (uint32_t)((int32_t)out->ry * out->ry));
+    if (rmag < 2) {
+        return;
+    }
+
+    int32_t lx = out->lx;
+    int32_t ly = out->ly;
+    const uint32_t lmag = isqrt32((uint32_t)(lx * lx) + (uint32_t)(ly * ly));
+
+    if (lmag >= (uint32_t)s_tune.ls_min) {
+        return; /* the player is already pushing at least this hard */
+    }
+
+    if (lmag == 0) {
+        switch (s_tune.ls_min_dir) {
+        case 1:
+            ly = s_tune.ls_min; /* back; in HID the Y axis grows downwards */
+            break;
+        case 2:
+            lx = -s_tune.ls_min;
+            break;
+        case 3:
+            lx = s_tune.ls_min;
+            break;
+        default:
+            ly = -s_tune.ls_min; /* forward */
+            break;
+        }
+    } else {
+        lx = (int32_t)(((int64_t)lx * s_tune.ls_min) / (int32_t)lmag);
+        ly = (int32_t)(((int64_t)ly * s_tune.ls_min) / (int32_t)lmag);
+    }
+
+    out->lx = clamp_axis(lx);
+    out->ly = clamp_axis(ly);
+}
+
 static void mapper_task(void *arg)
 {
     const TickType_t period = pdMS_TO_TICKS(1000 / CONFIG_APP_REPORT_RATE_HZ);
@@ -686,6 +753,9 @@ static void mapper_task(void *arg)
         gamepad_state_t out = {0};
         map_digital(&in, &out);
         stick_from_mouse(&in, &out.rx, &out.ry);
+        /* After both, because it needs the right stick to know whether to act and the left stick to
+         * know whether it already exceeds the floor. */
+        apply_lstick_floor(&out);
 
 #if CONFIG_APP_DEBUG_PAD_RATE_PROBE
         /*

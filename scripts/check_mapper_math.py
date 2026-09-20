@@ -369,6 +369,72 @@ def check_curve():
     return problems
 
 
+def lstick_floor(lx, ly, rx, ry, ls_min, direction=0):
+    """Mirrors apply_lstick_floor() in input_mapper.c."""
+    if ls_min == 0:
+        return lx, ly
+    if isqrt32(rx * rx + ry * ry) < 2:
+        return lx, ly
+    lmag = isqrt32(lx * lx + ly * ly)
+    if lmag >= ls_min:
+        return lx, ly
+    if lmag == 0:
+        return {0: (0, -ls_min), 1: (0, ls_min), 2: (-ls_min, 0), 3: (ls_min, 0)}[direction]
+    return cdiv(lx * ls_min, lmag), cdiv(ly * ls_min, lmag)
+
+
+def check_lstick_floor():
+    """
+    The properties that make this a floor rather than an addition. Getting any of them wrong would be
+    felt as the character drifting or as WASD fighting the bridge, not seen as a wrong number.
+    """
+    problems = []
+
+    # Off means untouched, including with the right stick fully deflected. This is the default, so a
+    # failure here would change behaviour for everybody who never enables the feature.
+    for lx, ly in ((0, 0), (127, 0), (-90, 90)):
+        if lstick_floor(lx, ly, 127, 127, 0) != (lx, ly):
+            problems.append(f"disabled floor altered {lx},{ly}")
+
+    for m in (10, 25, 60):
+        ls = (m * AXIS_MAX) // 100
+
+        # A still right stick must never trigger it - otherwise the character walks on its own.
+        if lstick_floor(0, 0, 0, 0, ls) != (0, 0):
+            problems.append(f"{m}%: floor applied with the right stick centred")
+        if lstick_floor(0, 0, 1, 0, ls) != (0, 0):
+            problems.append(f"{m}%: floor applied at right-stick magnitude 1 (filter residue)")
+
+        # Active: a centred left stick leans the configured way, at exactly the floor.
+        for d, expect in ((0, (0, -ls)), (1, (0, ls)), (2, (-ls, 0)), (3, (ls, 0))):
+            got = lstick_floor(0, 0, 40, 0, ls, d)
+            if got != expect:
+                problems.append(f"{m}% dir {d}: centred stick gave {got}, expected {expect}")
+
+        # Real input ABOVE the floor is untouched. This is what makes it a floor.
+        for lx, ly in ((127, 0), (0, 127), (90, 90), (-90, -90)):
+            if lstick_floor(lx, ly, 40, 0, ls) != (lx, ly):
+                problems.append(f"{m}%: input {lx},{ly} above the floor was modified")
+
+        # Input BELOW the floor is scaled up along its own direction, not replaced.
+        lx, ly = 3, 4  # magnitude 5, a clean ratio
+        gx, gy = lstick_floor(lx, ly, 40, 0, ls)
+        gmag = isqrt32(gx * gx + gy * gy)
+        if abs(gmag - ls) > 2:
+            problems.append(f"{m}%: scaled magnitude {gmag}, expected about {ls}")
+        # Direction preserved: 3,4 must stay in the same ratio, so gx*4 == gy*3 within rounding.
+        if abs(gx * 4 - gy * 3) > 6:
+            problems.append(f"{m}%: direction not preserved, {lx},{ly} -> {gx},{gy}")
+
+        # Never out of range.
+        for lx, ly in ((0, 0), (1, 1), (127, 127), (-127, -127)):
+            gx, gy = lstick_floor(lx, ly, 40, 0, ls)
+            if clamp_axis(gx) != gx or clamp_axis(gy) != gy:
+                problems.append(f"{m}%: {lx},{ly} left int8 range as {gx},{gy}")
+
+    return problems
+
+
 def main():
     groups = (
         ("defaults reproduce the pre-refactor arithmetic", check_equivalence()),
@@ -376,6 +442,7 @@ def main():
         ("sensitivity is independent of the task rate", check_rate_independence()),
         ("filter resolution, centring and time constant", check_filter_behaviour()),
         ("response curve", check_curve()),
+        ("left-stick floor", check_lstick_floor()),
     )
 
     failed = False

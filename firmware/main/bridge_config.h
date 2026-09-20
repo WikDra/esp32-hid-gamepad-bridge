@@ -37,8 +37,9 @@ extern "C" {
  * not worth guessing at, and falling back to the documented defaults is always safe.
  *
  * 2: added mouse_curve.
+ * 3: added lstick_min and lstick_min_dir.
  */
-#define BRIDGE_CONFIG_VERSION 2
+#define BRIDGE_CONFIG_VERSION 3
 
 #define BRIDGE_PROFILE_COUNT    4
 #define BRIDGE_PROFILE_NAME_MAX 16
@@ -59,6 +60,11 @@ extern "C" {
 #define BRIDGE_CURVE_MIN     25
 #define BRIDGE_CURVE_MAX     400
 #define BRIDGE_CURVE_LINEAR  100
+
+/* Left-stick floor: percent of full deflection, 0 disables. Capped well below full because the point
+ * is a small lean, and anything large would simply be walking. */
+#define BRIDGE_LSTICK_MIN_MAX 60
+#define BRIDGE_LSTICK_DIR_MAX 3
 
 /* Smoothing time constant default: the value tuned by hand at 100 Hz (AGENTS.md 4.22). */
 #define BRIDGE_MOUSE_TAU_DEFAULT 80
@@ -113,6 +119,29 @@ typedef struct {
      * somebody asks for a curve.
      */
     uint16_t mouse_curve;
+
+    /*
+     * Minimum LEFT stick deflection held while the RIGHT stick is being moved, as a percentage of
+     * full. 0 disables it, which is the default, and the code skips the step entirely at 0.
+     *
+     * WHAT IT ACTUALLY DOES, stated plainly because the name does not say it: this FABRICATES stick
+     * input the user did not make. Every other knob here translates real input - the curve reshapes
+     * it, the deadzone compensation lifts it, the divisors scale it. This one adds a deflection on
+     * its own, conditioned on the mouse moving, and the reason anybody wants it is that some games
+     * treat "the player is moving" as a precondition for aim assistance. In multiplayer titles that
+     * is squarely the kind of input modification terms of service and anti-cheat address.
+     *
+     * It is off by default and stays off unless somebody sets it.
+     *
+     * Applied as a FLOOR on the magnitude, not as an addition: real WASD input above the floor is
+     * left completely alone, and input below it is scaled up along its own direction. Only when the
+     * left stick is centred does lstick_min_dir decide which way to lean, because a magnitude with
+     * no direction is not a vector.
+     */
+    uint8_t lstick_min;
+
+    /* Direction used only when the left stick is centred: 0 forward, 1 back, 2 left, 3 right. */
+    uint8_t lstick_min_dir;
 
     /* Binding table. bind_count rows of binds[] are in force. */
     uint8_t bind_count;

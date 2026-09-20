@@ -58,6 +58,10 @@ void bridge_config_defaults(bridge_config_t *out)
      * arithmetic the 997 Hz and 830 Hz figures were measured with. */
     out->mouse_curve = BRIDGE_CURVE_LINEAR;
 
+    /* Off. This one fabricates input rather than translating it, so it stays off until asked for. */
+    out->lstick_min = 0;
+    out->lstick_min_dir = 0;
+
     input_bind_t binds[INPUT_BIND_MAX];
     size_t n = input_mapper_default_binds(binds, INPUT_BIND_MAX);
     if (n > INPUT_BIND_MAX) {
@@ -139,6 +143,15 @@ bool bridge_config_validate(bridge_config_t *cfg)
     v = clamp_u16(cfg->mouse_curve, BRIDGE_CURVE_MIN, BRIDGE_CURVE_MAX);
     if (v != cfg->mouse_curve) {
         cfg->mouse_curve = v;
+        ok = false;
+    }
+
+    if (cfg->lstick_min > BRIDGE_LSTICK_MIN_MAX) {
+        cfg->lstick_min = BRIDGE_LSTICK_MIN_MAX;
+        ok = false;
+    }
+    if (cfg->lstick_min_dir > BRIDGE_LSTICK_DIR_MAX) {
+        cfg->lstick_min_dir = 0;
         ok = false;
     }
 
