@@ -258,7 +258,9 @@ descriptor here is byte-for-byte a real controller's, checked against a Wireshar
   the USB Serial/JTAG peripheral shares GPIO19/20 with USB-OTG, so the console must move to
   UART. One adapter is enough — it swaps between the boards.
 - **A powered hub** for the input devices, and a USB-C to USB-A OTG adapter for the host board.
-- **Three wires between the boards:** `GPIO4` → `GPIO5` (crossed) and a common ground.
+- **Three wires between the boards:** the data pair crossed twice — each board transmits on `GPIO4`
+  and listens on `GPIO5` — plus a common ground. The reverse direction is what lets the pad's panel
+  update the input chip's firmware, which otherwise needs BOOT and RESET held by hand.
 
 Input devices can be plugged in directly or, as in the setup this was developed on, through
 their **2.4 GHz dongles** — which keeps the keyboard and mouse wireless and draws far less
@@ -361,10 +363,11 @@ the PC.
 > **The pad variant uses a different partition table** ([`firmware/partitions.csv`](firmware/partitions.csv)),
 > because firmware updates need two application slots. That moves NVS, so the first flash with it
 > wipes whatever was stored — which costs nothing here, since this variant has no Bluetooth bonds.
-> If you are updating an existing checkout, **delete `firmware/sdkconfig.win.esp32s3.s3pad` once**:
-> a value already in a generated sdkconfig beats a defaults file, so otherwise the build quietly
-> keeps the old single-slot table and updates fail. The firmware logs a warning at startup when
-> that has happened.
+> **The input chip needs the same table**, since it receives an image over the wire into its spare
+> slot. If you are updating an existing checkout, **delete `firmware/sdkconfig.win.esp32s3.s3pad`
+> and `firmware/sdkconfig.win.esp32s3.s3input` once**: a value already in a generated sdkconfig
+> beats a defaults file, so otherwise the build quietly keeps the old single-slot table and updates
+> fail. The firmware logs a warning at startup when that has happened.
 
 Enabled with `APP_WEBUI`, **on both chips** — the pad chip runs the panel, the input chip has the
 keyboard and so is the only one that can see the hotkeys.
@@ -555,24 +558,33 @@ deliberately.
 
 ## Known limitations
 
-> **The mouse-to-stick arithmetic changed after the Bluetooth build was last verified on
-> hardware, and that change is UNTESTED over BLE.** `input_mapper.c` now expresses the filter
-> time constant and the sensitivity in time rather than in task ticks, and no longer truncates the
-> result to whole mouse counts per tick (`AGENTS.md` §4.40). It was measured on the USB pad only.
+> **Three changes to code shared by both transports have landed since the Bluetooth build was
+> last verified on hardware, and none of them has run on a BLE chip.** They are listed here rather
+> than buried, because "it builds" is not "it works" and this is the project's one open gap.
 >
-> At a 100 Hz report rate, which is what the BLE build uses, the nominal sensitivity and time
-> constant come out identical to the hand-tuned values of `AGENTS.md` §4.22. What differs is
-> resolution: small movements now register proportionally instead of being rounded away, so the
-> right stick will feel finer and possibly livelier than before.
+> **1. The mouse-to-stick arithmetic** (`AGENTS.md` §4.40). `input_mapper.c` now expresses the
+> filter time constant and the sensitivity in time rather than in task ticks, and no longer
+> truncates the result to whole mouse counts per tick. At the 100 Hz rate the BLE build uses, the
+> nominal sensitivity and time constant come out identical to the hand-tuned values of §4.22; what
+> differs is resolution, so the right stick should feel finer and possibly livelier than before.
 >
-> **If the BLE build misbehaves, go back to commit `c25c017`** — the last commit with the
-> arithmetic exactly as it was when the Bluetooth bridge was verified end to end, and one that
-> already contains all of the USB work:
+> **2. The mapping is now a table** rather than a hardcoded chain of comparisons, and the settings
+> behind it live in NVS. `s_default_binds[]` reproduces the old chain row for row, and an empty NVS
+> means the Kconfig values are used, so behaviour should be bit-identical out of the box — that was
+> the design goal rather than a happy accident. Two things genuinely differ: the mapper now refuses
+> to start until a configuration has been published, and left-stick axes are clamped to −1..1
+> because an editable table can bind two keys to one direction, which the old chain could not.
 >
-> ```
-> git checkout c25c017          # inspect it
-> git revert 9a5f535            # or drop just this change on a branch
-> ```
+> **3. `chip_link` became bidirectional**, for the firmware push described above. The frame payload
+> grew from 8 to 192 bytes and the UART buffers from 512 to 2048. Direction is now derived from
+> which pins are configured, and on the BLE split only one direction is wired, so those conditions
+> should reduce to exactly the old behaviour.
+>
+> What is verified: all six configurations build with no warnings, and
+> `scripts/check_mapper_math.py` asserts the arithmetic properties that broke before. What is not:
+> a single run on the C3, C6 or H2. **If the BLE build misbehaves, `git log` on `main` is the safe
+> ground** — every one of these changes is on the `usb-webui` branch, and `main` is the tree that
+> was verified end to end over Bluetooth.
 
 - **Bluetooth input rate is capped at 66 Hz (15 ms).** As central, the controller refuses to
   *initiate* any connection interval below 15 ms, returning HCI `0x12` — measured identically on

@@ -67,8 +67,8 @@ columns counted from the USB end downwards:
 |---|---|
 | **TX** (GPIO43) | console, UART0 TX → adapter's **RXD** |
 | **RX** (GPIO44) | console, UART0 RX ← adapter's **TXD** |
-| **GPIO4** | inter-chip link, UART1 **TX** (only board A transmits) |
-| **GPIO5** | inter-chip link, UART1 **RX** (only board B receives) |
+| **GPIO4** | inter-chip link, UART1 **TX** — on both boards |
+| **GPIO5** | inter-chip link, UART1 **RX** — on both boards |
 | **GND** | ground — shared by the link and the adapter, mandatory |
 | **5V** | power **in** |
 | **3V3** | the board's regulator **output** — do not feed anything into it |
@@ -106,20 +106,28 @@ take the console's pins. They sit next to each other on the header, so the jumpe
 
 ## 2. Board A ↔ Board B: the link
 
-| Board A (`s3input`) | → | Board B (`s3pad`) | Signal | Required |
+| Board A (`s3input`) | ↔ | Board B (`s3pad`) | Signal | Required |
 |---|---|---|---|---|
 | GPIO4 | → | GPIO5 | input frames, 921600 8N1 | **yes** |
 | GND | — | GND | shared ground | **yes** |
-| GPIO5 | ← | GPIO4 | reverse channel, unused today | no, but worth soldering |
+| GPIO5 | ← | GPIO4 | firmware to board A, and its acknowledgements | **yes, for updates** |
 
-**Two wires are enough**: board A's GPIO4 to board B's GPIO5, and ground to ground. The link is
-one-directional because the receiver has nothing to ask the transmitter — it owns the pad and
-makes every decision.
+**Three wires**, and the data pair is crossed twice: each board transmits on GPIO4 and listens on
+GPIO5, so A's GPIO4 goes to B's GPIO5 and B's GPIO4 goes to A's GPIO5. Ground is shared.
 
-The third wire (board B's GPIO4 to board A's GPIO5) is not driven by the firmware: `s3pad` has
-`APP_LINK_TX_GPIO=-1`, which `uart_set_pin()` reads as "leave that pin alone". It is still worth
-running it now, as a ready place for a reverse channel should board B's log ever need to travel
-through board A.
+The reverse wire used to be optional, and this document said so. It is now what makes board A
+updatable at all: its USB port is the host side and its console needs the USB-UART adapter, so
+without that wire every firmware change there means holding BOOT and RESET on the board. With it,
+the pad's web panel pushes an image across and board A reboots into it — 330 kB in about 16 s.
+
+Leave it out and everything else still works; you simply keep flashing board A by hand.
+
+**Make this wire properly.** It was the last thing to go wrong on the bench, and the failure is
+misleading: a joint that measures open on a meter, or one that conducts intermittently, produces
+frame losses rather than silence. The protocol resends whatever is lost, so a marginal joint shows
+up as a transfer that is slow or that gives up after several attempts — not as an obvious dead link.
+The panel's System tab reports the link's frame and CRC-error counters, which is the quickest way to
+tell a bad joint from anything else.
 
 The convention is symmetric — **GPIO4 is always TX, GPIO5 is always RX** — so the cable is a plain
 crossover and there is no way to get it backwards.

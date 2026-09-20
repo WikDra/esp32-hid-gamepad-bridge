@@ -256,7 +256,9 @@ przez `scripts/check_xinput_descriptor.py` — i to na **zbudowanej binarce**, n
   USB Serial/JTAG dzieli GPIO19/20 z USB-OTG, więc konsola musi zejść na UART. Jedna przejściówka
   wystarcza — przekłada się między płytkami.
 - **Zasilany hub** na urządzenia wejściowe i przejściówka USB-C na USB-A (OTG) do płytki hosta.
-- **Trzy druty między płytkami:** `GPIO4` → `GPIO5` (skrzyżowane) i wspólna masa.
+- **Trzy druty między płytkami:** para danych skrzyżowana dwukrotnie — każda płytka nadaje na
+  `GPIO4` i słucha na `GPIO5` — plus wspólna masa. Kierunek powrotny jest tym, co pozwala panelowi
+  pada aktualizować firmware układu wejść, co inaczej wymaga trzymania BOOT i RESET ręcznie.
 
 Urządzenia wejściowe można wetknąć wprost albo, jak w zestawie, na którym to powstawało, przez ich
 **dongle 2,4 GHz** — co pozostawia klawiaturę i mysz bezprzewodowe i pobiera znacznie mniej prądu,
@@ -316,6 +318,7 @@ liczbą o tym firmware, a nie o radiu.
 |---|---|
 | `Ctrl+Alt+W` | włącza i wyłącza Wi-Fi razem z panelem |
 | `Ctrl+Alt+P` | wymusza własny punkt dostępowy i podnosi Wi-Fi, jeśli było wyłączone |
+| `Ctrl+Alt+1`…`4` | wczytuje profil konfiguracji 0–3, bez panelu i bez Wi-Fi |
 
 Bez zapisanych danych sieci mostek serwuje punkt dostępowy `hid-bridge-XXXX`, gdzie `XXXX` pochodzi
 z MAC. **Hasło jest wypisywane w konsoli przy starcie** i — o ile nie ustawisz
@@ -329,14 +332,15 @@ trzeba by sięgnąć po przejściówkę szeregową.
 
 Co można zmienić:
 
+- **Krzywa odpowiedzi**, żeby skasować tę, którą narzuca gra i nie daje wyłączyć. Część gier tłumi małe wychylenia gałki, żeby dała się kontrolować palcem; mysz tego nie potrzebuje, a tłumienie walczy z precyzyjnym celowaniem. Wykładnik poniżej 1,00 kompensuje z wyprzedzeniem — przeciw grze podnoszącej wejście do kwadratu 0,50 przywraca liniowość pary. Nie odwróci akceleracji narastającej **w czasie**, bo ta zależy od historii, a nie od bieżącej wartości. Rysowana w panelu jako wykres, bo nikt nie wyobraża sobie „0,65”.
 - **Mysz na prawą gałkę:** czułość osobno na każdą oś, stała czasowa wygładzania, inwersja Y oraz
   kompensacja martwej strefy — podnosi każde niezerowe wychylenie powyżej wewnętrznej strefy, którą
   gry odrzucają, i działa na **długości** wektora, więc skosy nie przestrzeliwują. Zmiany działają
   natychmiast, czyli nastawa oceniana wyczuciem nie wymaga już przebudowy i wgrywania.
-- **Mapowanie**, jako tabela: wciskasz *Listen*, potem klawisz na klawiaturze obsługiwanej przez
-  mostek, i przypisanie jest gotowe. Każdy nominalny przycisk jest opisany kontrolką Xbox, którą
-  steruje.
-- **Cztery profile w NVS**, z nazwami, z eksportem i importem jako plik JSON.
+- **Minimalne wychylenie lewej gałki trzymane w trakcie ruchu prawą**, domyślnie wyłączone. W odróżnieniu od każdej innej nastawy tutaj ta *fabrykuje* wychylenie, którego nie wykonałeś — powodem, by tego chcieć, jest to, że część gier traktuje „gracz się porusza” jako warunek wstępny wspomagania celowania, a w grach wieloosobowych to właśnie ten rodzaj modyfikacji wejścia, którym zajmują się regulaminy i systemy antycheat. Jest podłogą, nie dodatkiem, więc realny ruch powyżej niej przechodzi nietknięty.
+- **Mapowanie**, jako tabela: klikasz **nazwę klawisza** w kolumnie *Input*, potem wciskasz ten klawisz na klawiaturze obsługiwanej przez mostek, i przypisanie jest gotowe. Każdy nominalny przycisk jest opisany kontrolką Xbox, którą steruje.
+- **Cztery profile w NVS**, z nazwami, z eksportem i importem jako plik JSON. Każdy ma przycisk **Default**, który wstawia do tego slotu ustawienia fabryczne i tam je zostawia; aktywny profil się nie zmienia, więc zresetowanie tego, którego nie używasz, nie może cię na niego przestawić. Edytor mapowania ma własne **Restore default mapping**, które nie rusza czułości ani wygładzania.
+- **Firmware obu układów.** Pad aktualizuje się sam po Wi-Fi; układ wejść *przez drut między płytkami*, bo jego port USB to strona hosta i nie ma własnej sieci. Każda ramka danych niesie swoje przesunięcie, więc uszkodzona jest po prostu powtarzana — zmierzone odzyskanie trzech złych ramek z 1199 na realnym transferze. 330 kB idzie około 16 s.
 - **Firmware**, przez wgranie `hid_gamepad_bridge.bin`. Obraz jest weryfikowany przed jakimkolwiek
   restartem i potwierdzany dopiero po tym, jak nowy firmware utrzyma się 30 s — więc taki, który
   się wywala albo wpada w pętlę restartów, wycofuje się sam.
@@ -355,10 +359,12 @@ tempo raportów mierzone po stronie urządzenia — tę samą liczbę, którą `
 > **Wariant pada używa innej tablicy partycji**
 > ([`firmware/partitions.csv`](firmware/partitions.csv)), bo aktualizacja firmware'u potrzebuje
 > dwóch slotów aplikacji. To przesuwa NVS, więc pierwsze wgranie kasuje, co tam było — co tutaj nic
-> nie kosztuje, bo ten wariant nie ma bondów Bluetooth. Jeśli aktualizujesz istniejący klon,
-> **usuń raz `firmware/sdkconfig.win.esp32s3.s3pad`**: wartość już obecna w wygenerowanym
-> sdkconfigu wygrywa z plikiem defaults, więc inaczej build po cichu zostawi starą
-> jednoslotową tablicę i aktualizacje będą padać. Firmware ostrzega o tym w logu przy starcie.
+> nie kosztuje, bo ten wariant nie ma bondów Bluetooth. **Układ wejść potrzebuje tej samej tablicy**,
+> bo odbiera obraz po drucie do swojego zapasowego slotu. Jeśli aktualizujesz istniejący klon,
+> **usuń raz `firmware/sdkconfig.win.esp32s3.s3pad` oraz `firmware/sdkconfig.win.esp32s3.s3input`**:
+> wartość już obecna w wygenerowanym sdkconfigu wygrywa z plikiem defaults, więc inaczej build po
+> cichu zostawi starą jednoslotową tablicę i aktualizacje będą padać. Firmware ostrzega o tym
+> w logu przy starcie.
 
 Włącza się opcją `APP_WEBUI`, **na obu układach** — panel prowadzi układ pada, a skróty widzi tylko
 układ wejść, bo tam jest klawiatura.
@@ -541,25 +547,35 @@ port z wyłączonymi oboma i nie zrestartuje układu, a `reset_monitor.py` reset
 
 ## Znane ograniczenia
 
-> **Arytmetyka przeliczania myszy na gałkę zmieniła się po tym, jak wariant Bluetooth był
-> ostatnio weryfikowany na sprzęcie, i ta zmiana jest po BLE NIEPRZETESTOWANA.**
-> `input_mapper.c` wyraża teraz stałą czasową filtra i czułość w czasie, a nie w tikach zadania,
-> i nie obcina już wyniku do całych zliczeń myszy na tik (`AGENTS.md` §4.40). Zmierzone zostało to
-> wyłącznie na padzie USB.
+> **Trzy zmiany w kodzie wspólnym dla obu transportów weszły po tym, jak wariant Bluetooth był
+> ostatnio weryfikowany na sprzęcie, i żadna z nich nie uruchomiła się na układzie BLE.** Są
+> wymienione tutaj, a nie zakopane, bo „kompiluje się” to nie „działa”, a to jedyna otwarta luka
+> tego projektu.
 >
-> Przy tempie 100 Hz, którego używa wariant BLE, nominalna czułość i stała czasowa wychodzą
-> identyczne jak w wartościach dobranych ręcznie w `AGENTS.md` §4.22. Różni się rozdzielczość:
-> drobne ruchy liczą się teraz proporcjonalnie, zamiast być zaokrąglane do zera, więc prawa gałka
-> będzie bardziej precyzyjna i możliwie żywsza niż dotąd.
+> **1. Arytmetyka przeliczania myszy na gałkę** (`AGENTS.md` §4.40). `input_mapper.c` wyraża teraz
+> stałą czasową filtra i czułość w czasie, a nie w tikach zadania, i nie obcina już wyniku do całych
+> zliczeń myszy na tik. Przy tempie 100 Hz, którego używa wariant BLE, nominalna czułość i stała
+> czasowa wychodzą identyczne jak w wartościach dobranych ręcznie w §4.22; różni się
+> rozdzielczość, więc prawa gałka powinna być precyzyjniejsza i możliwie żywsza niż dotąd.
 >
-> **Jeśli wariant BLE zacznie się dziwnie zachowywać, wróć do commita `c25c017`** — to ostatni
-> commit z arytmetyką dokładnie w takim stanie, w jakim mostek Bluetooth był weryfikowany
-> end-to-end, i zawiera już całą pracę nad USB:
+> **2. Mapowanie jest teraz tablicą**, a nie zaszytym łańcuchem porównań, a nastawy za nim żyją
+> w NVS. `s_default_binds[]` odtwarza stary łańcuch wiersz w wiersz, a puste NVS znaczy, że używane
+> są wartości z Kconfig — więc zachowanie powinno być bajt w bajt takie jak dotąd, i to był cel
+> projektowy, nie szczęśliwy zbieg. Dwie rzeczy różnią się realnie: mapper odmawia teraz startu,
+> dopóki konfiguracja nie zostanie opublikowana, a osie lewej gałki są przycinane do −1..1, bo
+> edytowalna tablica pozwala przypisać dwa klawisze do jednego kierunku, czego stary łańcuch nie
+> potrafił.
 >
-> ```
-> git checkout c25c017          # zobaczyc
-> git revert 9a5f535            # albo cofnac sama te zmiane na galezi
-> ```
+> **3. `chip_link` stał się dwukierunkowy**, dla opisanego wyżej przepychania firmware'u. Ładunek
+> ramki wzrósł z 8 na 192 bajty, a bufory UART z 512 na 2048. Kierunek wynika teraz z tego, które
+> piny są skonfigurowane, a na podziale BLE podłączony jest tylko jeden kierunek, więc te warunki
+> powinny zredukować się dokładnie do starego zachowania.
+>
+> Co jest zweryfikowane: wszystkie sześć konfiguracji buduje się bez ostrzeżeń, a
+> `scripts/check_mapper_math.py` sprawdza własności arytmetyczne, które wcześniej się psuły. Co nie
+> jest: ani jeden przebieg na C3, C6 czy H2. **Jeśli wariant BLE zacznie się dziwnie zachowywać,
+> bezpiecznym gruntem jest `main`** — każda z tych zmian siedzi na gałęzi `usb-webui`, a `main` to
+> drzewo zweryfikowane end-to-end po Bluetooth.
 
 - **Tempo raportów z wejść po Bluetooth jest ograniczone do 66 Hz (15 ms).** Kontroler w roli
   centrala odmawia *zainicjowania* interwału krótszego niż 15 ms, zwracając HCI `0x12` — zmierzone

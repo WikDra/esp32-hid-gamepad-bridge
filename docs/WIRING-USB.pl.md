@@ -67,8 +67,8 @@ obie kolumny liczone od strony USB w dół:
 |---|---|
 | **TX** (GPIO43) | konsola, UART0 TX → **RXD** przejściówki |
 | **RX** (GPIO44) | konsola, UART0 RX ← **TXD** przejściówki |
-| **GPIO4** | łącze międzyukładowe, UART1 **TX** (nadaje tylko płytka A) |
-| **GPIO5** | łącze międzyukładowe, UART1 **RX** (odbiera tylko płytka B) |
+| **GPIO4** | łącze międzyukładowe, UART1 **TX** — na obu płytkach |
+| **GPIO5** | łącze międzyukładowe, UART1 **RX** — na obu płytkach |
 | **GND** | masa — wspólna dla łącza i dla przejściówki, obowiązkowo |
 | **5V** | zasilanie **wejściowe** |
 | **3V3** | **wyjście** stabilizatora płytki — nie podawaj tu napięcia |
@@ -106,20 +106,29 @@ konsoli. Leżą obok siebie na listwie, więc kabelek jest krótki.
 
 ## 2. Płytka A ↔ Płytka B (łącze)
 
-| Płytka A (`s3input`) | → | Płytka B (`s3pad`) | Sygnał | Konieczne |
+| Płytka A (`s3input`) | ↔ | Płytka B (`s3pad`) | Sygnał | Konieczne |
 |---|---|---|---|---|
 | GPIO4 | → | GPIO5 | ramki wejść, 921600 8N1 | **tak** |
 | GND | — | GND | masa wspólna | **tak** |
-| GPIO5 | ← | GPIO4 | kanał powrotny, dziś nieużywany | nie, ale warto |
+| GPIO5 | ← | GPIO4 | firmware dla płytki A i jej potwierdzenia | **tak, do aktualizacji** |
 
-Wystarczą **dwa druty**: GPIO4 płytki A do GPIO5 płytki B oraz masa do masy. Łącze jest
-jednokierunkowe, bo odbiornik nie ma o co pytać nadajnika — sam podejmuje wszystkie decyzje
-o padzie.
+**Trzy druty**, a para danych jest skrzyżowana **dwukrotnie**: każda płytka nadaje na GPIO4
+i słucha na GPIO5, więc GPIO4 płytki A idzie do GPIO5 płytki B, a GPIO4 płytki B do GPIO5
+płytki A. Masa wspólna.
 
-Trzeci drut (GPIO4 płytki B do GPIO5 płytki A) nie jest przez firmware sterowany:
-`s3pad` ma `APP_LINK_TX_GPIO=-1`, co `uart_set_pin()` rozumie jako „nie ruszaj tego pinu”.
-Warto go jednak przylutować od razu — jest gotowym miejscem na kanał powrotny, gdyby log
-z płytki B miał kiedyś iść przez płytkę A.
+Drut powrotny był kiedyś opcjonalny i ten dokument tak mówił. Teraz jest tym, co w ogóle czyni
+płytkę A aktualizowalną: jej port USB to strona hosta, a konsola wymaga przejściówki USB-UART, więc
+bez tego drutu każda zmiana firmware tam znaczy trzymanie BOOT i RESET. Z nim panel WWW pada
+przepycha obraz, a płytka A wstaje z niego — 330 kB w około 16 s.
+
+Pomiń go i wszystko inne działa; po prostu wgrywasz płytkę A ręcznie.
+
+**Zrób ten drut porządnie.** To była ostatnia rzecz, która się nie udała na blacie, a objaw jest
+zwodniczy: styk, który na omomierzu jest otwarty, albo taki, który przewodzi z przerwami, daje
+**straty ramek**, nie ciszę. Protokół powtarza to, co zginęło, więc marginalny lut objawia się jako
+transfer wolny albo poddający się po kilku próbach — a nie jako oczywiście martwe łącze. Zakładka
+System w panelu pokazuje liczniki ramek i błędów CRC łącza, i to jest najszybszy sposób odróżnienia
+złego lutu od czegokolwiek innego.
 
 Konwencja jest symetryczna: **GPIO4 to zawsze TX, GPIO5 to zawsze RX**, więc kabel jest
 zwykłym skrzyżowaniem i nie ma jak go pomylić.
