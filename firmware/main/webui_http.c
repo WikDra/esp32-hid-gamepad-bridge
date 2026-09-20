@@ -449,12 +449,54 @@ static esp_err_t h_defaults(httpd_req_t *req)
     if (!authorised(req)) {
         return ESP_OK;
     }
+
+    /*
+     * "?what=binds" resets only the mapping. Without it the whole configuration goes back to
+     * defaults, live. The distinction exists because a button in the mapping editor labelled
+     * "defaults" that also reset sensitivity and smoothing would be describing a different thing
+     * than it does.
+     */
+    char query[32];
+    char what[16] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        httpd_query_key_value(query, "what", what, sizeof(what));
+    }
+
+    if (strcmp(what, "binds") == 0) {
+        if (bridge_config_reset_binds() != ESP_OK) {
+            return send_err(req, "500 Internal Server Error", "could not apply");
+        }
+        return send_ok(req);
+    }
+
     bridge_config_t cfg;
     bridge_config_defaults(&cfg);
     if (bridge_config_apply(&cfg) != ESP_OK) {
         return send_err(req, "500 Internal Server Error", "could not apply");
     }
     ESP_LOGI(TAG, "configuration reset to built-in defaults");
+    return send_ok(req);
+}
+
+/*
+ * Restores one stored profile to the built-in defaults, persistently.
+ *
+ * Separate from /api/defaults on purpose. That one changes what is in force and does NOT write to
+ * NVS, which is exactly the behaviour that misled: the panel said "back to defaults", the settings
+ * changed, and the next reboot brought the old profile back.
+ */
+static esp_err_t h_reset_slot(httpd_req_t *req)
+{
+    if (!authorised(req)) {
+        return ESP_OK;
+    }
+    const uint8_t slot = slot_from_query(req);
+    if (slot == 0xFF) {
+        return send_err(req, "400 Bad Request", "slot must be 0..3");
+    }
+    if (bridge_config_reset_slot(slot) != ESP_OK) {
+        return send_err(req, "500 Internal Server Error", "could not write NVS");
+    }
     return send_ok(req);
 }
 
@@ -898,6 +940,7 @@ esp_err_t webui_http_start(const char *password)
         {.uri = "/api/save", .method = HTTP_POST, .handler = h_save},
         {.uri = "/api/load", .method = HTTP_POST, .handler = h_load},
         {.uri = "/api/erase", .method = HTTP_POST, .handler = h_erase},
+        {.uri = "/api/reset", .method = HTTP_POST, .handler = h_reset_slot},
         {.uri = "/api/export", .method = HTTP_GET, .handler = h_export},
         {.uri = "/api/wifi", .method = HTTP_POST, .handler = h_wifi},
         {.uri = "/api/ota", .method = HTTP_POST, .handler = h_ota},

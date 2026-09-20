@@ -183,6 +183,26 @@ bool bridge_config_slot_name(uint8_t slot, char out[BRIDGE_PROFILE_NAME_MAX]);
 /* Forget a stored slot. */
 esp_err_t bridge_config_erase(uint8_t slot);
 
+/*
+ * Restores a slot to the built-in defaults, persistently, and applies them live if that slot is the
+ * one currently in force.
+ *
+ * One operation rather than "reset the live settings" followed by "save": the two-step version was
+ * what the panel offered and it misled - resetting without saving looks like it worked until the next
+ * reboot brings the old profile back. Which slot is active does NOT change, so resetting a profile
+ * you are not using cannot move you onto it.
+ */
+esp_err_t bridge_config_reset_slot(uint8_t slot);
+
+/*
+ * Replaces just the binding table with the built-in one, leaving the tunables alone. Live only.
+ *
+ * Exists because the panel's mapping editor needs an escape that means what it says: a button in the
+ * mapping tab labelled "defaults" that silently also reset sensitivity and smoothing would be a
+ * second description of a different thing.
+ */
+esp_err_t bridge_config_reset_binds(void);
+
 #ifdef __cplusplus
 }
 #endif

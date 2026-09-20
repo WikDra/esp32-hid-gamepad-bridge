@@ -361,6 +361,75 @@ esp_err_t bridge_config_erase(uint8_t slot)
     return err;
 }
 
+/*
+ * Writes a given configuration into a slot. Split out of bridge_config_save() because that one
+ * persists whatever is ACTIVE, and restoring a profile to defaults must be able to write a slot
+ * without first making its contents live.
+ */
+static esp_err_t slot_write(uint8_t slot, const bridge_config_t *cfg)
+{
+    if (slot >= BRIDGE_PROFILE_COUNT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    char key[8];
+    slot_key(slot, key);
+    err = nvs_set_blob(h, key, cfg, sizeof(*cfg));
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    return err;
+}
+
+esp_err_t bridge_config_reset_slot(uint8_t slot)
+{
+    bridge_config_t cfg;
+    bridge_config_defaults(&cfg);
+    bridge_config_validate(&cfg);
+
+    const esp_err_t err = slot_write(slot, &cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "restoring profile %u to defaults failed: %s", slot, esp_err_to_name(err));
+        return err;
+    }
+
+    /* Only if it is the one in force. Resetting a profile you are not using must not move you onto
+     * it, and must not change what the pad is doing right now. */
+    if (slot == s_active_slot) {
+        const esp_err_t applied = bridge_config_apply(&cfg);
+        if (applied != ESP_OK) {
+            return applied;
+        }
+    }
+
+    ESP_LOGI(TAG, "profile %u restored to defaults%s", slot,
+             (slot == s_active_slot) ? " and applied" : "");
+    return ESP_OK;
+}
+
+esp_err_t bridge_config_reset_binds(void)
+{
+    bridge_config_t cfg = *bridge_config_get();
+
+    input_bind_t binds[INPUT_BIND_MAX];
+    size_t n = input_mapper_default_binds(binds, INPUT_BIND_MAX);
+    if (n > INPUT_BIND_MAX) {
+        n = INPUT_BIND_MAX;
+    }
+    cfg.bind_count = (uint8_t)n;
+    memcpy(cfg.binds, binds, n * sizeof(input_bind_t));
+
+    ESP_LOGI(TAG, "mapping restored to defaults (%u bindings), tunables untouched", (unsigned)n);
+    return bridge_config_apply(&cfg);
+}
+
 esp_err_t bridge_config_init(void)
 {
     /* Publish the defaults first, unconditionally. Everything after this point can fail without

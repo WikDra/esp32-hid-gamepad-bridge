@@ -341,7 +341,7 @@ What it can change:
   immediately, so a setting you can only judge by feel no longer needs a rebuild and a reflash.
 - **The mapping**, as a table: press *Listen* and then a key on the keyboard the bridge owns, and
   it binds. Every nominal button is labelled with the Xbox control it drives.
-- **Four profiles in NVS**, named, with export and import as a JSON file.
+- **Four profiles in NVS**, named, with export and import as a JSON file. Each has a **Default** button that puts the factory settings back into that slot and keeps them there; which profile is active does not change, so resetting one you are not using cannot move you onto it. The mapping editor has its own **Restore default mapping**, which leaves sensitivity and smoothing alone.
 - **Firmware for both chips.** The pad updates itself over Wi-Fi; the input chip is updated *through the wire between the boards*, because its USB port is the host side and it has no network of its own. Every data frame carries its offset, so a corrupted one is simply resent — measured recovering three bad frames out of 1199 on a real transfer. 330 kB takes about 16 s.
 - **Firmware**, by uploading `hid_gamepad_bridge.bin`. The image is verified before anything
   reboots and is only confirmed after the new firmware has stayed up for 30 s, so one that crashes

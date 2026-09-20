@@ -263,7 +263,7 @@ td select{width:100%;padding:7px 8px;min-height:38px}
     </div>
     <div class="row" style="margin-top:12px">
       <button id="addbind">Add a binding</button>
-      <button id="resetmap" class="danger">Back to defaults</button>
+      <button id="resetmap">Restore default mapping</button>
     </div>
   </div>
 </section>
@@ -277,8 +277,7 @@ td select{width:100%;padding:7px 8px;min-height:38px}
       <input type="text" id="pname" maxlength="15" class="grow" style="width:100%">
     </div>
     <div id="slots"></div>
-    <p class="hint">Saving writes the settings in force right now, name included, into that slot
-    and makes it the one loaded at startup.</p>
+    <p class="hint"><b>Save</b> writes the settings in force right now, name included, into that slot and makes it the one loaded at startup. <b>Default</b> puts the built-in factory settings into that slot and keeps them there — unlike resetting the live settings, this survives a reboot. Which profile is active does not change, so resetting one you are not using cannot move you onto it.</p>
   </div>
 
   <div class="card">
@@ -755,8 +754,8 @@ $("addbind").addEventListener("click", () => {
 });
 
 $("resetmap").addEventListener("click", async () => {
-  if (!confirm("Reset every setting and binding to the built-in defaults?")) return;
-  try { await post("/api/defaults"); await loadConfig(); toast("Back to defaults", "ok"); }
+  if (!confirm("Restore the default key mapping? Sensitivity and the other settings are left alone.")) return;
+  try { await post("/api/defaults?what=binds"); await loadConfig(); toast("Default mapping restored", "ok"); }
   catch (e) { toast(e.message, "bad"); }
 });
 
@@ -775,6 +774,7 @@ async function renderProfiles() {
       </div>
       <button data-save="${s.slot}">Save</button>
       <button data-load="${s.slot}" ${s.stored ? "" : "disabled"}>Load</button>
+      <button data-reset="${s.slot}" title="write the built-in defaults into this slot">Default</button>
       <button data-erase="${s.slot}" class="danger" ${s.stored ? "" : "disabled"}>&times;</button>
     </div>`).join("");
 }
@@ -787,6 +787,17 @@ $("slots").addEventListener("click", async e => {
                                          toast("Saved", "ok"); }
     if (b.dataset.load  !== undefined) { await post("/api/load?slot=" + b.dataset.load);
                                          await loadConfig(); toast("Loaded", "ok"); }
+    if (b.dataset.reset !== undefined) {
+      const n = b.dataset.reset;
+      if (confirm(`Restore profile ${n} to the built-in defaults? This overwrites what is stored there.`)) {
+        await post("/api/reset?slot=" + n);
+        /* Reload the editor only when the reset touched what is in force - otherwise the panel
+           would show a profile the pad is not using. */
+        const p = await getJSON("/api/profiles");
+        if (String(p.active) === String(n)) await loadConfig();
+        toast(`Profile ${n} restored to defaults`, "ok");
+      }
+    }
     if (b.dataset.erase !== undefined) { await post("/api/erase?slot=" + b.dataset.erase);
                                          toast("Erased", "ok"); }
     await renderProfiles();
